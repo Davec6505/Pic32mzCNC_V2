@@ -2,10 +2,14 @@
 * Author: D Coetzee
 * Date: 05/05/2023
 * Subject: Investigate XY_Interpolation as per   
+<<<<<<< HEAD
 * ac:Pic32Timers                                 
 * ac:XY_Interpolation
 * ac:Pic32mz
 *
+=======
+*  ac:XY_Interpolation
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
 **************************************************************/
 
 

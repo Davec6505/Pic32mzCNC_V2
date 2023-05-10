@@ -53,6 +53,7 @@ void PinMode(){
 ////////////////////////////////////////////////////
 //Remapping of Uart 2 pins
     Unlock_IOLOCK();
+<<<<<<< HEAD
      //UART PIN MAPPING
      #ifdef UART1_
      PPS_Mapping_NoLock(_RPD15, _OUTPUT, _U1TX);    // Sets pin PORTD.B15 to be Output and maps UART1 Transmit
@@ -67,6 +68,15 @@ void PinMode(){
      PPS_Mapping_NoLock(_RPF5, _INPUT,  _U3RX);    // Sets pin PORTE.B9 to be Input and maps UART2 Receive
      #endif
      
+=======
+     //UART2 PIN MAPPING
+     PPS_Mapping_NoLock(_RPE8, _OUTPUT, _U2TX);    // Sets pin PORTE.B8 to be Output and maps UART2 Transmit
+     PPS_Mapping_NoLock(_RPE9, _INPUT,  _U2RX);    // Sets pin PORTE.B9 to be Input and maps UART2 Receive
+  //UART3 PIN MAPPING  FOR LOOPBACK DEBUGGING
+     PPS_Mapping_NoLock(_RPA14, _OUTPUT, _U3TX);    // Sets pin PORTE.B8 to be Output and maps UART2 Transmit
+     PPS_Mapping_NoLock(_RPF5, _INPUT,  _U3RX);    // Sets pin PORTE.B9 to be Input and maps UART2 Receive
+     //???
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
      PPS_Mapping_NoLock(_RPB9, _OUTPUT, _NULL);
      PPS_Mapping_NoLock(_RPB10, _OUTPUT, _NULL);
      ///////////////////////////////////////////////////////////
@@ -93,12 +103,20 @@ void PinMode(){
 //////////////////////////////////////////////////
 //TMR 1 & 8 config
    InitTimer1();
+<<<<<<< HEAD
   // InitTimer8();
+=======
+   InitTimer8();
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
 
 ///////////////////////////////////////////////
 //Limits initialize
 //  Limit_Initialize();
+<<<<<<< HEAD
  Init_Steppers();
+=======
+
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
 ////////////////////////////////////////////////
 //set up output compare module for oc3 RF1 pin
  // OutPutPulseXYZ();
@@ -121,6 +139,7 @@ void PinMode(){
 
 //////////////////////////////////////////////////
 //configure UART the interrupts
+<<<<<<< HEAD
 #ifdef UART1_TEST
   Uart1InterruptSetup();
 #endif
@@ -128,6 +147,9 @@ void PinMode(){
   Uart2InterruptSetup();
 #endif
 
+=======
+ // Uart2InterruptSetup();
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
 
 //////////////////////////////////////////////////
 //Enable the interrupts here so uart can report back
@@ -140,6 +162,7 @@ void PinMode(){
 }
 
 void UartConfig(){
+<<<<<<< HEAD
 #ifdef UART1_
 //////////////////////////////////////////////////
 //setup the serial comms on uart 2  using PBCLK2 at 50mhz
@@ -147,11 +170,14 @@ void UartConfig(){
   UART_Set_Active(&UART1_Read, &UART1_Write, &UART1_Data_Ready, &UART1_Tx_Idle);
   Delay_ms(10);                  // Wait for UART module to stabilize
 #elif UART2_
+=======
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
 //////////////////////////////////////////////////
 //setup the serial comms on uart 2  using PBCLK2 at 50mhz
   UART2_Init_Advanced(115200, 200000/*PBClk x 2*/, _UART_LOW_SPEED, _UART_8BIT_NOPARITY, _UART_ONE_STOPBIT);
   UART_Set_Active(&UART2_Read, &UART2_Write, &UART2_Data_Ready, &UART2_Tx_Idle); // set UART2 active
   Delay_ms(10);                  // Wait for UART module to stabilize
+<<<<<<< HEAD
 #endif
 }
 
@@ -183,12 +209,32 @@ void Uart1InterruptSetup(){
 }
 ////////////////////////////////////////////////
 //Uart 1 interrupt setup, make sure that for DMA
+=======
+
+#if LoopBackDebug == 1
+ //////////////////////////////////////////////////
+//setup the serial comms on uart 2  using PBCLK2 at 50mhz
+  UART3_Init_Advanced(256000, 200000/*PBClk / 8*/, _UART_LOW_SPEED, _UART_8BIT_NOPARITY, _UART_ONE_STOPBIT);
+  UART_Set_Active(&UART3_Read, &UART3_Write, &UART3_Data_Ready, &UART3_Tx_Idle); // set UART2 active
+  Delay_ms(100);                  // Wait for UART module to stabilize
+
+ // Uart2InterruptSetup();
+
+#endif
+
+
+}
+
+////////////////////////////////////////////////
+//Uart 2 interrupt setup, make sure that for DMA
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
 //the interrupt is turned off for this module,
 //only use the IRQ from the DMA controller but
 //itis important it set up the irelx bits of the
 // 8 level deep interrupt buffer specific to the
 //UART module
 void Uart2InterruptSetup(){
+<<<<<<< HEAD
 
     // IRQ after 1 byte is empty, buffer is 8 deep
     UTXISEL0_bit =  0 ;
@@ -202,6 +248,24 @@ void Uart2InterruptSetup(){
     IPC33CLR     = 0x1F00;
     //Set priority 5 sub-priority 1
     IPC33SET      = 0x1400;
+=======
+/*IFS4<18>
+IEC4<18>
+IPC36<20:18>
+IPC36<17:16>
+*/
+    // IRQ after 1 byte is empty, buffer is 8 deep
+    URXISEL0_bit = 0;
+    URXISEL1_bit = 0;
+
+    // IRQ after 1 byte is empty buffer is 8 deep
+    UTXISEL0_bit = 0;
+    UTXISEL1_bit = 0;
+
+    IPC36CLR     = 0x160000;
+    //Set priority 5 sub-priority 1
+    IPC36SET      = 0x00140000;
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
     //set DMA0IE bit
     IEC4SET       = 0x40000;
     IFS4CLR       = 0x40000;
@@ -415,9 +479,16 @@ void OutPutPulseXYZ(){
 
 /////////////////////////////////////////////////////
 //only if DMA is turned off
+<<<<<<< HEAD
 void UART1() iv IVT_UART1_RX ilevel 5 ics ICS_SOFT {
    IFS3CLR  = 0x20000;
 
    UART1_Write(U1RXREG);
+=======
+void UART2() iv IVT_UART2_RX ilevel 5 ics ICS_SOFT {
+   IFS4CLR  = 0x40000;
+
+   UART3_Write(U2RXREG);
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
 
 }

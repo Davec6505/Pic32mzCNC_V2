@@ -1,6 +1,10 @@
 #include "Steppers.h"
 
+<<<<<<< HEAD
 
+=======
+void (*Dly)();
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
 
 struct stepper{
 int xl,yl; /* starting point */
@@ -18,20 +22,27 @@ volatile static struct stepper step;
 volatile static int feedrate,drag,oil,acc_val;
 unsigned int out;
 
+<<<<<<< HEAD
 void Init_Steppers(){
    InitTimer8(&delay);
 }
 
+=======
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
 /* delay must remain in this position for local scope association 
  * Timer8 provides a master freq, feedate is supplied from gcode
  * drag is acc constant and oil provides a form of s curve.
  */
+<<<<<<< HEAD
 void delay(){
   LED2 = !LED2;
 }
 
 
 void _delay_(){
+=======
+static void delay(){
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
 static long ii;
 static int i = 0;
 static int last_drag;
@@ -61,6 +72,10 @@ void setStepXY(int _x1,int _y1,int _x3,int _y3){
 }
 
 void setDragOil(int _feedrate,int _drag,int _oil){
+<<<<<<< HEAD
+=======
+  Dly = delay;
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
   feedrate = MAXFEED - _feedrate;
   drag = _drag;
   oil = _oil;
@@ -117,7 +132,11 @@ void doline(){
   while(DMA_IsOn(1));
   dma_printf("%s","\nStep\tFXY\tX2\tY2\t\tXO\tYO\toutput\tacc_val\tdrag\toil\n");
   while ( (step.dx > step.x2) && (step.dy > step.y2)){ // at endpoint?
+<<<<<<< HEAD
      _delay_();
+=======
+     delay();
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
      //if(!T8IE_bit){T8IE_bit = true;TMR8 =
      out = 0;
      if(!step.fm){

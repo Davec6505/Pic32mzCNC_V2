@@ -1,7 +1,10 @@
 #include "Timers.h"
 
 void (*Clock)();
+<<<<<<< HEAD
 void (*Dly)();
+=======
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
 
 struct Timer TMR;
 
@@ -31,9 +34,14 @@ void InitTimer1(){
 
 ///////////////////////////////////////////////////////////////////
 //TMR 8  initialized to interrupt at 1us was used for early
+<<<<<<< HEAD
 void InitTimer8(void (*dly)()){
   Dly = dly;
   T8CON            = 0x8050;
+=======
+void InitTimer8(){
+  T8CON            = 0x8000;
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
   T8IP0_bit        = 1;
   T8IP1_bit        = 0;
   T8IP2_bit        = 1;
@@ -41,7 +49,11 @@ void InitTimer8(void (*dly)()){
   T8IS1_bit        = 1;
   T8IF_bit         = 0;
   T8IE_bit         = 1;
+<<<<<<< HEAD
   PR8              = 50000;
+=======
+  PR8              = 500;
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
   TMR8             = 0;
   uSec             = 0;
 }
@@ -73,7 +85,10 @@ void void Timer8Interrupt() iv IVT_TIMER_8 ilevel 5 ics ICS_SRS {
  T8IF_bit  = 0;
 //Enter your code here
 //oneShot to start the steppers runnin
+<<<<<<< HEAD
   Dly();
+=======
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
   uSec++;
 }
 

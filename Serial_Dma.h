@@ -6,12 +6,20 @@
 #include <stdarg.h>
 #include "Config.h"
 
+<<<<<<< HEAD
 #define NULL 0
 #define _DMACON_SUSPEND_MASK (1<<12)
 
 #define UART1_DMA
 //#define UART2_DMA
 
+=======
+
+
+#define NULL 0
+#define _DMACON_SUSPEND_MASK (1<<12)
+
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
 extern char txt[];
 extern char rxBuf[];
 extern char txBuf[];

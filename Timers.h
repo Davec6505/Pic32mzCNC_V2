@@ -18,7 +18,11 @@ extern struct Timer TMR;
 
 
 void InitTimer1();
+<<<<<<< HEAD
 void InitTimer8(void (*dly)());
+=======
+void InitTimer8();
+>>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
 long getUsec();
 long setUsec(long usec);
 static void ClockPulse();
