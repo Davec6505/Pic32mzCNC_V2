@@ -19,7 +19,8 @@ volatile static int feedrate,drag,oil,acc_val;
 unsigned int out;
 
 void Init_Steppers(){
-   InitTimer8(&delay);
+   InitTimer8(&delay); //clock delay
+   InitTimer9();       //pulse on time
 }
 
 /* delay must remain in this position for local scope association 
@@ -27,7 +28,8 @@ void Init_Steppers(){
  * drag is acc constant and oil provides a form of s curve.
  */
 void delay(){
-  LED2 = !LED2;
+  LED2 = false;
+  T9CONSET = 0X8000;
 }
 
 

@@ -46,6 +46,22 @@ void InitTimer8(void (*dly)()){
   uSec             = 0;
 }
 
+//Timer9  to reset output once pulsed
+//Prescaler 1:16; PR3 Preload = 500; Actual Interrupt Time = 50 us
+void InitTimer9(){
+  T9CON	 = 0x0000;
+  T9IP0_bit	 = 1;
+  T9IP1_bit	 = 0;
+  T9IP2_bit	 = 1;
+  T9IS0_bit	 = 1;
+  T9IS1_bit	 = 0;
+  
+  T9IF_bit	 = 0;
+  T9IE_bit	 = 1;
+  PR9		 = 500;
+  TMR9       = 0;
+}
+
 
 ///////////////////////////////////////////
 //TMR 1 as a 10ms clock pulse ???
@@ -68,13 +84,21 @@ long setUsec(long usec){
 
 //////////////////////////////////////////
 // TMR 8 interrupts
-
 void void Timer8Interrupt() iv IVT_TIMER_8 ilevel 5 ics ICS_SRS {
  T8IF_bit  = 0;
 //Enter your code here
 //oneShot to start the steppers runnin
   Dly();
   uSec++;
+}
+
+//////////////////////////////////////////
+// TMR 9 interrupts OUTPUT resets
+void Timer9Interrupt() iv IVT_TIMER_9 ilevel 5 ics ICS_SRS {
+ T9IF_bit  = 0;
+//Enter your code here
+ T9CONCLR = 0x8000;
+ LED2 = false;
 }
 
 //////////////////////////////////////////
