@@ -30,10 +30,10 @@ SW	R2, Offset(IFS4CLR+0)(GP)
 ORI	R2, R0, 32771
 SW	R2, Offset(DCH0CONCLR+0)(GP)
 ;Serial_Dma.c,49 :: 		DCH0ECON      =  (146 << 8 ) | 0x30;
-ORI	R2, R0, 28976
+ORI	R2, R0, 37424
 SW	R2, Offset(DCH0ECON+0)(GP)
 ;Serial_Dma.c,52 :: 		DCH0DAT       = '?';//'\0' //0x0A0D;//'\r\n';
-ORI	R2, R0, 10
+ORI	R2, R0, 63
 SW	R2, Offset(DCH0DAT+0)(GP)
 ;Serial_Dma.c,55 :: 		DCH0SSA       = KVA_TO_PA(0xBF822230);    //[0xBF822230 = U2RXREG]
 LUI	R2, 8066
@@ -487,7 +487,7 @@ SW	R2, Offset(IEC4CLR+0)(GP)
 ORI	R2, R0, 32771
 SW	R2, Offset(DCH1CONCLR+0)(GP)
 ;Serial_Dma.c,254 :: 		DCH1ECON=(147 << 8)| 0x30;
-ORI	R2, R0, 29232
+ORI	R2, R0, 37680
 SW	R2, Offset(DCH1ECON+0)(GP)
 ;Serial_Dma.c,258 :: 		DCH1DAT       = '\0';
 SW	R0, Offset(DCH1DAT+0)(GP)
@@ -497,6 +497,8 @@ SW	R2, Offset(DCH1SSA+0)(GP)
 ;Serial_Dma.c,262 :: 		DCH1SSIZ  = 1000;  //' This is how many bytes you want to send out in a block transfer for UART transmitter
 ORI	R2, R0, 1000
 SW	R2, Offset(DCH1SSIZ+0)(GP)
+;Serial_Dma.c,266 :: 		U1TXREG   = 0x00;
+SW	R0, Offset(U1TXREG+0)(GP)
 ;Serial_Dma.c,267 :: 		DCH1DSA   = KVA_TO_PA(0xBF822220) ;
 LUI	R2, 8066
 ORI	R2, R2, 8736

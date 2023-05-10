@@ -86,12 +86,12 @@ void PinMode(){
 //////////////////////////////////////////////////
 //TMR 1 & 8 config
    InitTimer1();
-   InitTimer8();
+  // InitTimer8();
 
 ///////////////////////////////////////////////
 //Limits initialize
 //  Limit_Initialize();
-
+ Init_Steppers();
 ////////////////////////////////////////////////
 //set up output compare module for oc3 RF1 pin
  // OutPutPulseXYZ();
