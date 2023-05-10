@@ -9,13 +9,20 @@
 #include "built_in.h"
 ///////////////////////////////////////////////////
 //DEFINES
+//UART Module for clicker2 mz
+//#define UART1_TEST
+//#define UART2_TEST
+
+#define UART1_
+//#define UART2_
+//#define UART3_
 
 //blockers
 #define LED_STATUS
 
 //types
 #define false 0
-#define true 1
+#define true  1
 
 
 
@@ -32,7 +39,8 @@ extern unsigned char LCD_01_ADDRESS; //PCF8574T
 void PinMode();             //pin mode configuration
 void UartConfig();          //setupUart
 void set_performance_mode();//sys clk performance setup
-void Uart1InterruptSetup(); //uart2 interrupt on recieve turned off
+void Uart1InterruptSetup(); //uart1 interrupt on recieve turned off
+void Uart2InterruptSetup(); //uart2 interrupt on recieve turned off
 void OutPutPulseXYZ();      // setup output pulse OC3
 
 //Group 1 G4,G10,G28,G30,G53,G92,G92.1] Non-modal

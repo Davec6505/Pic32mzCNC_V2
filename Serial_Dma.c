@@ -45,14 +45,23 @@ void  DMA0(){
     //Disable DMA0 and reset priority
     DCH0CONCLR = 0x8003;
 
-    //1INTERRUPT IRQ NUMBER for UART 2 TX (146) | [0x10 = SIRQEN] [0x30 = PATEN & SIRQEN]
+#ifdef UART1_DMA
+   //INTERRUPT IRQ NUMBER for UART 1 RX (113) | [0x10 = SIRQEN] [0x30 = PATEN & SIRQEN]
+    DCH0ECON      =  (113 << 8 ) | 0x30;
+#elif UART2_DMA
+   //1INTERRUPT IRQ NUMBER for UART 2 RX (146) | [0x10 = SIRQEN] [0x30 = PATEN & SIRQEN]
     DCH0ECON      =  (146 << 8 ) | 0x30;
-
+#endif
     //Pattern data
-    DCH0DAT       = '?';//'\0' //0x0A0D;//'\r\n';
+    DCH0DAT       = '\n';//'\0' //0x0A0D;//'\r\n';
 
-    //Source address as UART_RX
+   #ifdef UART1_DMA
+    //Source address as UART1_RX
+    DCH0SSA       = KVA_TO_PA(0xBF822030);    //[0xBF822230 = U2RXREG]
+   #elif UART2_DMA
+    //Source address as UART2_RX
     DCH0SSA       = KVA_TO_PA(0xBF822230);    //[0xBF822230 = U2RXREG]
+   #endif
     DCH0SSIZ      = 1;                 // source size = 1byte at a time
 
     //Destination address  as RxBuffer
@@ -250,9 +259,13 @@ void DMA1(){
      //Disable DMA0 and reset priority
     DCH1CONCLR = 0x8003;
 
+#ifdef UART1_
+    //INTERRUPT IRQ NUMBER for UART 1 TX (114) | [0x10 = SIRQEN] [0x30 = PATEN & SIRQEN]
+    DCH1ECON=(114 << 8)| 0x30;
+#elif UART2_
     //INTERRUPT IRQ NUMBER for UART 2 TX (147) | [0x10 = SIRQEN] [0x30 = PATEN & SIRQEN]
     DCH1ECON=(147 << 8)| 0x30;
-
+#endif
     //Pattern Length and char to match not needed here ????
     //Pattern length = 0 = 1 byte
     DCH1DAT       = '\0';
@@ -264,7 +277,11 @@ void DMA1(){
     //Destination Address and size which is 1byte
     //U1TX2REG for reply  [0xBF822220 = U1TXREG]
     U1TXREG   = 0x00;
+    #ifdef UART1_DMA
+    DCH1DSA   = KVA_TO_PA(0xBF822020) ;
+    #elif UART2_DMA
     DCH1DSA   = KVA_TO_PA(0xBF822220) ;
+    #endif
     DCH1DSIZ  = 1;
 
     //Cell size to transfer each transfer

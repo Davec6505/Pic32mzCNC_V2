@@ -53,16 +53,20 @@ void PinMode(){
 ////////////////////////////////////////////////////
 //Remapping of Uart 2 pins
     Unlock_IOLOCK();
-     //UART2 PIN MAPPING
+     //UART PIN MAPPING
+     #ifdef UART1_
      PPS_Mapping_NoLock(_RPD15, _OUTPUT, _U1TX);    // Sets pin PORTD.B15 to be Output and maps UART1 Transmit
      PPS_Mapping_NoLock(_RPD14, _INPUT,  _U1RX);    // Sets pin PORTE.B14 to be Input and maps UART1 Receive
-     //UART2 PIN MAPPING
+     #endif
+     #ifdef UART2_
      PPS_Mapping_NoLock(_RPE8, _OUTPUT, _U2TX);    // Sets pin PORTE.B8 to be Output and maps UART2 Transmit
      PPS_Mapping_NoLock(_RPE9, _INPUT,  _U2RX);    // Sets pin PORTE.B9 to be Input and maps UART2 Receive
-  //UART3 PIN MAPPING  FOR LOOPBACK DEBUGGING
+     #endif
+     #ifdef UART3_
      PPS_Mapping_NoLock(_RPA14, _OUTPUT, _U3TX);    // Sets pin PORTE.B8 to be Output and maps UART2 Transmit
      PPS_Mapping_NoLock(_RPF5, _INPUT,  _U3RX);    // Sets pin PORTE.B9 to be Input and maps UART2 Receive
-     //???
+     #endif
+     
      PPS_Mapping_NoLock(_RPB9, _OUTPUT, _NULL);
      PPS_Mapping_NoLock(_RPB10, _OUTPUT, _NULL);
      ///////////////////////////////////////////////////////////
@@ -117,7 +121,13 @@ void PinMode(){
 
 //////////////////////////////////////////////////
 //configure UART the interrupts
+#ifdef UART1_TEST
   Uart1InterruptSetup();
+#endif
+#ifdef UART2_TEST
+  Uart2InterruptSetup();
+#endif
+
 
 //////////////////////////////////////////////////
 //Enable the interrupts here so uart can report back
@@ -130,18 +140,19 @@ void PinMode(){
 }
 
 void UartConfig(){
+#ifdef UART1_
 //////////////////////////////////////////////////
 //setup the serial comms on uart 2  using PBCLK2 at 50mhz
   UART1_Init_Advanced(115200, 200000/*PBClk x 2*/, _UART_LOW_SPEED, _UART_8BIT_NOPARITY, _UART_ONE_STOPBIT);
   UART_Set_Active(&UART1_Read, &UART1_Write, &UART1_Data_Ready, &UART1_Tx_Idle);
   Delay_ms(10);                  // Wait for UART module to stabilize
-  
+#elif UART2_
 //////////////////////////////////////////////////
 //setup the serial comms on uart 2  using PBCLK2 at 50mhz
   UART2_Init_Advanced(115200, 200000/*PBClk x 2*/, _UART_LOW_SPEED, _UART_8BIT_NOPARITY, _UART_ONE_STOPBIT);
   UART_Set_Active(&UART2_Read, &UART2_Write, &UART2_Data_Ready, &UART2_Tx_Idle); // set UART2 active
   Delay_ms(10);                  // Wait for UART module to stabilize
-
+#endif
 }
 
 ////////////////////////////////////////////////
@@ -168,6 +179,32 @@ void Uart1InterruptSetup(){
     //set DMA0IE bit
     IEC3SET       = 0x20000;
     IFS3CLR       = 0x20000;
+
+}
+////////////////////////////////////////////////
+//Uart 1 interrupt setup, make sure that for DMA
+//the interrupt is turned off for this module,
+//only use the IRQ from the DMA controller but
+//itis important it set up the irelx bits of the
+// 8 level deep interrupt buffer specific to the
+//UART module
+void Uart2InterruptSetup(){
+
+    // IRQ after 1 byte is empty, buffer is 8 deep
+    UTXISEL0_bit =  0 ;
+    UTXISEL1_bit =  0 ;
+
+    // IRQ after 1 byte is empty buffer is 8 deep
+    URXISEL0_bit =  0 ;
+    URXISEL1_bit =  0 ;
+
+
+    IPC33CLR     = 0x1F00;
+    //Set priority 5 sub-priority 1
+    IPC33SET      = 0x1400;
+    //set DMA0IE bit
+    IEC4SET       = 0x40000;
+    IFS4CLR       = 0x40000;
 
 }
 
