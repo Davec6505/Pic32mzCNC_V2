@@ -18,8 +18,14 @@ extern struct Timer TMR;
 
 
 void InitTimer1();
+void InitTimer2();//dummy timer temp
 void InitTimer8(void (*dly)());
+void SetPR8Value(unsigned int value);
+void RestartTmr8();
+void StopTmr8();
 void InitTimer9();
+void RestartTmr9();
+void StopTmr9();
 long getUsec();
 long setUsec(long usec);
 static void ClockPulse();

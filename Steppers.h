@@ -13,7 +13,8 @@
 void Init_Steppers();
 void delay();
 void setStepXY(int _x1,int _y1,int _x3,int _y3);
-void setDragOil(int _feedrate,int _drag,int _oil);
+void setDragOil(int _drag,int _oil);
+void setFeedrate(int _feedrate);
 void doline();
 /*
 void getdir();

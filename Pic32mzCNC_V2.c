@@ -19,7 +19,8 @@ static bit m0;
  PinMode();
  EI();
  m0 = false;
- setDragOil(20,100,2);
+ setDragOil(100,1);
+ setFeedrate(180);
  while(1){
  //code execution confirmation led on clicker2 board
   #ifdef LED_STATUS

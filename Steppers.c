@@ -3,6 +3,9 @@
 
 
 struct stepper{
+unsigned short move: 1;
+unsigned short dummy: 7; /* consume the ballance of the byte move */
+short fm; /* value of function / fm = master [1=y%0=x]*/
 int xl,yl; /* starting point */
 int x2,y2; /* relative position */
 int x3,y3; /* endpoint */
@@ -10,7 +13,6 @@ int xo,yo; /* direction of output: +1, -I, or 0 */
 int dx,dy; /* differentials of x and y */
 int stepnum;
 int fxy;
-short fm; /* value of function / fm = master [1=y%0=x]*/
 };
 
 volatile static struct stepper step;
@@ -19,6 +21,8 @@ volatile static int feedrate,drag,oil,acc_val;
 unsigned int out;
 
 void Init_Steppers(){
+   step.move = false;
+   InitTimer2();
    InitTimer8(&delay); //clock delay
    InitTimer9();       //pulse on time
 }
@@ -28,44 +32,58 @@ void Init_Steppers(){
  * drag is acc constant and oil provides a form of s curve.
  */
 void delay(){
-  LED2 = false;
-  T9CONSET = 0X8000;
-}
-
-
-void _delay_(){
 static long ii;
 static int i = 0;
-static int last_drag;
- acc_val = abs((feedrate + drag) / 10);
- ii = setUsec(0);
- while (getUsec() <= (long)acc_val)continue;
-/* falls off exponentially */
+ i = (i>50)? 0:i;
+ //output on
+ LED2   = true;
+ step.move = true;
+ //calculate next dly
+ acc_val = abs((feedrate + drag) >> 2 ); // divide by 4
+ acc_val <<= 8;
+ 
+ //acc_val can't be < tmr9 pulse as the run concurrently
+ acc_val = (acc_val < 5000)? 5000:acc_val;
+ 
+ //reset tmr8 to count from 0
+ SetPR8Value(acc_val);
+
+ //start tmr9 to reset output after 50us
+ RestartTmr9();
+ 
+// falls off exponentially with drag? sort of s curve at start
+//of change in speed; to allow for inertia in machine startup
  if(i < 10){
-   //if(drag > 0 || i > 489) {
-      /* drag increases the delay at the beginning */
-      /* to allow for inertia in machine startup */
    drag = drag - (oil * oil);
-   oil--;
+   --oil;
  }else if(i > 40){
    ++oil;
    drag = drag + (oil * oil);
  }
-   i++;
-   if (drag < 0) drag = 0;
+ //keep track of drag i = steps moved by stepper must change
+ //this to actual stepps
+ i++;
+ if (drag < 0) drag = 0;
+ if(i == 40)oil = 0;
+ drag = (drag > 100)? 100:drag;
 }
 
 void setStepXY(int _x1,int _y1,int _x3,int _y3){
+  setDragOil(100,1);
+  setFeedrate(180);
   step.xl = _x1;
   step.yl = _y1;
   step.x3 = _x3;
   step.y3 = _y3;
 }
 
-void setDragOil(int _feedrate,int _drag,int _oil){
-  feedrate = MAXFEED - _feedrate;
+void setDragOil(int _drag,int _oil){
   drag = _drag;
   oil = _oil;
+}
+
+void setFeedrate(int _feedrate){
+  feedrate = _feedrate;
 }
 
 static void getdir(){
@@ -98,7 +116,6 @@ int binrep = 0;
 }
 
 static void setdirection(){
-                                \
   step.dy = step.y3 - step.yl;
   if(step.dy < 0) step.yo = -1;
   else step.yo = 1;
@@ -113,15 +130,19 @@ static void setdirection(){
   else {step.fxy = step.dy - step.dx; step.fm=1;}
 }
 
+
 void doline(){
   step.stepnum = step.x2 = step.y2 = step.fxy = 0;
   setdirection();
   while(DMA_IsOn(1));
   dma_printf("%s","\nStep\tFXY\tX2\tY2\t\tXO\tYO\toutput\tacc_val\tdrag\toil\n");
+  RestartTmr8();
   while ( (step.dx > step.x2) && (step.dy > step.y2)){ // at endpoint?
-     _delay_();
-     //if(!T8IE_bit){T8IE_bit = true;TMR8 =
      out = 0;
+     while(!step.move){
+      ;//_delay_();
+     }
+     step.move = false;
      if(!step.fm){
          ++step.x2; step.fxy -= step.dy;
          bit_true(out,bit(0));
@@ -142,4 +163,33 @@ void doline(){
                ,step.stepnum++,step.fxy,step.x2,
                step.y2,step.xo,step.yo,out,acc_val,drag,oil);
   }
+  StopTmr8();
 }
+
+/*
+void _delay_(){
+static long ii;
+static int i = 0;
+
+ acc_val = abs((feedrate + drag) << 2 ); // divide by 4
+ acc_val <<= 8;
+ ii = setUsec(0);
+ while (getUsec() <= (long)acc_val)continue;
+*/
+/* falls off exponentially */
+// if(i < 10){
+ /* drag increases the delay at the beginning */
+ /* to allow for inertia in machine startup */
+ /*  drag = drag - (oil * oil);
+   --oil;
+ }else if(i > 40){
+   ++oil;
+   drag = drag + (oil * oil);
+ }
+ i++;
+ if (drag < 0) drag = 0;
+ if(i == 40)oil = 0;
+ drag = (drag > 100)? 100:drag;
+
+}
+*/
