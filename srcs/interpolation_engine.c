@@ -20,6 +20,11 @@
 #include "peripheral/gpio/plib_gpio.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 // *****************************************************************************
 // Local Variables
@@ -168,6 +173,12 @@ bool INTERP_PlanLinearMove(position_t start, position_t end, float feed_rate)
         return false;
     }
     
+    // CHECK SOFT LIMITS BEFORE MOTION PLANNING
+    if (!INTERP_CheckSoftLimits(end)) {
+        printf("Linear move rejected - soft limit violation\n");
+        return false; // Move violates soft limits
+    }
+    
     // Calculate motion parameters
     interp_context.motion.start_position = start;
     interp_context.motion.end_position = end;
@@ -301,8 +312,12 @@ bool INTERP_ExecuteMove(void)
     interp_context.motion.distance_traveled = 0.0f;
     motion_start_time = TMR1_CounterGet();
     
+    // START STEP PULSE GENERATION - this enables the OCR hardware
+    INTERP_StartStepGeneration();
+    
     printf("Executing planner block %d: %.2f mm at %.1f mm/min\n", 
            current_block->block_id, current_block->distance, current_block->nominal_speed);
+    printf("Step pulse generation STARTED\n");
     
     return true;
 }
@@ -319,12 +334,178 @@ void INTERP_StopMotion(void)
     interp_context.motion.emergency_stop = false;
     interp_context.motion.feed_hold = false;
     
+    // STOP STEP PULSE GENERATION - this disables the OCR hardware
+    INTERP_StopStepGeneration();
+    
     // Reset step generation
     for (int i = 0; i < INTERP_MAX_AXES; i++) {
         interp_context.steps.step_active[i] = false;
     }
     
-    printf("Motion stopped\n");
+    printf("Motion stopped - step pulse generation STOPPED\n");
+}
+
+// *****************************************************************************
+// Limit Switch and Safety Functions
+// *****************************************************************************
+
+void INTERP_StopSingleAxis(axis_id_t axis, const char* reason)
+{
+    if (axis >= INTERP_MAX_AXES) return;
+    
+    printf("STOPPING AXIS %c: %s\n", (axis == AXIS_X) ? 'X' : 
+                                      (axis == AXIS_Y) ? 'Y' : 
+                                      (axis == AXIS_Z) ? 'Z' : 'A', reason);
+    
+    // Immediately stop step generation for this specific axis
+    INTERP_SetAxisStepRate(axis, 0.0f);
+    
+    // Disable OCR module for this axis specifically
+    switch (axis) {
+        case AXIS_X:
+            OCMP1_Disable(); // Stop X-axis pulse generation immediately
+            printf("X-axis OCR1 DISABLED - No more pulses\n");
+            break;
+        case AXIS_Y:
+            OCMP4_Disable(); // Stop Y-axis pulse generation immediately
+            printf("Y-axis OCR4 DISABLED - No more pulses\n");
+            break;
+        case AXIS_Z:
+            OCMP5_Disable(); // Stop Z-axis pulse generation immediately
+            printf("Z-axis OCR5 DISABLED - No more pulses\n");
+            break;
+        case AXIS_A:
+            // A-axis would use OCMP2 or OCMP3 when implemented
+            printf("A-axis stopped (OCR not yet configured)\n");
+            break;
+    }
+    
+    // Mark axis as stopped
+    interp_context.steps.step_active[axis] = false;
+    interp_context.steps.step_frequency[axis] = 0.0f;
+    
+    // Trigger error callback if registered
+    if (interp_context.error_callback) {
+        char error_msg[100];
+        snprintf(error_msg, sizeof(error_msg), "Axis %c limit hit: %s", 
+                (axis == AXIS_X) ? 'X' : (axis == AXIS_Y) ? 'Y' : 
+                (axis == AXIS_Z) ? 'Z' : 'A', reason);
+        interp_context.error_callback(error_msg);
+    }
+}
+
+void INTERP_HandleHardLimit(axis_id_t axis, bool min_limit, bool max_limit)
+{
+    // Hard limit switch has been triggered - IMMEDIATE STOP required
+    
+    if (min_limit) {
+        printf("HARD LIMIT HIT: Axis %c MINIMUM limit switch triggered!\n", 
+               (axis == AXIS_X) ? 'X' : (axis == AXIS_Y) ? 'Y' : 
+               (axis == AXIS_Z) ? 'Z' : 'A');
+        INTERP_StopSingleAxis(axis, "Hard limit - MIN switch");
+        
+        // Set alarm state - motion must be reset before continuing
+        interp_context.motion.state = MOTION_STATE_ALARM;
+    }
+    
+    if (max_limit) {
+        printf("HARD LIMIT HIT: Axis %c MAXIMUM limit switch triggered!\n", 
+               (axis == AXIS_X) ? 'X' : (axis == AXIS_Y) ? 'Y' : 
+               (axis == AXIS_Z) ? 'Z' : 'A');
+        INTERP_StopSingleAxis(axis, "Hard limit - MAX switch");
+        
+        // Set alarm state - motion must be reset before continuing
+        interp_context.motion.state = MOTION_STATE_ALARM;
+    }
+    
+    // Optional: Stop all motion if any hard limit is hit (GRBL behavior)
+    if (min_limit || max_limit) {
+        printf("Hard limit detected - stopping ALL motion for safety\n");
+        INTERP_EmergencyStop();
+    }
+}
+
+bool INTERP_CheckSoftLimits(position_t target_position)
+{
+    // Software limits - check before motion starts
+    // These should be set based on your machine's working envelope
+    
+    // Default soft limits (adjust for your machine)
+    const float soft_limits_min[INTERP_MAX_AXES] = {-200.0f, -200.0f, -100.0f, -360.0f}; // X,Y,Z,A mins
+    const float soft_limits_max[INTERP_MAX_AXES] = { 200.0f,  200.0f,   0.0f,  360.0f}; // X,Y,Z,A maxs
+    
+    bool limit_violated = false;
+    
+    // Check X-axis soft limits
+    if (target_position.x < soft_limits_min[AXIS_X]) {
+        printf("SOFT LIMIT VIOLATION: X-axis target %.2f < minimum %.2f\n", 
+               target_position.x, soft_limits_min[AXIS_X]);
+        limit_violated = true;
+    }
+    if (target_position.x > soft_limits_max[AXIS_X]) {
+        printf("SOFT LIMIT VIOLATION: X-axis target %.2f > maximum %.2f\n", 
+               target_position.x, soft_limits_max[AXIS_X]);
+        limit_violated = true;
+    }
+    
+    // Check Y-axis soft limits
+    if (target_position.y < soft_limits_min[AXIS_Y]) {
+        printf("SOFT LIMIT VIOLATION: Y-axis target %.2f < minimum %.2f\n", 
+               target_position.y, soft_limits_min[AXIS_Y]);
+        limit_violated = true;
+    }
+    if (target_position.y > soft_limits_max[AXIS_Y]) {
+        printf("SOFT LIMIT VIOLATION: Y-axis target %.2f > maximum %.2f\n", 
+               target_position.y, soft_limits_max[AXIS_Y]);
+        limit_violated = true;
+    }
+    
+    // Check Z-axis soft limits
+    if (target_position.z < soft_limits_min[AXIS_Z]) {
+        printf("SOFT LIMIT VIOLATION: Z-axis target %.2f < minimum %.2f\n", 
+               target_position.z, soft_limits_min[AXIS_Z]);
+        limit_violated = true;
+    }
+    if (target_position.z > soft_limits_max[AXIS_Z]) {
+        printf("SOFT LIMIT VIOLATION: Z-axis target %.2f > maximum %.2f\n", 
+               target_position.z, soft_limits_max[AXIS_Z]);
+        limit_violated = true;
+    }
+    
+    if (limit_violated) {
+        if (interp_context.error_callback) {
+            interp_context.error_callback("Soft limit violation - move rejected");
+        }
+        return false; // Reject the move
+    }
+    
+    return true; // Move is within soft limits
+}
+
+void INTERP_LimitSwitchISR(axis_id_t axis, bool min_switch_state, bool max_switch_state)
+{
+    // This function should be called from GPIO interrupt service routine
+    // when limit switch pins change state
+    
+    // Debounce check - only act on switch closure (low state for normally-open switches)
+    static bool last_min_state[INTERP_MAX_AXES] = {true, true, true, true};
+    static bool last_max_state[INTERP_MAX_AXES] = {true, true, true, true};
+    
+    // Check for min limit switch activation (transition from high to low)
+    if (last_min_state[axis] && !min_switch_state) {
+        // Min limit switch just closed - STOP IMMEDIATELY
+        INTERP_HandleHardLimit(axis, true, false);
+    }
+    
+    // Check for max limit switch activation (transition from high to low)
+    if (last_max_state[axis] && !max_switch_state) {
+        // Max limit switch just closed - STOP IMMEDIATELY
+        INTERP_HandleHardLimit(axis, false, true);
+    }
+    
+    // Update last states for debouncing
+    last_min_state[axis] = min_switch_state;
+    last_max_state[axis] = max_switch_state;
 }
 
 // *****************************************************************************
@@ -336,6 +517,9 @@ void INTERP_EmergencyStop(void)
     interp_context.motion.emergency_stop = true;
     interp_context.motion.state = MOTION_STATE_IDLE;
     
+    // IMMEDIATELY STOP ALL STEP GENERATION - hardware emergency stop
+    INTERP_StopStepGeneration();
+    
     // Immediately stop all step generation
     for (int i = 0; i < INTERP_MAX_AXES; i++) {
         interp_context.steps.step_active[i] = false;
@@ -346,7 +530,28 @@ void INTERP_EmergencyStop(void)
         interp_context.error_callback("Emergency stop activated");
     }
     
-    printf("EMERGENCY STOP ACTIVATED\n");
+    printf("EMERGENCY STOP ACTIVATED - ALL PULSE GENERATION STOPPED\n");
+}
+
+void INTERP_ClearAlarmState(void)
+{
+    /* Clear alarm state after emergency stop or limit switch trigger */
+    interp_context.motion.emergency_stop = false;
+    interp_context.motion.state = MOTION_STATE_IDLE;
+    
+    /* Clear planner buffer */
+    interp_context.planner.head = 0;
+    interp_context.planner.tail = 0;
+    interp_context.planner.count = 0;
+    
+    /* Reset motion state and clear any step generation */
+    INTERP_StopStepGeneration();
+    
+    if (interp_context.error_callback) {
+        interp_context.error_callback("Alarm state cleared");
+    }
+    
+    printf("ALARM STATE CLEARED - SYSTEM READY\n");
 }
 
 void INTERP_FeedHold(bool hold)
@@ -522,10 +727,212 @@ bool INTERP_ConfigureTimer1(void)
 
 bool INTERP_ConfigureOCRModules(void)
 {
-    // OCR modules should already be configured by Harmony
-    // They will be used for precise step pulse generation
+    // Configure OCR modules for continuous pulse mode step generation
+    // Each OCR module generates precise step pulses for one axis
+    
+    // CRITICAL: OCR modules must be configured in Harmony MCC as:
+    // - Mode: "Dual Compare Continuous Pulse" or "PWM Mode"
+    // - Timer Source: Timer2 (OCMP1), Timer3 (OCMP4), Timer4 (OCMP5)
+    // - Output Pin: Enable external pin output
+    
+    printf("Configuring OCR modules for step pulse generation...\n");
+    
+    // OCR Module Mapping:
+    // X-axis → OCMP1 → PulseX (RD4) - Timer 2 based
+    // Y-axis → OCMP4 → PulseY (RD5) - Timer 3 based  
+    // Z-axis → OCMP5 → PulseZ (RF0) - Timer 4 based
+    
+    // Initialize OCR modules - they should be configured by Harmony but verify
+    OCMP1_Initialize();
+    OCMP4_Initialize(); 
+    OCMP5_Initialize();
+    
+    // Set initial values for stopped state (maximum period)
+    // In PWM mode: CompareValue = pulse width, SecondaryValue = period
+    OCMP1_CompareValueSet(1);        // Minimum pulse width (1 timer tick)
+    OCMP1_CompareSecondaryValueSet(65535); // Maximum period (stopped)
+    
+    OCMP4_CompareValueSet(1);        
+    OCMP4_CompareSecondaryValueSet(65535); 
+    
+    OCMP5_CompareValueSet(1);        
+    OCMP5_CompareSecondaryValueSet(65535);
+    
+    // Enable OCR modules - this STARTS pulse generation
+    // Note: Pulses will be very slow initially (65535 period = ~65ms pulses)
+    OCMP1_Enable();  // Enable X-axis pulse generation
+    OCMP4_Enable();  // Enable Y-axis pulse generation  
+    OCMP5_Enable();  // Enable Z-axis pulse generation
+    
+    // Initialize step timing parameters
+    for (int i = 0; i < INTERP_MAX_AXES; i++) {
+        interp_context.steps.step_period[i] = 65535; // Maximum period (stopped)
+        interp_context.steps.step_frequency[i] = 0.0f;
+        interp_context.steps.next_step_time[i] = 0;
+        interp_context.steps.bresenham_error[i] = 0;
+        interp_context.steps.bresenham_delta[i] = 0;
+    }
+    
+    printf("OCR modules enabled - continuous pulse generation active\n");
+    printf("X-axis: OCMP1 on pin RD4\n");
+    printf("Y-axis: OCMP4 on pin RD5\n"); 
+    printf("Z-axis: OCMP5 on pin RF0\n");
+    printf("Initial pulse rate: ~15 Hz (very slow for safety)\n");
     
     return true;
+}
+
+static void update_step_rates(void)
+{
+    // Calculate required step rates for each axis based on current velocity
+    // This is called continuously during motion execution
+    
+    if (interp_context.motion.state == MOTION_STATE_IDLE || 
+        interp_context.motion.state == MOTION_STATE_COMPLETE) {
+        // Stop all axes
+        for (int i = 0; i < INTERP_MAX_AXES; i++) {
+            INTERP_SetAxisStepRate((axis_id_t)i, 0.0f);
+        }
+        return;
+    }
+    
+    // Get current velocity vector
+    velocity_t current_velocity = interp_context.motion.current_velocity;
+    
+    // Convert velocity to steps per second for each axis (use default steps/mm if not configured)
+    float steps_per_mm_x = 200.0f; // Default steps/mm for X axis
+    float steps_per_mm_y = 200.0f; // Default steps/mm for Y axis  
+    float steps_per_mm_z = 200.0f; // Default steps/mm for Z axis
+    float steps_per_mm_a = 200.0f; // Default steps/mm for A axis
+    
+    float x_steps_per_sec = fabsf(current_velocity.x) * steps_per_mm_x;
+    float y_steps_per_sec = fabsf(current_velocity.y) * steps_per_mm_y;
+    float z_steps_per_sec = fabsf(current_velocity.z) * steps_per_mm_z;
+    float a_steps_per_sec = fabsf(current_velocity.magnitude) * steps_per_mm_a; // Use magnitude for A-axis
+    
+    // Update step rates for each axis
+    INTERP_SetAxisStepRate(AXIS_X, x_steps_per_sec);
+    INTERP_SetAxisStepRate(AXIS_Y, y_steps_per_sec);
+    INTERP_SetAxisStepRate(AXIS_Z, z_steps_per_sec);
+    INTERP_SetAxisStepRate(AXIS_A, a_steps_per_sec);
+    
+    // Update step directions
+    INTERP_SetStepDirection(AXIS_X, current_velocity.x >= 0.0f);
+    INTERP_SetStepDirection(AXIS_Y, current_velocity.y >= 0.0f);
+    INTERP_SetStepDirection(AXIS_Z, current_velocity.z >= 0.0f);
+    INTERP_SetStepDirection(AXIS_A, current_velocity.magnitude >= 0.0f);
+}
+
+void INTERP_SetAxisStepRate(axis_id_t axis, float steps_per_second)
+{
+    if (axis >= INTERP_MAX_AXES) return;
+    
+    interp_context.steps.step_frequency[axis] = steps_per_second;
+    
+    if (steps_per_second < 1.0f) {
+        // Stop the axis by setting maximum period
+        interp_context.steps.step_period[axis] = 65535;
+        
+        switch (axis) {
+            case AXIS_X:
+                // Stop X-axis pulses by setting very long period
+                OCMP1_CompareSecondaryValueSet(65535); // 65.535ms period = ~15Hz
+                printf("X-axis stopped\n");
+                break;
+            case AXIS_Y:
+                // Stop Y-axis pulses
+                OCMP4_CompareSecondaryValueSet(65535);
+                printf("Y-axis stopped\n");
+                break;
+            case AXIS_Z:
+                // Stop Z-axis pulses
+                OCMP5_CompareSecondaryValueSet(65535);
+                printf("Z-axis stopped\n");
+                break;
+            default:
+                break;
+        }
+    } else {
+        // Calculate OCR period for desired step frequency
+        // Timer frequency = 1MHz (1μs resolution)
+        // Period = Timer_Freq / Step_Freq
+        uint32_t period = (uint32_t)(1000000.0f / steps_per_second);
+        
+        // Clamp period to valid range
+        if (period < 100) period = 100;     // Maximum 10kHz step rate
+        if (period > 65535) period = 65535; // Minimum ~15Hz step rate
+        
+        interp_context.steps.step_period[axis] = period;
+        
+        // Configure OCR module for continuous pulse generation
+        switch (axis) {
+            case AXIS_X:
+                // Configure OCMP1 period for X-axis step rate
+                OCMP1_CompareValueSet(period / 2);      // 50% duty cycle
+                OCMP1_CompareSecondaryValueSet(period); // Period = 1/frequency
+                // Note: OCMP1 is already enabled, just changing the timing
+                printf("X-axis: %.1f steps/sec (period=%u)\n", steps_per_second, (unsigned int)period);
+                break;
+                
+            case AXIS_Y:
+                // Configure OCMP4 period for Y-axis step rate  
+                OCMP4_CompareValueSet(period / 2);
+                OCMP4_CompareSecondaryValueSet(period);
+                printf("Y-axis: %.1f steps/sec (period=%u)\n", steps_per_second, (unsigned int)period);
+                break;
+                
+            case AXIS_Z:
+                // Configure OCMP5 period for Z-axis step rate
+                OCMP5_CompareValueSet(period / 2);
+                OCMP5_CompareSecondaryValueSet(period);
+                printf("Z-axis: %.1f steps/sec (period=%u)\n", steps_per_second, (unsigned int)period);
+                break;
+                
+            default:
+                break;
+        }
+    }
+}
+
+void INTERP_StartStepGeneration(void)
+{
+    // This function starts ALL step generation
+    // Called when motion begins
+    
+    printf("Starting step pulse generation on all axes\n");
+    
+    // Enable all OCR modules - this starts the hardware pulse generation
+    OCMP1_Enable();  // X-axis pulse generation ON
+    OCMP4_Enable();  // Y-axis pulse generation ON
+    OCMP5_Enable();  // Z-axis pulse generation ON
+    
+    printf("Hardware step pulse generation ACTIVE\n");
+}
+
+void INTERP_StopStepGeneration(void)
+{
+    // This function stops ALL step generation
+    // Called for emergency stop or end of motion
+    
+    printf("Stopping step pulse generation on all axes\n");
+    
+    // Method 1: Disable OCR modules completely
+    OCMP1_Disable(); // X-axis pulse generation OFF
+    OCMP4_Disable(); // Y-axis pulse generation OFF
+    OCMP5_Disable(); // Z-axis pulse generation OFF
+    
+    // Method 2: Alternative - set very long periods to effectively stop
+    // OCMP1_CompareSecondaryValueSet(65535);
+    // OCMP4_CompareSecondaryValueSet(65535);
+    // OCMP5_CompareSecondaryValueSet(65535);
+    
+    // Reset step frequencies
+    for (int i = 0; i < INTERP_MAX_AXES; i++) {
+        interp_context.steps.step_frequency[i] = 0.0f;
+        interp_context.steps.step_period[i] = 65535;
+    }
+    
+    printf("Hardware step pulse generation STOPPED\n");
 }
 
 bool INTERP_ConfigureStepperGPIO(void)
@@ -772,15 +1179,32 @@ static void update_motion_state(void)
 
 static void generate_step_signals(void)
 {
-    // Simple step generation based on current position
-    // TODO: Implement proper step timing and pulse generation
+    // Real-time step signal generation using OCRx continuous pulse mode
+    // This function runs at 1kHz from Timer1 ISR
     
+    // Update step rates based on current motion profile
+    update_step_rates();
+    
+    // For linear interpolation: OCRx modules handle step generation automatically
+    // For arc interpolation: OCRx modules handle individual axis rates
+    
+    // The OCRx modules are now configured for continuous pulse generation:
+    // - OCMP1: X-axis step pulses at calculated frequency
+    // - OCMP4: Y-axis step pulses at calculated frequency  
+    // - OCMP5: Z-axis step pulses at calculated frequency
+    
+    // Multi-axis coordination is achieved by:
+    // 1. Calculate velocity vector from motion profile (S-curve/trapezoidal)
+    // 2. Convert velocity components to steps/sec for each axis
+    // 3. Update OCRx periods to generate pulses at required rates
+    // 4. Direction pins set based on velocity vector direction
+    
+    // Step counting for position feedback
     for (int i = 0; i < INTERP_MAX_AXES; i++) {
-        if (interp_context.steps.delta_steps[i] > 0) {
-            // Generate step pulse
-            INTERP_GenerateStepPulse((axis_id_t)i);
-            interp_context.steps.step_count[i]++;
-            interp_context.steps.delta_steps[i]--;
+        if (interp_context.steps.step_frequency[i] > 1.0f) {
+            // Estimate steps generated since last update (1ms)
+            float steps_this_period = interp_context.steps.step_frequency[i] / 1000.0f;
+            interp_context.steps.step_count[i] += (uint32_t)(steps_this_period + 0.5f);
             interp_context.total_steps_generated++;
         }
     }
@@ -1366,6 +1790,323 @@ static void reset_motion_state(void)
         interp_context.steps.delta_steps[i] = 0;
         interp_context.steps.step_active[i] = false;
     }
+}
+
+// *****************************************************************************
+// Arc Interpolation Implementation
+// *****************************************************************************
+
+bool INTERP_CalculateArcParameters(arc_parameters_t *arc)
+{
+    if (!arc) return false;
+    
+    // Calculate arc center based on format
+    if (arc->format == ARC_FORMAT_IJK) {
+        // I,J,K offset format - center relative to start point
+        arc->center.x = arc->start.x + arc->i_offset;
+        arc->center.y = arc->start.y + arc->j_offset;
+        arc->center.z = arc->start.z + arc->k_offset;
+        arc->center.a = arc->start.a; // A-axis doesn't participate in arc center
+        
+        // Calculate radius from start to center
+        float dx = arc->start.x - arc->center.x;
+        float dy = arc->start.y - arc->center.y;
+        float dz = arc->start.z - arc->center.z;
+        arc->radius = sqrtf(dx*dx + dy*dy + dz*dz);
+        
+    } else if (arc->format == ARC_FORMAT_RADIUS) {
+        // R radius format - calculate center position
+        arc->radius = fabsf(arc->r_radius);
+        
+        // Calculate center using chord midpoint and perpendicular distance
+        float dx = arc->end.x - arc->start.x;
+        float dy = arc->end.y - arc->start.y;
+        float chord_length = sqrtf(dx*dx + dy*dy);
+        
+        if (chord_length > 2.0f * arc->radius) {
+            return false; // Impossible arc - chord longer than diameter
+        }
+        
+        // Distance from chord midpoint to arc center
+        float h = sqrtf(arc->radius * arc->radius - (chord_length/2.0f) * (chord_length/2.0f));
+        
+        // Chord midpoint
+        float mid_x = (arc->start.x + arc->end.x) / 2.0f;
+        float mid_y = (arc->start.y + arc->end.y) / 2.0f;
+        
+        // Unit vector perpendicular to chord
+        float perp_x = -dy / chord_length;
+        float perp_y = dx / chord_length;
+        
+        // Choose arc center based on direction and radius sign
+        bool large_arc = (arc->r_radius < 0.0f);
+        if ((arc->direction == ARC_DIRECTION_CW && !large_arc) || 
+            (arc->direction == ARC_DIRECTION_CCW && large_arc)) {
+            h = -h; // Flip to other side
+        }
+        
+        arc->center.x = mid_x + h * perp_x;
+        arc->center.y = mid_y + h * perp_y;
+        arc->center.z = arc->start.z; // Assume planar arc for R format
+        arc->center.a = arc->start.a;
+    } else {
+        return false; // Invalid format
+    }
+    
+    // Calculate start and end angles
+    arc->start_angle = atan2f(arc->start.y - arc->center.y, arc->start.x - arc->center.x);
+    arc->end_angle = atan2f(arc->end.y - arc->center.y, arc->end.x - arc->center.x);
+    
+    // Calculate total angle considering direction
+    if (arc->direction == ARC_DIRECTION_CCW) {
+        // Counter-clockwise
+        if (arc->end_angle <= arc->start_angle) {
+            arc->total_angle = arc->end_angle - arc->start_angle + 2.0f * M_PI;
+        } else {
+            arc->total_angle = arc->end_angle - arc->start_angle;
+        }
+    } else {
+        // Clockwise
+        if (arc->end_angle >= arc->start_angle) {
+            arc->total_angle = arc->end_angle - arc->start_angle - 2.0f * M_PI;
+        } else {
+            arc->total_angle = arc->end_angle - arc->start_angle;
+        }
+        arc->total_angle = -arc->total_angle; // Make positive for calculations
+    }
+    
+    // Calculate arc length
+    arc->arc_length = arc->radius * fabsf(arc->total_angle);
+    
+    // Add Z-axis (helical) component if present
+    float dz = arc->end.z - arc->start.z;
+    if (fabsf(dz) > INTERP_POSITION_TOLERANCE) {
+        arc->arc_length = sqrtf(arc->arc_length * arc->arc_length + dz * dz);
+    }
+    
+    return true;
+}
+
+bool INTERP_ValidateArcGeometry(arc_parameters_t *arc)
+{
+    if (!arc) return false;
+    
+    // Check minimum radius
+    if (arc->radius < 0.001f) {
+        return false; // Radius too small
+    }
+    
+    // Check maximum radius (prevent numerical issues)
+    if (arc->radius > 1000.0f) {
+        return false; // Radius too large
+    }
+    
+    // Verify start and end points are approximately on the circle
+    float start_radius = sqrtf(
+        (arc->start.x - arc->center.x) * (arc->start.x - arc->center.x) +
+        (arc->start.y - arc->center.y) * (arc->start.y - arc->center.y)
+    );
+    
+    float end_radius = sqrtf(
+        (arc->end.x - arc->center.x) * (arc->end.x - arc->center.x) +
+        (arc->end.y - arc->center.y) * (arc->end.y - arc->center.y)
+    );
+    
+    float radius_tolerance = fmaxf(0.001f, arc->tolerance);
+    
+    if (fabsf(start_radius - arc->radius) > radius_tolerance ||
+        fabsf(end_radius - arc->radius) > radius_tolerance) {
+        return false; // Points not on circle
+    }
+    
+    // Check for reasonable arc angle
+    if (fabsf(arc->total_angle) > 4.0f * M_PI) {
+        return false; // More than 2 full circles
+    }
+    
+    return true;
+}
+
+position_t INTERP_CalculateArcPoint(arc_parameters_t *arc, float angle)
+{
+    position_t point;
+    
+    // Calculate X,Y position on arc
+    point.x = arc->center.x + arc->radius * cosf(angle);
+    point.y = arc->center.y + arc->radius * sinf(angle);
+    
+    // Linear interpolation for Z (helical motion)
+    float angle_progress = (angle - arc->start_angle) / arc->total_angle;
+    if (arc->direction == ARC_DIRECTION_CW) {
+        angle_progress = (arc->start_angle - angle) / arc->total_angle;
+    }
+    
+    point.z = arc->start.z + (arc->end.z - arc->start.z) * angle_progress;
+    point.a = arc->start.a + (arc->end.a - arc->start.a) * angle_progress;
+    
+    return point;
+}
+
+bool INTERP_SegmentArc(arc_parameters_t *arc, position_t segments[], uint16_t max_segments)
+{
+    if (!arc || !segments || max_segments == 0) {
+        return false;
+    }
+    
+    // Calculate number of segments based on arc tolerance
+    // Use GRBL-style segmentation: segments = arc_length / (2 * sqrt(2 * tolerance * radius))
+    float segment_length = 2.0f * sqrtf(2.0f * arc->tolerance * arc->radius);
+    arc->num_segments = (uint16_t)(arc->arc_length / segment_length) + 1;
+    
+    // Limit to maximum segments
+    if (arc->num_segments > max_segments) {
+        arc->num_segments = max_segments;
+    }
+    
+    // Minimum segments for any arc
+    if (arc->num_segments < 3) {
+        arc->num_segments = 3;
+    }
+    
+    // Calculate angle increment
+    float angle_increment = arc->total_angle / (float)(arc->num_segments - 1);
+    if (arc->direction == ARC_DIRECTION_CW) {
+        angle_increment = -angle_increment;
+    }
+    
+    // Generate segment points
+    for (uint16_t i = 0; i < arc->num_segments; i++) {
+        float angle = arc->start_angle + (float)i * angle_increment;
+        segments[i] = INTERP_CalculateArcPoint(arc, angle);
+    }
+    
+    // Ensure last point exactly matches end position
+    segments[arc->num_segments - 1] = arc->end;
+    
+    return true;
+}
+
+bool INTERP_PlanArcMove(position_t start, position_t end, float i, float j, float k, 
+                       arc_direction_t direction, float feed_rate)
+{
+    if (!interp_context.initialized || !interp_context.enabled) {
+        return false;
+    }
+    
+    // Validate positions
+    if (!INTERP_IsPositionValid(start) || !INTERP_IsPositionValid(end)) {
+        return false;
+    }
+    
+    // Set up arc parameters
+    arc_parameters_t arc;
+    memset(&arc, 0, sizeof(arc_parameters_t));
+    
+    arc.start = start;
+    arc.end = end;
+    arc.i_offset = i;
+    arc.j_offset = j;
+    arc.k_offset = k;
+    arc.direction = direction;
+    arc.format = ARC_FORMAT_IJK;
+    arc.tolerance = 0.002f; // Default arc tolerance (GRBL $12 setting)
+    
+    // Calculate arc parameters
+    if (!INTERP_CalculateArcParameters(&arc)) {
+        return false;
+    }
+    
+    // Validate arc geometry
+    if (!INTERP_ValidateArcGeometry(&arc)) {
+        return false;
+    }
+    
+    // Segment the arc into linear moves
+    position_t segments[64]; // Maximum 64 segments per arc
+    if (!INTERP_SegmentArc(&arc, segments, 64)) {
+        return false;
+    }
+    
+    // Add arc segments to planner buffer
+    for (uint16_t i = 0; i < arc.num_segments - 1; i++) {
+        if (!INTERP_PlannerAddBlock(segments[i], segments[i + 1], feed_rate, MOTION_PROFILE_S_CURVE)) {
+            return false; // Buffer full
+        }
+    }
+    
+    printf("Arc move planned: %.2f mm radius, %.1f degrees, %d segments\n", 
+           arc.radius, fabsf(arc.total_angle) * 180.0f / M_PI, arc.num_segments);
+    
+    return true;
+}
+
+bool INTERP_PlanArcMoveRadius(position_t start, position_t end, float radius, 
+                             arc_direction_t direction, float feed_rate)
+{
+    if (!interp_context.initialized || !interp_context.enabled) {
+        return false;
+    }
+    
+    // Validate positions
+    if (!INTERP_IsPositionValid(start) || !INTERP_IsPositionValid(end)) {
+        return false;
+    }
+    
+    // Set up arc parameters
+    arc_parameters_t arc;
+    memset(&arc, 0, sizeof(arc_parameters_t));
+    
+    arc.start = start;
+    arc.end = end;
+    arc.r_radius = radius;
+    arc.direction = direction;
+    arc.format = ARC_FORMAT_RADIUS;
+    arc.tolerance = 0.002f; // Default arc tolerance
+    
+    // Calculate arc parameters
+    if (!INTERP_CalculateArcParameters(&arc)) {
+        return false;
+    }
+    
+    // Validate arc geometry
+    if (!INTERP_ValidateArcGeometry(&arc)) {
+        return false;
+    }
+    
+    // Segment the arc into linear moves
+    position_t segments[64];
+    if (!INTERP_SegmentArc(&arc, segments, 64)) {
+        return false;
+    }
+    
+    // Add arc segments to planner buffer
+    for (uint16_t i = 0; i < arc.num_segments - 1; i++) {
+        if (!INTERP_PlannerAddBlock(segments[i], segments[i + 1], feed_rate, MOTION_PROFILE_S_CURVE)) {
+            return false; // Buffer full
+        }
+    }
+    
+    printf("Arc move (R format) planned: %.2f mm radius, %.1f degrees, %d segments\n", 
+           arc.radius, fabsf(arc.total_angle) * 180.0f / M_PI, arc.num_segments);
+    
+    return true;
+}
+
+// *****************************************************************************
+// Step Rate Control Functions - OCRx Integration
+// *****************************************************************************
+
+float INTERP_GetAxisStepRate(axis_id_t axis)
+{
+    if (axis >= INTERP_MAX_AXES) return 0.0f;
+    
+    return interp_context.steps.step_frequency[axis];
+}
+
+void INTERP_UpdateStepRates(void)
+{
+    // Public function to update step rates - calls internal update_step_rates()
+    update_step_rates();
 }
 
 /*******************************************************************************

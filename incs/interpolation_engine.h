@@ -53,7 +53,8 @@ typedef enum {
     MOTION_STATE_CONSTANT_VELOCITY,
     MOTION_STATE_DECELERATING,
     MOTION_STATE_COMPLETE,
-    MOTION_STATE_ERROR
+    MOTION_STATE_ERROR,
+    MOTION_STATE_ALARM
 } motion_state_t;
 
 /* Motion Profile Types */
@@ -62,6 +63,18 @@ typedef enum {
     MOTION_PROFILE_S_CURVE,
     MOTION_PROFILE_LINEAR
 } motion_profile_type_t;
+
+/* Arc Interpolation Types */
+typedef enum {
+    ARC_DIRECTION_CW = 0,      // G2 - Clockwise
+    ARC_DIRECTION_CCW = 1      // G3 - Counter-clockwise
+} arc_direction_t;
+
+/* Arc Definition Methods */
+typedef enum {
+    ARC_FORMAT_IJK = 0,        // I,J,K offset format
+    ARC_FORMAT_RADIUS = 1      // R radius format
+} arc_format_t;
 
 /* Axis Configuration */
 typedef enum {
@@ -84,6 +97,33 @@ typedef struct {
     float z;
     float a;    // 4th axis (rotational)
 } position_t;
+
+/* Arc Parameters */
+typedef struct {
+    position_t start;           // Arc start position
+    position_t end;             // Arc end position
+    position_t center;          // Arc center position (calculated)
+    
+    float radius;               // Arc radius
+    float start_angle;          // Start angle in radians
+    float end_angle;            // End angle in radians
+    float total_angle;          // Total arc angle (signed)
+    float arc_length;           // Total arc length
+    
+    arc_direction_t direction;  // Clockwise or counter-clockwise
+    arc_format_t format;        // IJK offset or R radius format
+    
+    /* Input parameters */
+    float i_offset;             // I offset (X center offset)
+    float j_offset;             // J offset (Y center offset) 
+    float k_offset;             // K offset (Z center offset)
+    float r_radius;             // R radius (alternative format)
+    
+    /* Segmentation parameters */
+    float tolerance;            // Arc tolerance for segmentation
+    uint16_t num_segments;      // Number of linear segments
+    float segment_length;       // Length of each segment
+} arc_parameters_t;
 
 /* Velocity Vector */
 typedef struct {
@@ -125,6 +165,14 @@ typedef struct {
     
     uint32_t step_period_us[INTERP_MAX_AXES];   // Microseconds between steps
     uint32_t next_step_time[INTERP_MAX_AXES];   // Next step timestamp
+    
+    /* OCRx Continuous Pulse Mode Control */
+    uint32_t step_period[INTERP_MAX_AXES];      // OCRx period value for step frequency
+    float step_frequency[INTERP_MAX_AXES];      // Current step frequency (steps/sec)
+    
+    /* Bresenham Line Algorithm for Multi-Axis Coordination */
+    int32_t bresenham_error[INTERP_MAX_AXES];   // Bresenham error accumulator
+    int32_t bresenham_delta[INTERP_MAX_AXES];   // Bresenham delta values
     
     bool direction[INTERP_MAX_AXES];            // Step direction
     bool step_active[INTERP_MAX_AXES];          // Step signal state
@@ -208,12 +256,17 @@ void INTERP_Shutdown(void);
 /* Motion Planning */
 bool INTERP_PlanLinearMove(position_t start, position_t end, float feed_rate);
 bool INTERP_PlanRapidMove(position_t start, position_t end);
+bool INTERP_PlanArcMove(position_t start, position_t end, float i, float j, float k, 
+                       arc_direction_t direction, float feed_rate);
+bool INTERP_PlanArcMoveRadius(position_t start, position_t end, float radius, 
+                             arc_direction_t direction, float feed_rate);
 bool INTERP_ExecuteMove(void);
 bool INTERP_IsMotionComplete(void);
 void INTERP_StopMotion(void);
 
 /* Real-time Control */
 void INTERP_EmergencyStop(void);
+void INTERP_ClearAlarmState(void);
 void INTERP_FeedHold(bool hold);
 void INTERP_OverrideFeedRate(float percentage);
 void INTERP_Tasks(void);                        // Call from Timer1 ISR or main loop
@@ -223,6 +276,19 @@ position_t INTERP_GetCurrentPosition(void);
 velocity_t INTERP_GetCurrentVelocity(void);
 motion_state_t INTERP_GetMotionState(void);
 float INTERP_GetMotionProgress(void);           // 0.0 to 1.0
+
+/* Step Rate Control - OCRx Integration */
+void INTERP_SetAxisStepRate(axis_id_t axis, float steps_per_second);
+float INTERP_GetAxisStepRate(axis_id_t axis);
+void INTERP_UpdateStepRates(void);
+void INTERP_StartStepGeneration(void);
+void INTERP_StopStepGeneration(void);
+
+/* Limit Switch and Safety Control */
+void INTERP_StopSingleAxis(axis_id_t axis, const char* reason);
+void INTERP_HandleHardLimit(axis_id_t axis, bool min_limit, bool max_limit);
+bool INTERP_CheckSoftLimits(position_t target_position);
+void INTERP_LimitSwitchISR(axis_id_t axis, bool min_switch_state, bool max_switch_state);
 
 /* Callback Registration */
 void INTERP_RegisterStepCallback(void (*callback)(axis_id_t axis, bool direction));
@@ -251,6 +317,13 @@ float INTERP_CalculateDistance(position_t start, position_t end);
 float INTERP_CalculateMoveTime(position_t start, position_t end, float feed_rate);
 bool INTERP_IsPositionValid(position_t position);
 void INTERP_LimitVelocity(velocity_t *velocity, float max_velocity);
+
+/* Arc Interpolation Utilities */
+bool INTERP_CalculateArcParameters(arc_parameters_t *arc);
+bool INTERP_SegmentArc(arc_parameters_t *arc, position_t segments[], uint16_t max_segments);
+float INTERP_CalculateArcLength(arc_parameters_t *arc);
+bool INTERP_ValidateArcGeometry(arc_parameters_t *arc);
+position_t INTERP_CalculateArcPoint(arc_parameters_t *arc, float angle);
 
 /* Diagnostics and Testing */
 void INTERP_PrintMotionParameters(void);

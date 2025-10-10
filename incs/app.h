@@ -39,6 +39,29 @@
 
 // *****************************************************************************
 // *****************************************************************************
+// Section: Configuration Defines
+// *****************************************************************************
+// *****************************************************************************
+
+// Enable arc interpolation testing - comment out to disable
+#define TEST_ARC_INTERPOLATION
+
+// *****************************************************************************
+// Limit Switch Pin Assignments
+// *****************************************************************************
+/* 
+ * Limit switch GPIO pins are defined in plib_gpio.h
+ * Pin assignments for this CNC controller (active low):
+ * GPIO_PIN_RA7  - X-axis negative limit
+ * GPIO_PIN_RA9  - X-axis positive limit
+ * GPIO_PIN_RA10 - Y-axis negative limit
+ * GPIO_PIN_RA14 - Y-axis positive limit
+ * GPIO_PIN_RA15 - Z-axis negative limit
+ * (Z-axis positive limit requires additional GPIO configuration)
+ */
+
+// *****************************************************************************
+// *****************************************************************************
 // Section: Type Definitions
 // *****************************************************************************
 // *****************************************************************************
@@ -358,6 +381,20 @@ void APP_EmergencyStop(void);
 
 /*******************************************************************************
   Function:
+    void APP_AlarmReset(void)
+
+  Summary:
+    Reset alarm state after limit switch trigger
+
+  Description:
+    This function clears the alarm state after verifying that all limit 
+    switches are released. Used to recover from hard limit triggers.
+*/
+
+void APP_AlarmReset(void);
+
+/*******************************************************************************
+  Function:
     void APP_ExecuteGcodeCommand(gcode_parsed_line_t *command)
 
   Summary:
@@ -404,6 +441,23 @@ void APP_HandleEmergencyStop(void);
 */
 
 void APP_SendStatusReport(void);
+
+/*******************************************************************************
+  Function:
+    void APP_TestArcInterpolation(void)
+
+  Summary:
+    Test arc interpolation functionality
+
+  Description:
+    This function demonstrates and tests the G2/G3 arc interpolation
+    capabilities including I,J,K offset format, R radius format,
+    and helical motion. Only compiled when TEST_ARC_INTERPOLATION is defined.
+*/
+
+#ifdef TEST_ARC_INTERPOLATION
+void APP_TestArcInterpolation(void);
+#endif
 
 // *****************************************************************************
 // *****************************************************************************
