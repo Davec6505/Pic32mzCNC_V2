@@ -61,6 +61,11 @@ bool INTERP_Initialize(void)
     interp_context.motion.acceleration = INTERP_MAX_ACCELERATION;
     interp_context.motion.deceleration = INTERP_MAX_ACCELERATION;
     
+    // Initialize look-ahead planner
+    INTERP_PlannerClearBuffer();
+    interp_context.planner.junction_deviation = INTERP_JUNCTION_DEVIATION;
+    interp_context.planner.minimum_planner_speed = INTERP_MIN_PLANNER_SPEED;
+    
     // Configure hardware peripherals
     if (!INTERP_ConfigureTimer1()) {
         return false;
@@ -219,15 +224,85 @@ bool INTERP_ExecuteMove(void)
         return false;
     }
     
+    // Check if we're already executing or if buffer is empty
     if (interp_context.motion.state != MOTION_STATE_IDLE) {
-        return false; // Motion already in progress
+        return false; // Already executing
     }
     
-    // Start the motion
-    interp_context.motion.state = MOTION_STATE_ACCELERATING;
-    motion_start_time = TMR1_CounterGet(); // Get current timer value
+    // Get next block from planner buffer
+    planner_block_t *current_block = INTERP_PlannerGetCurrentBlock();
+    if (!current_block) {
+        return false; // No blocks to execute
+    }
     
-    printf("Motion execution started\n");
+    // Optimize buffer before execution
+    INTERP_PlannerOptimizeBuffer();
+    
+    // Set up motion parameters from planner block
+    interp_context.motion.start_position = current_block->start_position;
+    interp_context.motion.end_position = current_block->end_position;
+    interp_context.motion.current_position = current_block->start_position;
+    interp_context.motion.target_velocity = current_block->nominal_speed;
+    interp_context.motion.profile_type = current_block->profile_type;
+    interp_context.motion.total_distance = current_block->distance;
+    
+    // Calculate motion timing based on profile
+    switch (current_block->profile_type) {
+        case MOTION_PROFILE_S_CURVE: {
+            scurve_profile_t scurve_profile;
+            if (INTERP_CalculateSCurveProfile(
+                    current_block->distance,
+                    current_block->nominal_speed,
+                    current_block->acceleration,
+                    INTERP_JERK_LIMIT,
+                    &scurve_profile)) {
+                
+                interp_context.motion.estimated_time = 
+                    2.0f * scurve_profile.jerk_time_accel +
+                    2.0f * scurve_profile.accel_time +
+                    scurve_profile.constant_velocity_time +
+                    2.0f * scurve_profile.jerk_time_decel;
+            }
+            break;
+        }
+        
+        case MOTION_PROFILE_TRAPEZOIDAL: {
+            trapezoidal_profile_t trap_profile;
+            if (INTERP_CalculateTrapezoidalProfile(
+                    current_block->distance,
+                    current_block->nominal_speed,
+                    current_block->acceleration,
+                    &trap_profile)) {
+                
+                interp_context.motion.estimated_time = 
+                    trap_profile.acceleration_time +
+                    trap_profile.constant_velocity_time +
+                    trap_profile.deceleration_time;
+            }
+            break;
+        }
+        
+        default:
+            interp_context.motion.estimated_time = current_block->distance / current_block->nominal_speed;
+            break;
+    }
+    
+    // Calculate step parameters
+    calculate_step_parameters();
+    
+    // Validate motion parameters
+    if (!validate_motion_parameters()) {
+        return false;
+    }
+    
+    // Start motion execution
+    interp_context.motion.state = MOTION_STATE_ACCELERATING;
+    interp_context.motion.time_elapsed = 0.0f;
+    interp_context.motion.distance_traveled = 0.0f;
+    motion_start_time = TMR1_CounterGet();
+    
+    printf("Executing planner block %d: %.2f mm at %.1f mm/min\n", 
+           current_block->block_id, current_block->distance, current_block->nominal_speed);
     
     return true;
 }
@@ -638,19 +713,30 @@ static void update_motion_state(void)
     float motion_progress = distance_progress / interp_context.motion.total_distance;
     
     if (motion_progress >= 1.0f) {
-        // Motion complete
+        // Motion complete - advance to next block in planner buffer
         interp_context.motion.state = MOTION_STATE_COMPLETE;
         interp_context.motion.current_position = interp_context.motion.end_position;
         interp_context.motion.distance_traveled = interp_context.motion.total_distance;
         interp_context.moves_completed++;
         
-        if (interp_context.motion_complete_callback) {
-            interp_context.motion_complete_callback();
-        }
+        // Remove completed block from planner buffer
+        INTERP_PlannerAdvanceBlock();
         
-        printf("Motion completed in %.2f seconds (%.1f mm/min avg)\n", 
-               interp_context.motion.time_elapsed,
-               (interp_context.motion.total_distance / interp_context.motion.time_elapsed) * 60.0f);
+        // Check if there are more blocks to execute
+        if (!INTERP_PlannerIsBufferEmpty()) {
+            // Automatically start next block for continuous motion
+            interp_context.motion.state = MOTION_STATE_IDLE;
+            INTERP_ExecuteMove(); // Start next block immediately
+        } else {
+            // All blocks completed
+            if (interp_context.motion_complete_callback) {
+                interp_context.motion_complete_callback();
+            }
+            
+            printf("All planner blocks completed in %.2f seconds (%.1f mm/min avg)\n", 
+                   interp_context.motion.time_elapsed,
+                   (interp_context.motion.total_distance / interp_context.motion.time_elapsed) * 60.0f);
+        }
     } else {
         // Update current position based on distance progress
         position_t start = interp_context.motion.start_position;
@@ -1040,6 +1126,230 @@ float INTERP_GetSCurvePosition(float time, const scurve_profile_t *profile)
     // Implementation continues with symmetric deceleration profile...
     
     return position;
+}
+
+// *****************************************************************************
+// Look-ahead Planner Implementation
+// *****************************************************************************
+
+bool INTERP_PlannerAddBlock(position_t start, position_t end, float feed_rate, motion_profile_type_t profile)
+{
+    if (!interp_context.initialized) {
+        return false;
+    }
+    
+    // Check if buffer is full
+    if (INTERP_PlannerIsBufferFull()) {
+        return false;
+    }
+    
+    // Get pointer to new block
+    planner_block_t *block = &interp_context.planner.blocks[interp_context.planner.head];
+    
+    // Clear the block
+    memset(block, 0, sizeof(planner_block_t));
+    
+    // Set basic block data
+    block->start_position = start;
+    block->end_position = end;
+    block->nominal_speed = feed_rate;
+    block->profile_type = profile;
+    block->block_id = interp_context.planner.head;
+    
+    // Calculate distance and unit vector
+    float dx = end.x - start.x;
+    float dy = end.y - start.y;
+    float dz = end.z - start.z;
+    float da = end.a - start.a;
+    
+    block->distance = sqrtf(dx*dx + dy*dy + dz*dz + da*da);
+    
+    if (block->distance < INTERP_POSITION_TOLERANCE) {
+        return false; // Block too small
+    }
+    
+    // Calculate unit vector
+    block->unit_vector[AXIS_X] = dx / block->distance;
+    block->unit_vector[AXIS_Y] = dy / block->distance;
+    block->unit_vector[AXIS_Z] = dz / block->distance;
+    block->unit_vector[AXIS_A] = da / block->distance;
+    
+    // Set acceleration limit (use minimum of all axes)
+    block->acceleration = interp_context.acceleration_per_axis[AXIS_X]; // Start with X
+    for (int i = 1; i < INTERP_MAX_AXES; i++) {
+        if (interp_context.acceleration_per_axis[i] < block->acceleration) {
+            block->acceleration = interp_context.acceleration_per_axis[i];
+        }
+    }
+    
+    // Initialize speeds
+    block->entry_speed = 0.0f;
+    block->exit_speed = 0.0f;
+    block->max_entry_speed = feed_rate;
+    
+    // Set flags
+    block->recalculate_flag = true;
+    block->nominal_length_flag = false;
+    block->entry_speed_max = false;
+    
+    // Add block to buffer
+    interp_context.planner.head = (interp_context.planner.head + 1) % INTERP_PLANNER_BUFFER_SIZE;
+    interp_context.planner.count++;
+    
+    // Mark buffer for recalculation
+    interp_context.planner.recalculate_needed = true;
+    
+    return true;
+}
+
+bool INTERP_PlannerIsBufferFull(void)
+{
+    return (interp_context.planner.count >= INTERP_PLANNER_BUFFER_SIZE);
+}
+
+bool INTERP_PlannerIsBufferEmpty(void)
+{
+    return (interp_context.planner.count == 0);
+}
+
+uint8_t INTERP_PlannerGetBlockCount(void)
+{
+    return interp_context.planner.count;
+}
+
+planner_block_t* INTERP_PlannerGetCurrentBlock(void)
+{
+    if (INTERP_PlannerIsBufferEmpty()) {
+        return NULL;
+    }
+    
+    return &interp_context.planner.blocks[interp_context.planner.tail];
+}
+
+void INTERP_PlannerAdvanceBlock(void)
+{
+    if (!INTERP_PlannerIsBufferEmpty()) {
+        interp_context.planner.tail = (interp_context.planner.tail + 1) % INTERP_PLANNER_BUFFER_SIZE;
+        interp_context.planner.count--;
+    }
+}
+
+void INTERP_PlannerClearBuffer(void)
+{
+    interp_context.planner.head = 0;
+    interp_context.planner.tail = 0;
+    interp_context.planner.count = 0;
+    interp_context.planner.recalculate_needed = false;
+}
+
+bool INTERP_SetJunctionDeviation(float deviation)
+{
+    if (deviation < 0.001f || deviation > 10.0f) {
+        return false; // Invalid range
+    }
+    
+    interp_context.planner.junction_deviation = deviation;
+    interp_context.planner.recalculate_needed = true;
+    return true;
+}
+
+void INTERP_PlannerRecalculate(void)
+{
+    if (!interp_context.planner.recalculate_needed || INTERP_PlannerIsBufferEmpty()) {
+        return;
+    }
+    
+    // Implement GRBL-style junction speed calculation
+    uint8_t block_index = interp_context.planner.tail;
+    planner_block_t *block = &interp_context.planner.blocks[block_index];
+    planner_block_t *next_block = NULL;
+    
+    // Forward pass: Calculate maximum entry speeds
+    for (uint8_t i = 0; i < interp_context.planner.count - 1; i++) {
+        uint8_t next_index = (block_index + 1) % INTERP_PLANNER_BUFFER_SIZE;
+        next_block = &interp_context.planner.blocks[next_index];
+        
+        if (block->recalculate_flag) {
+            // Calculate junction speed using dot product and junction deviation
+            float cos_theta = 0.0f;
+            for (int axis = 0; axis < INTERP_MAX_AXES; axis++) {
+                cos_theta -= block->unit_vector[axis] * next_block->unit_vector[axis];
+            }
+            
+            if (cos_theta < 0.95f) { // Only calculate for significant direction changes
+                // Junction speed based on centripetal acceleration
+                float sin_theta_d2 = sqrtf(0.5f * (1.0f - cos_theta));
+                float junction_speed = sqrtf(block->acceleration * interp_context.planner.junction_deviation * sin_theta_d2 / (1.0f - sin_theta_d2));
+                
+                // Limit to minimum of block speeds
+                if (junction_speed > block->nominal_speed) junction_speed = block->nominal_speed;
+                if (junction_speed > next_block->nominal_speed) junction_speed = next_block->nominal_speed;
+                
+                block->exit_speed = junction_speed;
+                next_block->entry_speed = junction_speed;
+            } else {
+                // Straight line - use nominal speed
+                block->exit_speed = fminf(block->nominal_speed, next_block->nominal_speed);
+                next_block->entry_speed = block->exit_speed;
+            }
+            
+            block->recalculate_flag = false;
+        }
+        
+        block_index = next_index;
+        block = next_block;
+    }
+    
+    // Backward pass: Ensure achievable speeds
+    block_index = (interp_context.planner.head - 1 + INTERP_PLANNER_BUFFER_SIZE) % INTERP_PLANNER_BUFFER_SIZE;
+    for (uint8_t i = 0; i < interp_context.planner.count - 1; i++) {
+        block = &interp_context.planner.blocks[block_index];
+        uint8_t prev_index = (block_index - 1 + INTERP_PLANNER_BUFFER_SIZE) % INTERP_PLANNER_BUFFER_SIZE;
+        planner_block_t *prev_block = &interp_context.planner.blocks[prev_index];
+        
+        // Check if exit speed is achievable given entry speed and acceleration
+        float max_exit_speed = sqrtf(block->entry_speed * block->entry_speed + 2.0f * block->acceleration * block->distance);
+        
+        if (block->exit_speed > max_exit_speed) {
+            block->exit_speed = max_exit_speed;
+            prev_block->exit_speed = block->entry_speed;
+            prev_block->recalculate_flag = true;
+        }
+        
+        block_index = prev_index;
+    }
+    
+    interp_context.planner.recalculate_needed = false;
+}
+
+void INTERP_PlannerOptimizeBuffer(void)
+{
+    // Perform look-ahead optimization
+    INTERP_PlannerRecalculate();
+    
+    // Additional optimization passes could be added here
+    // - Cornering speed optimization
+    // - Acceleration limiting
+    // - Feed rate override application
+}
+
+bool INTERP_BlendMoves(position_t waypoints[], uint8_t point_count, float feed_rate)
+{
+    if (!waypoints || point_count < 2) {
+        return false;
+    }
+    
+    // Add all segments to planner buffer
+    for (uint8_t i = 0; i < point_count - 1; i++) {
+        if (!INTERP_PlannerAddBlock(waypoints[i], waypoints[i + 1], feed_rate, MOTION_PROFILE_S_CURVE)) {
+            return false; // Buffer full or other error
+        }
+    }
+    
+    // Optimize the entire sequence
+    INTERP_PlannerOptimizeBuffer();
+    
+    return true;
 }
 
 static void reset_motion_state(void)

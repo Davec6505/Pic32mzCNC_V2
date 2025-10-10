@@ -41,6 +41,11 @@
 #define INTERP_JERK_LIMIT               10000.0f    // mm/min³
 #define INTERP_POSITION_TOLERANCE       0.001f      // 1 micron
 
+/* Look-ahead Planner Constants */
+#define INTERP_PLANNER_BUFFER_SIZE      16          // GRBL-style 16-block buffer
+#define INTERP_JUNCTION_DEVIATION       0.02f       // Default junction deviation (mm)
+#define INTERP_MIN_PLANNER_SPEED        10.0f       // Minimum planning speed (mm/min)
+
 /* Motion State Machine */
 typedef enum {
     MOTION_STATE_IDLE = 0,
@@ -125,10 +130,47 @@ typedef struct {
     bool step_active[INTERP_MAX_AXES];          // Step signal state
 } step_generation_t;
 
+/* Planner Block - Individual motion segment in look-ahead buffer */
+typedef struct {
+    position_t start_position;                  // Start position for this block
+    position_t end_position;                    // End position for this block
+    
+    float distance;                             // Total distance of this block
+    float unit_vector[INTERP_MAX_AXES];         // Unit direction vector
+    float nominal_speed;                        // Programmed feed rate
+    float entry_speed;                          // Entry speed (look-ahead optimized)
+    float exit_speed;                           // Exit speed (look-ahead optimized)
+    float max_entry_speed;                      // Maximum allowable entry speed
+    
+    float acceleration;                         // Block acceleration limit
+    motion_profile_type_t profile_type;         // Motion profile to use
+    
+    bool recalculate_flag;                      // Needs recalculation
+    bool nominal_length_flag;                   // Block is at nominal length
+    bool entry_speed_max;                       // Entry speed is at maximum
+    
+    uint8_t block_id;                           // Block identifier
+} planner_block_t;
+
+/* Look-ahead Planner Buffer */
+typedef struct {
+    planner_block_t blocks[INTERP_PLANNER_BUFFER_SIZE];
+    uint8_t head;                               // Next block to add
+    uint8_t tail;                               // Next block to execute
+    uint8_t count;                              // Number of blocks in buffer
+    
+    float junction_deviation;                   // Junction deviation setting
+    float minimum_planner_speed;                // Minimum speed for planning
+    
+    bool recalculate_needed;                    // Buffer needs recalculation
+    uint8_t recalculate_index;                  // Index to start recalculation
+} planner_buffer_t;
+
 /* Interpolation Context */
 typedef struct {
     motion_parameters_t motion;
     step_generation_t steps;
+    planner_buffer_t planner;                   // Look-ahead planner buffer
     
     /* Configuration */
     float steps_per_mm[INTERP_MAX_AXES];
@@ -191,6 +233,18 @@ void INTERP_RegisterErrorCallback(void (*callback)(const char *error_message));
 bool INTERP_PlanSCurveMove(position_t start, position_t end, float feed_rate);
 bool INTERP_BlendMoves(position_t waypoints[], uint8_t point_count, float feed_rate);
 bool INTERP_SetLookAheadDistance(float distance);
+
+/* Look-ahead Planner Functions */
+bool INTERP_PlannerAddBlock(position_t start, position_t end, float feed_rate, motion_profile_type_t profile);
+bool INTERP_PlannerIsBufferFull(void);
+bool INTERP_PlannerIsBufferEmpty(void);
+uint8_t INTERP_PlannerGetBlockCount(void);
+void INTERP_PlannerRecalculate(void);
+void INTERP_PlannerOptimizeBuffer(void);
+planner_block_t* INTERP_PlannerGetCurrentBlock(void);
+void INTERP_PlannerAdvanceBlock(void);
+void INTERP_PlannerClearBuffer(void);
+bool INTERP_SetJunctionDeviation(float deviation);
 
 /* Utility Functions */
 float INTERP_CalculateDistance(position_t start, position_t end);
