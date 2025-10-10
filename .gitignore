@@ -2,10 +2,54 @@
 objs/
 bins/
 *.o
-*.hex
-*.map
+*.ko
+*.obj
 *.elf
 *.d
+
+# Linker output
+*.ilk
+*.map
+*.exp
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Kernel Module Compile Results
+*.mod*
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
 
 # IDE files
 .mcp*
@@ -25,6 +69,20 @@ bins/
 # Generated files
 other/production.map
 other/memoryfile.xml
+*.xml
+*.ini
+*.emcl
+*.cp
+*.dbg
+*.dct 
+*.dlt 
+*.log 
+*.lst 
+*.txt 
+*.pdf 
+*.dic 
+*.mc32group 
+*.mcp32
 
 # Keep important binaries for reference
 !bins/CS23_working_backup
