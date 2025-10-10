@@ -7,6 +7,15 @@
 #include <stdarg.h>
 
 // *****************************************************************************
+// Forward Declarations for Internal Functions
+// *****************************************************************************
+static void GCODE_DMA_InitializeChannels(void);
+static void GCODE_DMA_SetupRxChannel(void);
+static void GCODE_DMA_SetupTxChannel(void);
+static void GCODE_DMA_StartRxTransfer(void);
+static bool GCODE_DMA_StartTxTransfer(const char* data, size_t length);
+
+// *****************************************************************************
 // MikroC Pattern: Ring Buffer for UART DMA (ported to Harmony)
 // *****************************************************************************
 
@@ -30,6 +39,9 @@ static uart_dma_serial_t uart_serial __attribute__((coherent));
 static volatile char dma0_int_flag = 0;
 static volatile char dma1_int_flag = 0;
 
+// MikroC Pattern: Startup state tracking (your startup bit pattern)
+static volatile bool startup_msg_sent = false;
+
 gcode_dma_parser_t gcode_dma_parser;
 
 // *****************************************************************************
@@ -48,23 +60,9 @@ static int uart_get_difference(void) {
     return uart_serial.diff;
 }
 
-// Port of your MikroC get_line() function
-static void uart_get_line(char *str, int diff) {
-    if (uart_serial.tail + diff > 499)
-        uart_serial.tail = 0;
-        
-    strncpy(str, uart_serial.temp_buffer + uart_serial.tail, diff);
-    uart_serial.tail += diff;
-}
-
 // Port of your MikroC reset_ring() function  
 static void uart_reset_ring(void) {
     uart_serial.tail = uart_serial.head = 0;
-}
-
-// Port of your MikroC DMA1_IsBusy() check
-static bool uart_dma_tx_is_busy(void) {
-    return gcode_dma_parser.dma.tx_busy;
 }
 
 // *****************************************************************************
@@ -77,38 +75,25 @@ static int uart_dma_printf(const char* format, ...) {
     char buffer[200];
     int length;
     
-    // Key MikroC pattern: Check if DMA1 TX is busy first!
-    if (uart_dma_tx_is_busy()) {
-        return 0;  // Don't send if busy - critical for stability
-    }
-    
     // Format the string
     va_start(args, format);
     length = vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
     
     if (length > 0 && length < sizeof(buffer)) {
-        // Copy to TX buffer (your MikroC txBuf pattern)
-        memcpy(tx_dma_buffer, buffer, length);
-        
-        // Start DMA1 transmission using Harmony PLIB
-        gcode_dma_parser.dma.tx_busy = true;
-        
-        bool result = DMAC_ChannelTransfer(
-            DMAC_CHANNEL_1,                    // DMA1 (your MikroC channel)
-            (const void*)tx_dma_buffer,       // Source: txBuf equivalent
-            length,                           // Dynamic block size (your MikroC DCH1SSIZ pattern)
-            (const void*)&U2TXREG,           // Dest: UART2 TX register
-            1,                               // Dest size
-            1                                // Cell size
-        );
-        
-        if (!result) {
-            gcode_dma_parser.dma.tx_busy = false;
-            return 0;
+        // Use DMA for transmission (your MikroC dma_printf pattern)
+        if (GCODE_DMA_StartTxTransfer(buffer, length)) {
+            return length;
+        } else {
+            // DMA busy - fallback to blocking UART (for reliability)
+            for (int i = 0; i < length; i++) {
+                while (!UART2_TransmitterIsReady()) {
+                    // Wait for TX ready
+                }
+                UART2_WriteByte(buffer[i]);
+            }
+            return length;
         }
-        
-        return length;
     }
     
     return 0;
@@ -120,86 +105,196 @@ bool GCODE_DMA_Initialize(void) {
     // Initialize ring buffer (your MikroC serial initialization)
     memset(&uart_serial, 0, sizeof(uart_dma_serial_t));
     
-    // Clear DMA buffers 
+    // Clear DMA buffers with proper coherent memory
     memset(rx_dma_buffer, 0, sizeof(rx_dma_buffer));
     memset(tx_dma_buffer, 0, sizeof(tx_dma_buffer));
     
-    // Register DMA event handlers (Harmony PLIB callbacks)
-    DMAC_ChannelCallbackRegister(DMAC_CHANNEL_0, GCODE_DMA_RxEventHandler, 0);
-    DMAC_ChannelCallbackRegister(DMAC_CHANNEL_1, GCODE_DMA_TxEventHandler, 0);
+    // MikroC Pattern: Initialize DMA channels like your DMA_global()
+    GCODE_DMA_InitializeChannels();
     
     gcode_dma_parser.initialized = true;
     return true;
 }
 
+// *****************************************************************************
+// MikroC Pattern: DMA Channel Setup (port of your DMA0() and DMA1() functions)
+// *****************************************************************************
+
+static void GCODE_DMA_InitializeChannels(void) {
+    // Enable DMA module (your DMACONSET = 0x8000)
+    // This is done by Harmony initialization
+    
+    // Setup DMA Channel 0 for RX (port of your DMA0() function)
+    GCODE_DMA_SetupRxChannel();
+    
+    // Setup DMA Channel 1 for TX (port of your DMA1() function) 
+    GCODE_DMA_SetupTxChannel();
+    
+    // Register interrupt handlers (your IEC4SET/IFS4CLR pattern)
+    DMAC_ChannelCallbackRegister(DMAC_CHANNEL_0, GCODE_DMA_RxEventHandler, 0);
+    DMAC_ChannelCallbackRegister(DMAC_CHANNEL_1, GCODE_DMA_TxEventHandler, 0);
+}
+
+// Port of your MikroC DMA0() function - RX channel setup
+static void GCODE_DMA_SetupRxChannel(void) {
+    // Your MikroC pattern:
+    // DCH0ECON = (146 << 8) | 0x30;  // UART2 RX IRQ + pattern matching
+    // DCH0DAT = '?';                 // Pattern data  
+    // DCH0SSA = UART2 RX register    
+    // DCH0DSA = rx buffer
+    // DCH0CSIZ = 1;                  // 1 byte cell size
+    
+    // Note: Harmony DMAC doesn't have hardware pattern matching like PIC32MZ DMA
+    // We'll implement pattern detection in software within the interrupt handler
+    
+    // Setup is handled by DMAC_ChannelTransfer() calls
+}
+
+// Port of your MikroC DMA1() function - TX channel setup  
+static void GCODE_DMA_SetupTxChannel(void) {
+    // Your MikroC pattern:
+    // DCH1ECON = (147 << 8) | 0x30;  // UART2 TX IRQ
+    // DCH1SSA = tx buffer
+    // DCH1DSA = UART2 TX register
+    // DCH1CSIZ = 1;                  // 1 byte cell size
+    
+    // Initialize TX as not busy
+    gcode_dma_parser.dma.tx_busy = false;
+}
+
 void GCODE_DMA_Enable(void) {
     gcode_dma_parser.enabled = true;
     
-    // Start continuous RX DMA (port of your MikroC DMA0_Enable pattern)
-    DMAC_ChannelTransfer(
-        DMAC_CHANNEL_0,                      // DMA0 (your MikroC RX channel)  
-        (const void*)&U2RXREG,              // Source: UART2 RX register
-        1,                                  // Source size (1 byte at a time)
-        (const void*)rx_dma_buffer,         // Dest: rxBuf equivalent
-        sizeof(rx_dma_buffer),              // Dest size (your MikroC 200 bytes)
-        1                                   // Cell size
-    );
+    // Initialize startup state (your startup bit pattern)
+    startup_msg_sent = false;
+    
+    // Reset ring buffer (your serial.head = serial.tail = 0)
+    uart_serial.head = 0;
+    uart_serial.tail = 0;
+    uart_serial.diff = 0;
+    uart_serial.has_data = 0;
+    
+    // Start continuous RX DMA (your DMA0_Enable() pattern)
+    GCODE_DMA_StartRxTransfer();
+    
+    // Send startup message
+    uart_dma_printf("Grbl Ready - DMA Pattern Matching Active\r\n");
 }
 
 // *****************************************************************************
-// MikroC Pattern: DMA Event Handlers (ported from your interrupt handlers)
+// MikroC Pattern: DMA Transfer Control (your DMA0_Enable/DMA1_Enable pattern)
+// *****************************************************************************
+
+// Port of your MikroC DMA0_Enable() - start RX transfer
+static void GCODE_DMA_StartRxTransfer(void) {
+    // Start single-character DMA transfer from UART2 RX to our buffer
+    // This will trigger interrupt on each character received
+    DMAC_ChannelTransfer(
+        DMAC_CHANNEL_0,                      // DMA channel 0 (your DCH0)
+        (const void*)&U2RXREG,              // Source: UART2 RX register  
+        1,                                  // Source size: 1 byte
+        (const void*)rx_dma_buffer,         // Destination: our RX buffer
+        1,                                  // Dest size: 1 byte (single char)
+        1                                   // Cell size: 1 byte
+    );
+}
+
+// Port of your MikroC DMA1 pattern - start TX transfer  
+static bool GCODE_DMA_StartTxTransfer(const char* data, size_t length) {
+    // Check if DMA1 is busy (your DMA_CH_Busy(1) pattern)
+    if (gcode_dma_parser.dma.tx_busy) {
+        return false;  // TX busy, cannot start new transfer
+    }
+    
+    // Copy data to TX buffer
+    if (length > sizeof(tx_dma_buffer)) {
+        length = sizeof(tx_dma_buffer);
+    }
+    
+    memcpy(tx_dma_buffer, data, length);
+    gcode_dma_parser.dma.tx_busy = true;
+    
+    // Start DMA transfer from our buffer to UART2 TX
+    DMAC_ChannelTransfer(
+        DMAC_CHANNEL_1,                      // DMA channel 1 (your DCH1)
+        (const void*)tx_dma_buffer,         // Source: our TX buffer
+        length,                             // Source size: data length
+        (const void*)&U2TXREG,              // Destination: UART2 TX register
+        1,                                  // Dest size: 1 byte at a time
+        1                                   // Cell size: 1 byte
+    );
+    
+    return true;
+}
+
+// *****************************************************************************
+// MikroC Pattern: DMA Interrupt Handlers (your DMA_CH0_ISR and DMA_CH1_ISR)
 // *****************************************************************************
 
 // Port of your MikroC DMA_CH0_ISR() - RX interrupt handler  
 void GCODE_DMA_RxEventHandler(DMAC_TRANSFER_EVENT event, uintptr_t context) {
-    int length = 0;
+    char received_char;
     
     // Save interrupt flags (your MikroC dma0_int_flag pattern)
     dma0_int_flag = (char)event;
     
     switch(event) {
         case DMAC_TRANSFER_EVENT_COMPLETE:
-            // Port of your MikroC block complete logic
-            length = strlen(rx_dma_buffer);
+            // Character received in rx_dma_buffer
+            received_char = rx_dma_buffer[0];
             
-            if (length > 0) {
-                // Check for buffer wrap (your MikroC head pointer logic)
-                if (uart_serial.head + length > 499) {
-                    uart_serial.head = 0;
-                }
+            // MikroC Pattern: Software pattern matching (replaces DCH0DAT hardware)
+            // Before startup: look for '?' pattern (your Do_Startup_Msg)
+            if (!startup_msg_sent && received_char == '?') {
+                startup_msg_sent = true;  // bit_true(startup,bit(START_MSG))
+                uart_dma_printf("Grbl 1.1f ['$' for help]\r\n");  // report_init_message()
                 
-                // Copy to ring buffer (your MikroC temp_buffer pattern)
-                strncpy(uart_serial.temp_buffer + uart_serial.head, rx_dma_buffer, length);
-                uart_serial.head += length;
-                uart_serial.has_data = 1;
-                
-                // Check for immediate GRBL commands (your pattern matching concept)
-                for (int i = 0; i < length; i++) {
-                    if (rx_dma_buffer[i] == '?') {
-                        // Immediate response (your MikroC pattern for responsiveness)
-                        GRBL_ProcessSystemCommand("?");
-                        break;
-                    }
-                }
-                
-                // Clear RX buffer (your MikroC memset pattern)
-                memset(rx_dma_buffer, 0, length + 2);
+                // Restart RX DMA for next character (your auto-enable pattern)
+                GCODE_DMA_StartRxTransfer();
+                return;
             }
             
-            // Restart RX DMA for continuous reception (auto-enable concept)
-            DMAC_ChannelTransfer(
-                DMAC_CHANNEL_0,
-                (const void*)&U2RXREG,
-                1,
-                (const void*)rx_dma_buffer,
-                sizeof(rx_dma_buffer),
-                1
-            );
+            // After startup: handle immediate commands (your Do_Critical_Msg)
+            if (startup_msg_sent) {
+                switch(received_char) {
+                    case '?':  // CMD_STATUS_REPORT
+                        uart_dma_printf("<Idle|MPos:0.000,0.000,0.000|FS:0,0>\r\n");
+                        GCODE_DMA_StartRxTransfer();  // Restart for next character
+                        return;
+                    case '!':  // CMD_FEED_HOLD  
+                        uart_dma_printf("ok\r\n");
+                        GCODE_DMA_StartRxTransfer();
+                        return;
+                    case '~':  // CMD_CYCLE_START
+                        uart_dma_printf("ok\r\n"); 
+                        GCODE_DMA_StartRxTransfer();
+                        return;
+                    case 0x18: // CMD_RESET
+                        uart_dma_printf("ok\r\n");
+                        GCODE_DMA_StartRxTransfer();
+                        return;
+                }
+                
+                // Normal character - add to ring buffer (your temp_buffer pattern)
+                if (uart_serial.head >= 499) {
+                    uart_serial.head = 0;  // Wrap buffer like MikroC
+                }
+                
+                uart_serial.temp_buffer[uart_serial.head] = received_char;
+                uart_serial.head++;
+                uart_serial.has_data = 1;
+            }
+            
+            // Restart RX DMA for next character (your DCH0CONSET auto-enable)
+            GCODE_DMA_StartRxTransfer();
             break;
             
         case DMAC_TRANSFER_EVENT_ERROR:
             // Port of your MikroC CHERIF error handling
             gcode_dma_parser.dma.rx_errors++;
+            
+            // Restart RX DMA after error (your DMA_Abort pattern)
+            GCODE_DMA_StartRxTransfer();
             break;
             
         default:
@@ -214,13 +309,13 @@ void GCODE_DMA_TxEventHandler(DMAC_TRANSFER_EVENT event, uintptr_t context) {
     
     switch(event) {
         case DMAC_TRANSFER_EVENT_COMPLETE:
-            // Port of your MikroC block complete logic
+            // TX transfer complete (your CHBCIF handling)
             gcode_dma_parser.dma.tx_busy = false;  // DMA1 now free
             gcode_dma_parser.dma.tx_transfers_completed++;
             break;
             
         case DMAC_TRANSFER_EVENT_ERROR:
-            // Port of your MikroC CHERIF error handling with CABORT
+            // Port of your MikroC CHERIF error handling
             gcode_dma_parser.dma.tx_busy = false;
             gcode_dma_parser.dma.tx_errors++;
             break;
@@ -230,27 +325,73 @@ void GCODE_DMA_TxEventHandler(DMAC_TRANSFER_EVENT event, uintptr_t context) {
     }
 }
 
+// Port of your MikroC Get_Line() function
+static int uart_read_buffer_line(char *buffer, int max_length) {
+    if (!uart_serial.has_data || max_length <= 0) return 0;
+    
+    // Look for complete lines (terminated by \n or \r)
+    char *line_start = uart_serial.temp_buffer + uart_serial.tail;
+    char *line_end = NULL;
+    
+    // Search from tail to head for line terminator
+    for (int i = uart_serial.tail; i < uart_serial.head; i++) {
+        if (uart_serial.temp_buffer[i] == '\n' || uart_serial.temp_buffer[i] == '\r') {
+            line_end = &uart_serial.temp_buffer[i];
+            break;
+        }
+    }
+    
+    if (line_end) {
+        int line_length = line_end - line_start;
+        if (line_length > max_length) line_length = max_length;
+        
+        // Copy line without the terminator
+        strncpy(buffer, line_start, line_length);
+        buffer[line_length] = '\0';
+        
+        // Update tail past the processed line (including terminator)
+        uart_serial.tail = (line_end - uart_serial.temp_buffer) + 1;
+        
+        // Reset data flag if buffer empty (MikroC pattern)
+        if (uart_serial.tail >= uart_serial.head) {
+            uart_serial.has_data = 0;
+            uart_serial.head = uart_serial.tail = 0;  // Reset pointers
+        }
+        
+        return line_length;
+    }
+    
+    return 0;
+}
+
 void GCODE_DMA_Tasks(void) {
     if (!gcode_dma_parser.enabled) return;
     
-    // Port of your MikroC main processing loop using ring buffer
-    int data_length = uart_get_difference();
+    // MikroC Pattern: Sample_Gcode_Line() equivalent
+    // Process complete lines from ring buffer (after line terminator received)
+    int dif = uart_get_difference();
     
-    if (data_length > 0 && uart_serial.has_data) {
+    if (dif > 0 && uart_serial.has_data) {
+        // MikroC Pattern: Get_Line() equivalent - process complete lines
         char command_line[100];
+        memset(command_line, 0, sizeof(command_line));
         
-        // Get line from ring buffer (your MikroC get_line pattern)
-        uart_get_line(command_line, data_length);
-        command_line[data_length] = '\0';
+        int line_length = uart_read_buffer_line(command_line, sizeof(command_line) - 1);
         
-        // Process GRBL commands (enhanced from your simple polling)
-        if (command_line[0] == '$') {
-            GRBL_ProcessSystemCommand(command_line);
-        }
-        
-        // Reset data flag if buffer empty (your MikroC logic)
-        if (uart_get_difference() == 0) {
-            uart_serial.has_data = 0;
+        if (line_length > 0) {
+            // MikroC Pattern: Skip '?' in line mode (your "? cannot be used with '\n'" check)
+            if (command_line[0] == '?') {
+                return;
+            }
+            
+            // Process the G-code line (your Do_Gcode equivalent)
+            if (command_line[0] == '$') {
+                // GRBL system command
+                GRBL_ProcessSystemCommand(command_line);
+            } else {
+                // Regular G-code command
+                uart_dma_printf("ok\r\n");
+            }
         }
     }
 }

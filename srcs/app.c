@@ -235,14 +235,6 @@ void APP_Tasks ( void )
         
         case APP_STATE_MOTION_IDLE:
         {
-            /* Debug: Show we're in MOTION_IDLE state */
-            static uint32_t idle_counter = 0;
-            idle_counter++;
-            if (idle_counter >= 100000) {  // Show status periodically
-                idle_counter = 0;
-                APP_UARTPrint("APP_STATE: MOTION_IDLE\r\n");
-            }
-            
             /* Process DMA G-code commands */
             GCODE_DMA_Tasks();
             
