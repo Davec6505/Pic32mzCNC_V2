@@ -395,6 +395,21 @@ void APP_AlarmReset(void);
 
 /*******************************************************************************
   Function:
+    void APP_StartHomingCycle(void)
+
+  Summary:
+    Start homing cycle for all configured axes
+
+  Description:
+    This function initiates a GRBL-compatible homing cycle for X, Y, and Z axes.
+    The cycle includes seek phase (fast move to limit), locate phase (slow precise
+    positioning), and pulloff phase (move away from limit switch).
+*/
+
+void APP_StartHomingCycle(void);
+
+/*******************************************************************************
+  Function:
     void APP_ExecuteGcodeCommand(gcode_parsed_line_t *command)
 
   Summary:

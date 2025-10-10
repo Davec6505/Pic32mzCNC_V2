@@ -256,6 +256,24 @@ void APP_Tasks ( void )
         
         case APP_STATE_MOTION_EXECUTING:
         {
+            /* Check if homing cycle is active */
+            if (INTERP_IsHomingActive()) {
+                /* Homing in progress - check status */
+                homing_state_t homing_state = INTERP_GetHomingState();
+                
+                if (homing_state == HOMING_STATE_COMPLETE) {
+                    APP_UARTPrint("Homing cycle completed successfully\r\n");
+                    appData.state = APP_STATE_MOTION_IDLE;
+                    break;
+                } else if (homing_state == HOMING_STATE_ERROR) {
+                    APP_UARTPrint("ERROR: Homing cycle failed\r\n");
+                    appData.state = APP_STATE_MOTION_ERROR;
+                    break;
+                }
+                /* Continue homing - stay in executing state */
+                break;
+            }
+            
             /* Check if current motion is complete */
             bool all_axes_complete = true;
             for(int i = 0; i < MAX_AXES; i++) {
@@ -808,6 +826,42 @@ void APP_AlarmReset(void)
     APP_UARTPrint("Alarm cleared - System ready\r\n");
 }
 
+void APP_StartHomingCycle(void)
+{
+    /* Start homing cycle for all axes (X, Y, Z) */
+    
+    // Check if system is ready for homing
+    if (appData.state == APP_STATE_MOTION_ERROR) {
+        APP_UARTPrint("ERROR: Clear alarm state before homing\r\n");
+        return;
+    }
+    
+    if (INTERP_IsHomingActive()) {
+        APP_UARTPrint("ERROR: Homing cycle already in progress\r\n");
+        return;
+    }
+    
+    // Stop any current motion
+    APP_EmergencyStop();
+    
+    // Clear motion buffer
+    motion_buffer_head = 0;
+    motion_buffer_tail = 0;
+    for(int i = 0; i < MOTION_BUFFER_SIZE; i++) {
+        motion_buffer[i].is_valid = false;
+    }
+    
+    // Start homing for X, Y, Z axes (bitmask: 0x07 = 0b111)
+    uint8_t axes_to_home = 0x07; // X=bit0, Y=bit1, Z=bit2
+    
+    if (INTERP_StartHomingCycle(axes_to_home)) {
+        appData.state = APP_STATE_MOTION_EXECUTING; // Use executing state during homing
+        APP_UARTPrint("Starting homing cycle...\r\n");
+    } else {
+        APP_UARTPrint("ERROR: Failed to start homing cycle\r\n");
+    }
+}
+
 // *****************************************************************************
 // G-code Command Handler for DMA Parser Integration
 // *****************************************************************************
@@ -816,6 +870,19 @@ void APP_ExecuteGcodeCommand(const char *command)
 {
     if (!command || strlen(command) == 0) {
         GCODE_DMA_SendError(3);  // Invalid command error
+        return;
+    }
+    
+    // Handle special GRBL commands first
+    if (command[0] == '$') {
+        if (command[1] == 'H' || command[1] == 'h') {
+            // Homing cycle command
+            APP_StartHomingCycle();
+            GCODE_DMA_SendResponse("ok");
+            return;
+        }
+        // Other $ commands can be added here (settings, etc.)
+        GCODE_DMA_SendResponse("ok");
         return;
     }
     

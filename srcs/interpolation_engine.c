@@ -71,6 +71,19 @@ bool INTERP_Initialize(void)
     interp_context.planner.junction_deviation = INTERP_JUNCTION_DEVIATION;
     interp_context.planner.minimum_planner_speed = INTERP_MIN_PLANNER_SPEED;
     
+    // Initialize homing system
+    interp_context.homing.state = HOMING_STATE_IDLE;
+    interp_context.homing.axis_mask = 0;
+    interp_context.homing.current_axis = AXIS_X;
+    interp_context.homing.seek_rate = INTERP_HOMING_SEEK_RATE;
+    interp_context.homing.locate_rate = INTERP_HOMING_FEED_RATE;
+    interp_context.homing.pulloff_distance = INTERP_HOMING_PULLOFF_DISTANCE;
+    
+    // Set default home positions (typically 0,0,0)
+    for (int i = 0; i < INTERP_MAX_AXES; i++) {
+        INTERP_SetHomingPosition((axis_id_t)i, 0.0f);
+    }
+    
     // Configure hardware peripherals
     if (!INTERP_ConfigureTimer1()) {
         return false;
@@ -591,6 +604,12 @@ void INTERP_Tasks(void)
     // Check for feed hold
     if (interp_context.motion.feed_hold) {
         return;
+    }
+    
+    // Process homing cycle if active
+    if (INTERP_IsHomingActive()) {
+        INTERP_ProcessHomingCycle();
+        return; // Homing takes priority over normal motion
     }
     
     // Update motion state machine
@@ -2107,6 +2126,282 @@ void INTERP_UpdateStepRates(void)
 {
     // Public function to update step rates - calls internal update_step_rates()
     update_step_rates();
+}
+
+// *****************************************************************************
+// Homing Cycle Implementation
+// *****************************************************************************
+
+bool INTERP_StartHomingCycle(uint8_t axis_mask)
+{
+    if (!interp_context.initialized) {
+        printf("ERROR: Interpolation engine not initialized\n");
+        return false;
+    }
+    
+    if (interp_context.homing.state != HOMING_STATE_IDLE) {
+        printf("ERROR: Homing cycle already in progress\n");
+        return false;
+    }
+    
+    if (axis_mask == 0) {
+        printf("ERROR: No axes specified for homing\n");
+        return false;
+    }
+    
+    // Initialize homing control structure
+    interp_context.homing.state = HOMING_STATE_SEEK;
+    interp_context.homing.axis_mask = axis_mask;
+    interp_context.homing.current_axis = AXIS_X; // Start with X axis
+    interp_context.homing.start_time = _CP0_GET_COUNT(); // Use core timer
+    interp_context.homing.debounce_time = 0;
+    interp_context.homing.switch_triggered = false;
+    
+    // Set homing parameters - can be configured via GRBL settings
+    interp_context.homing.seek_rate = INTERP_HOMING_SEEK_RATE;
+    interp_context.homing.locate_rate = INTERP_HOMING_FEED_RATE;
+    interp_context.homing.pulloff_distance = INTERP_HOMING_PULLOFF_DISTANCE;
+    
+    // Determine homing direction for current axis (typically towards limit switch)
+    interp_context.homing.direction_positive = false; // Home towards negative limit
+    
+    // Clear any existing motion
+    interp_context.planner.head = 0;
+    interp_context.planner.tail = 0;
+    interp_context.planner.count = 0;
+    
+    printf("Starting homing cycle for axes: 0x%02X\n", axis_mask);
+    
+    return true;
+}
+
+void INTERP_AbortHomingCycle(void)
+{
+    if (interp_context.homing.state != HOMING_STATE_IDLE) {
+        // Stop motion immediately
+        INTERP_StopStepGeneration();
+        
+        // Reset homing state
+        interp_context.homing.state = HOMING_STATE_IDLE;
+        interp_context.homing.axis_mask = 0;
+        
+        printf("Homing cycle aborted\n");
+    }
+}
+
+homing_state_t INTERP_GetHomingState(void)
+{
+    return interp_context.homing.state;
+}
+
+bool INTERP_IsHomingActive(void)
+{
+    return (interp_context.homing.state != HOMING_STATE_IDLE && 
+            interp_context.homing.state != HOMING_STATE_COMPLETE &&
+            interp_context.homing.state != HOMING_STATE_ERROR);
+}
+
+void INTERP_SetHomingPosition(axis_id_t axis, float position)
+{
+    if (axis < INTERP_MAX_AXES) {
+        interp_context.homing.home_position[axis].x = (axis == AXIS_X) ? position : 0.0f;
+        interp_context.homing.home_position[axis].y = (axis == AXIS_Y) ? position : 0.0f;
+        interp_context.homing.home_position[axis].z = (axis == AXIS_Z) ? position : 0.0f;
+        interp_context.homing.home_position[axis].a = (axis == AXIS_A) ? position : 0.0f;
+    }
+}
+
+static bool is_limit_switch_triggered(axis_id_t axis, bool check_positive)
+{
+    /* Check limit switch state for homing
+     * This function reads the actual GPIO pins for limit switches
+     */
+    switch (axis) {
+        case AXIS_X:
+            if (check_positive) {
+                return !GPIO_PinRead(GPIO_PIN_RA9);  // X positive limit
+            } else {
+                return !GPIO_PinRead(GPIO_PIN_RA7);  // X negative limit
+            }
+            
+        case AXIS_Y:
+            if (check_positive) {
+                return !GPIO_PinRead(GPIO_PIN_RA14); // Y positive limit
+            } else {
+                return !GPIO_PinRead(GPIO_PIN_RA10); // Y negative limit
+            }
+            
+        case AXIS_Z:
+            if (check_positive) {
+                return false; // Z positive limit not configured
+            } else {
+                return !GPIO_PinRead(GPIO_PIN_RA15); // Z negative limit
+            }
+            
+        default:
+            return false;
+    }
+}
+
+void INTERP_ProcessHomingCycle(void)
+{
+    if (!INTERP_IsHomingActive()) {
+        return;
+    }
+    
+    uint32_t current_time = _CP0_GET_COUNT(); // Use core timer
+    
+    // Check for timeout (convert core timer ticks to milliseconds)
+    // Core timer runs at CPU_FREQ/2, so ticks per ms = CPU_FREQ/2000
+    uint32_t elapsed_ticks = current_time - interp_context.homing.start_time;
+    uint32_t elapsed_ms = elapsed_ticks / (200000000UL / 2000); // Assuming 200MHz CPU
+    
+    if (elapsed_ms > INTERP_HOMING_TIMEOUT_MS) {
+        interp_context.homing.state = HOMING_STATE_ERROR;
+        printf("ERROR: Homing cycle timeout\n");
+        return;
+    }
+    
+    switch (interp_context.homing.state) {
+        
+        case HOMING_STATE_SEEK:
+        {
+            // Fast move towards limit switch
+            bool limit_hit = is_limit_switch_triggered(interp_context.homing.current_axis, 
+                                                      interp_context.homing.direction_positive);
+            
+            if (limit_hit) {
+                if (interp_context.homing.debounce_time == 0) {
+                    interp_context.homing.debounce_time = current_time;
+                } else {
+                    uint32_t debounce_elapsed_ticks = current_time - interp_context.homing.debounce_time;
+                    uint32_t debounce_elapsed_ms = debounce_elapsed_ticks / (200000000UL / 2000);
+                    
+                    if (debounce_elapsed_ms > INTERP_HOMING_DEBOUNCE_MS) {
+                        // Limit switch confirmed - stop fast motion
+                        INTERP_StopSingleAxis(interp_context.homing.current_axis, "Limit reached in seek phase");
+                        
+                        // Move to locate phase
+                        interp_context.homing.state = HOMING_STATE_LOCATE;
+                        interp_context.homing.direction_positive = !interp_context.homing.direction_positive; // Reverse direction
+                        
+                        printf("Homing seek complete for axis %d\n", interp_context.homing.current_axis);
+                    }
+                }
+            } else {
+                interp_context.homing.debounce_time = 0; // Reset debounce
+                
+                // Continue fast move if not already moving
+                // Generate move command towards limit switch
+                position_t current_pos = INTERP_GetCurrentPosition();
+                position_t target_pos = current_pos;
+                
+                // Move a small distance towards the limit
+                float move_distance = 1.0f; // 1mm incremental moves
+                if (interp_context.homing.direction_positive) {
+                    move_distance = -move_distance; // Move towards negative limit
+                }
+                
+                switch (interp_context.homing.current_axis) {
+                    case AXIS_X: target_pos.x += move_distance; break;
+                    case AXIS_Y: target_pos.y += move_distance; break; 
+                    case AXIS_Z: target_pos.z += move_distance; break;
+                    case AXIS_A: target_pos.a += move_distance; break;
+                }
+                
+                INTERP_PlanLinearMove(current_pos, target_pos, interp_context.homing.seek_rate);
+            }
+            break;
+        }
+        
+        case HOMING_STATE_LOCATE:
+        {
+            // Slow precise move away from limit switch
+            bool limit_hit = is_limit_switch_triggered(interp_context.homing.current_axis,
+                                                      !interp_context.homing.direction_positive);
+            
+            if (!limit_hit) {
+                // Limit switch released - found precise position
+                INTERP_StopSingleAxis(interp_context.homing.current_axis, "Precise home position found");
+                
+                // Set current position as home (typically 0,0,0)
+                INTERP_SetHomingPosition(interp_context.homing.current_axis, 0.0f);
+                
+                // Move to pulloff phase
+                interp_context.homing.state = HOMING_STATE_PULLOFF;
+                
+                printf("Homing locate complete for axis %d\n", interp_context.homing.current_axis);
+            } else {
+                // Continue slow move away from limit
+                position_t current_pos = INTERP_GetCurrentPosition();
+                position_t target_pos = current_pos;
+                
+                float move_distance = 0.1f; // 0.1mm incremental moves for precision
+                if (!interp_context.homing.direction_positive) {
+                    move_distance = -move_distance;
+                }
+                
+                switch (interp_context.homing.current_axis) {
+                    case AXIS_X: target_pos.x += move_distance; break;
+                    case AXIS_Y: target_pos.y += move_distance; break;
+                    case AXIS_Z: target_pos.z += move_distance; break; 
+                    case AXIS_A: target_pos.a += move_distance; break;
+                }
+                
+                INTERP_PlanLinearMove(current_pos, target_pos, interp_context.homing.locate_rate);
+            }
+            break;
+        }
+        
+        case HOMING_STATE_PULLOFF:
+        {
+            // Move pulloff distance away from limit switch
+            position_t current_pos = INTERP_GetCurrentPosition();
+            position_t target_pos = current_pos;
+            
+            float pulloff = interp_context.homing.pulloff_distance;
+            if (!interp_context.homing.direction_positive) {
+                pulloff = -pulloff;
+            }
+            
+            switch (interp_context.homing.current_axis) {
+                case AXIS_X: target_pos.x += pulloff; break;
+                case AXIS_Y: target_pos.y += pulloff; break;
+                case AXIS_Z: target_pos.z += pulloff; break;
+                case AXIS_A: target_pos.a += pulloff; break;
+            }
+            
+            if (INTERP_PlanLinearMove(current_pos, target_pos, interp_context.homing.locate_rate)) {
+                // Check if we need to home more axes
+                uint8_t remaining_axes = interp_context.homing.axis_mask;
+                remaining_axes &= ~(1 << interp_context.homing.current_axis); // Clear current axis
+                
+                if (remaining_axes != 0) {
+                    // Find next axis to home
+                    for (int i = interp_context.homing.current_axis + 1; i < INTERP_MAX_AXES; i++) {
+                        if (remaining_axes & (1 << i)) {
+                            interp_context.homing.current_axis = (axis_id_t)i;
+                            interp_context.homing.state = HOMING_STATE_SEEK;
+                            interp_context.homing.direction_positive = false; // Reset direction
+                            printf("Starting homing for axis %d\n", i);
+                            break;
+                        }
+                    }
+                } else {
+                    // All axes homed successfully
+                    interp_context.homing.state = HOMING_STATE_COMPLETE;
+                    printf("Homing cycle complete - all axes homed\n");
+                }
+            }
+            break;
+        }
+        
+        default:
+            // Invalid state
+            interp_context.homing.state = HOMING_STATE_ERROR;
+            printf("ERROR: Invalid homing state\n");
+            break;
+    }
 }
 
 /*******************************************************************************

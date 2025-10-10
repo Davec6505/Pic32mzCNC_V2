@@ -46,6 +46,13 @@
 #define INTERP_JUNCTION_DEVIATION       0.02f       // Default junction deviation (mm)
 #define INTERP_MIN_PLANNER_SPEED        10.0f       // Minimum planning speed (mm/min)
 
+/* Homing Cycle Constants */
+#define INTERP_HOMING_SEEK_RATE         800.0f      // Fast homing rate (mm/min)
+#define INTERP_HOMING_FEED_RATE         25.0f       // Slow locate rate (mm/min)
+#define INTERP_HOMING_PULLOFF_DISTANCE  1.0f        // Pulloff distance (mm)
+#define INTERP_HOMING_TIMEOUT_MS        30000       // 30 second timeout
+#define INTERP_HOMING_DEBOUNCE_MS       10          // Switch debounce time
+
 /* Motion State Machine */
 typedef enum {
     MOTION_STATE_IDLE = 0,
@@ -214,11 +221,37 @@ typedef struct {
     uint8_t recalculate_index;                  // Index to start recalculation
 } planner_buffer_t;
 
+/* Homing Cycle State Enum */
+typedef enum {
+    HOMING_STATE_IDLE,
+    HOMING_STATE_SEEK,           // Fast move to limit switch
+    HOMING_STATE_LOCATE,         // Slow move for precise location
+    HOMING_STATE_PULLOFF,        // Move away from limit switch
+    HOMING_STATE_COMPLETE,       // Homing completed successfully
+    HOMING_STATE_ERROR           // Homing failed
+} homing_state_t;
+
+/* Homing Cycle Control */
+typedef struct {
+    homing_state_t state;                       // Current homing state
+    uint8_t axis_mask;                          // Axes to home (bitmask)
+    axis_id_t current_axis;                     // Currently homing axis
+    bool direction_positive;                    // Homing direction
+    uint32_t start_time;                        // Homing start timestamp
+    uint32_t debounce_time;                     // Switch debounce timer
+    bool switch_triggered;                      // Limit switch state
+    float seek_rate;                           // Fast homing speed
+    float locate_rate;                         // Slow locate speed  
+    float pulloff_distance;                    // Distance to pull off limit
+    position_t home_position[INTERP_MAX_AXES]; // Home position for each axis
+} homing_control_t;
+
 /* Interpolation Context */
 typedef struct {
     motion_parameters_t motion;
     step_generation_t steps;
     planner_buffer_t planner;                   // Look-ahead planner buffer
+    homing_control_t homing;                    // Homing cycle control
     
     /* Configuration */
     float steps_per_mm[INTERP_MAX_AXES];
@@ -289,6 +322,14 @@ void INTERP_StopSingleAxis(axis_id_t axis, const char* reason);
 void INTERP_HandleHardLimit(axis_id_t axis, bool min_limit, bool max_limit);
 bool INTERP_CheckSoftLimits(position_t target_position);
 void INTERP_LimitSwitchISR(axis_id_t axis, bool min_switch_state, bool max_switch_state);
+
+/* Homing Cycle Control */
+bool INTERP_StartHomingCycle(uint8_t axis_mask);        // Start homing for specified axes
+void INTERP_AbortHomingCycle(void);                     // Abort current homing cycle
+homing_state_t INTERP_GetHomingState(void);            // Get current homing state
+bool INTERP_IsHomingActive(void);                       // Check if homing is in progress
+void INTERP_ProcessHomingCycle(void);                   // Process homing state machine
+void INTERP_SetHomingPosition(axis_id_t axis, float position);  // Set home position
 
 /* Callback Registration */
 void INTERP_RegisterStepCallback(void (*callback)(axis_id_t axis, bool direction));
