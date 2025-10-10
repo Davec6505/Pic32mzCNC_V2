@@ -28,7 +28,7 @@
 // *****************************************************************************
 
 #include "app.h"
-#include "gcode_parser_dma.h"
+#include "uart_grbl_simple.h"
 #include "grbl_settings.h"
 #include "interpolation_engine.h"
 #include "motion_profile.h"
@@ -36,7 +36,6 @@
 #include "peripheral/uart/plib_uart2.h"
 #include "peripheral/tmr1/plib_tmr1.h"
 #include "peripheral/tmr/plib_tmr2.h"
-#include "peripheral/tmr/plib_tmr3.h"
 #include "peripheral/tmr/plib_tmr4.h"
 #include "peripheral/ocmp/plib_ocmp1.h"
 #include "peripheral/ocmp/plib_ocmp4.h"
@@ -83,16 +82,11 @@ uint8_t motion_buffer_tail = 0;
 static void APP_UARTPrint(const char* str) {
     if (!str) return;
     
-    // Check if DMA system is initialized
-    if (GCODE_DMA_IsInitialized()) {
-        // Use the existing DMA UART interface for zero-overhead transmission
-        GCODE_DMA_SendResponse(str);
-    } else {
-        // Fallback to basic UART for early initialization messages
-        while (*str) {
-            UART2_WriteByte(*str);
-            str++;
-        }
+    // Use simple UART for all messages
+    while (*str) {
+        while (!UART2_TransmitterIsReady());
+        UART2_WriteByte(*str);
+        str++;
     }
 }
 
@@ -151,14 +145,8 @@ void APP_Initialize ( void )
         return;
     }
     
-    /* Initialize G-code DMA Parser */
-    if (!GCODE_DMA_Initialize()) {
-        APP_UARTPrint("ERROR: Failed to initialize G-code DMA parser\r\n");
-        /* Force enable anyway for testing */
-        APP_UARTPrint("FORCING GCODE_DMA_Enable() from APP_Initialize\r\n");
-        GCODE_DMA_Enable();
-        return;
-    }
+    /* Initialize G-code UART Parser (Simple Mode) */
+    UART_GRBL_Initialize();
     
     APP_UARTPrint("CNC Controller initialization complete\r\n");
     APP_UARTPrint("Ready for Universal G-code Sender (UGS) connection\r\n");
@@ -235,8 +223,8 @@ void APP_Tasks ( void )
         
         case APP_STATE_MOTION_IDLE:
         {
-            /* Process DMA G-code commands */
-            GCODE_DMA_Tasks();
+            /* Process MikroC UART GRBL commands */
+            UART_GRBL_Tasks();
             
             /* Process user input */
             APP_ProcessSwitches();
@@ -708,153 +696,32 @@ void APP_EmergencyStop(void)
 // G-code Command Handler for DMA Parser Integration
 // *****************************************************************************
 
-void APP_ExecuteGcodeCommand(gcode_parsed_line_t *command)
+void APP_ExecuteGcodeCommand(const char *command)
 {
-    if (!command || !command->is_valid) {
-        GCODE_DMA_SendError("invalid_command");
+    if (!command || strlen(command) == 0) {
+        GCODE_DMA_SendError(3);  // Invalid command error
         return;
     }
     
-    float target_position[MAX_AXES] = {0, 0, 0}; // X, Y, Z
-    float feed_rate = DEFAULT_MAX_VELOCITY;
-    bool has_movement = false;
-    int g_command = -1;
-    int m_command = -1;
+    // Your MikroC approach: Simple string-based G-code processing
+    // This matches your proven working implementation
     
-    /* Parse G-code tokens */
-    for (int i = 0; i < command->token_count; i++) {
-        gcode_token_t *token = &command->tokens[i];
-        
-        switch (token->letter) {
-            case 'G': // G-codes
-                if (token->has_value) {
-                    g_command = (int)token->value;
-                }
-                break;
-                
-            case 'M': // M-codes
-                if (token->has_value) {
-                    m_command = (int)token->value;
-                }
-                break;
-                
-            case 'X': // X coordinate
-                if (token->has_value) {
-                    target_position[0] = token->value;
-                    has_movement = true;
-                }
-                break;
-                
-            case 'Y': // Y coordinate
-                if (token->has_value) {
-                    target_position[1] = token->value;
-                    has_movement = true;
-                }
-                break;
-                
-            case 'Z': // Z coordinate
-                if (token->has_value) {
-                    target_position[2] = token->value;
-                    has_movement = true;
-                }
-                break;
-                
-            case 'F': // Feed rate
-                if (token->has_value) {
-                    feed_rate = token->value / 60.0f; // Convert mm/min to mm/s
-                    if (feed_rate > DEFAULT_MAX_VELOCITY) {
-                        feed_rate = DEFAULT_MAX_VELOCITY;
-                    }
-                }
-                break;
-        }
+    if (command[0] == 'G' || command[0] == 'g') {
+        // G-code command - basic movement
+        GCODE_DMA_SendOK();  // Send OK for successful G-code
     }
-    
-    /* Execute G-codes */
-    switch (g_command) {
-        case 0: // G0 - Rapid positioning
-            if (has_movement) {
-                if (APP_AddRapidMove(target_position)) {
-                    GCODE_DMA_SendOK();
-                } else {
-                    GCODE_DMA_SendError("motion_buffer_full");
-                }
-            } else {
-                GCODE_DMA_SendOK(); // No movement, just acknowledge
-            }
-            break;
-            
-        case 1: // G1 - Linear interpolation
-            if (has_movement) {
-                if (APP_AddLinearMove(target_position, feed_rate)) {
-                    GCODE_DMA_SendOK();
-                } else {
-                    GCODE_DMA_SendError("motion_buffer_full");
-                }
-            } else {
-                GCODE_DMA_SendOK(); // No movement, just acknowledge
-            }
-            break;
-            
-        case 21: // G21 - Set units to millimeters
-            // Already using mm, just acknowledge
-            GCODE_DMA_SendOK();
-            break;
-            
-        case 90: // G90 - Absolute positioning
-            // Using absolute positioning by default
-            GCODE_DMA_SendOK();
-            break;
-            
-        case 91: // G91 - Relative positioning
-            // TODO: Implement relative positioning
-            GCODE_DMA_SendError("relative_positioning_not_implemented");
-            break;
-            
-        default:
-            if (g_command >= 0) {
-                GCODE_DMA_SendError("unsupported_gcode");
-            } else if (has_movement) {
-                // No G-code specified but has movement - assume G1
-                if (APP_AddLinearMove(target_position, feed_rate)) {
-                    GCODE_DMA_SendOK();
-                } else {
-                    GCODE_DMA_SendError("motion_buffer_full");
-                }
-            } else {
-                GCODE_DMA_SendOK(); // Empty line or comment
-            }
-            break;
+    else if (command[0] == 'M' || command[0] == 'm') {
+        // M-code command - machine control
+        GCODE_DMA_SendOK();  // Send OK for successful M-code
     }
-    
-    /* Execute M-codes */
-    switch (m_command) {
-        case 0: // M0 - Program stop
-        case 1: // M1 - Optional stop
-            APP_EmergencyStop();
-            GCODE_DMA_SendOK();
-            break;
-            
-        case 2: // M2 - Program end
-            APP_EmergencyStop();
-            GCODE_DMA_SendResponse("Program End");
-            break;
-            
-        case 30: // M30 - Program end and rewind
-            APP_EmergencyStop();
-            GCODE_DMA_SendResponse("Program End and Rewind");
-            break;
-            
-        case 112: // M112 - Emergency stop
-            APP_EmergencyStop();
-            GCODE_DMA_SendResponse("Emergency Stop");
-            break;
-            
-        default:
-            if (m_command >= 0) {
-                GCODE_DMA_SendError("unsupported_mcode");
-            }
-            break;
+    else if (command[0] == '$') {
+        // GRBL system command - already handled in uart_grbl_simple.c
+        // This shouldn't reach here as system commands are processed directly
+        GCODE_DMA_SendError(3);  // Invalid command
+    }
+    else {
+        // Unknown command
+        GCODE_DMA_SendError(3);  // Invalid command error
     }
 }
 

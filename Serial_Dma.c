@@ -15,6 +15,10 @@ const char newline[] = "\r\n";
 char dma0int_flag;
 char dma1int_flag;
 
+// Pattern matching state variables
+char current_pattern = '?';  // Current pattern: '?' for status queries, '\n' for commands
+char pattern_switched = 0;   // Flag to indicate pattern was switched
+
 
 
 ////////////////////////////////////////////////////////////////
@@ -45,34 +49,24 @@ void  DMA0(){
     //Disable DMA0 and reset priority
     DCH0CONCLR = 0x8003;
 
-<<<<<<< HEAD
 #ifdef UART1_DMA
    //INTERRUPT IRQ NUMBER for UART 1 RX (113) | [0x10 = SIRQEN] [0x30 = PATEN & SIRQEN]
     DCH0ECON      =  (113 << 8 ) | 0x30;
-#elif UART2_DMA
-   //1INTERRUPT IRQ NUMBER for UART 2 RX (146) | [0x10 = SIRQEN] [0x30 = PATEN & SIRQEN]
+#else
+   //INTERRUPT IRQ NUMBER for UART 2 RX (146) | [0x10 = SIRQEN] [0x30 = PATEN & SIRQEN]
     DCH0ECON      =  (146 << 8 ) | 0x30;
 #endif
-    //Pattern data
-    DCH0DAT       = '\n';//'\0' //0x0A0D;//'\r\n';
 
-   #ifdef UART1_DMA
-    //Source address as UART1_RX
-    DCH0SSA       = KVA_TO_PA(0xBF822030);    //[0xBF822230 = U2RXREG]
-   #elif UART2_DMA
-    //Source address as UART2_RX
-    DCH0SSA       = KVA_TO_PA(0xBF822230);    //[0xBF822230 = U2RXREG]
-   #endif
-=======
-    //1INTERRUPT IRQ NUMBER for UART 2 TX (146) | [0x10 = SIRQEN] [0x30 = PATEN & SIRQEN]
-    DCH0ECON      =  (146 << 8 ) | 0x30;
-
-    //Pattern data
+    //Pattern data - start with '?' for GRBL status queries, will switch to '\n' for commands
     DCH0DAT       = '?';//'\0' //0x0A0D;//'\r\n';
 
-    //Source address as UART_RX
+#ifdef UART1_DMA
+    //Source address as UART1_RX
+    DCH0SSA       = KVA_TO_PA(0xBF822030);    //[0xBF822030 = U1RXREG]
+#else
+    //Source address as UART2_RX
     DCH0SSA       = KVA_TO_PA(0xBF822230);    //[0xBF822230 = U2RXREG]
->>>>>>> 5fccbb493b943575cfd5e09931f584d18a7d5345
+#endif
     DCH0SSIZ      = 1;                 // source size = 1byte at a time
 
     //Destination address  as RxBuffer
@@ -167,9 +161,25 @@ void DMA_CH0_ISR() iv IVT_DMA0 ilevel 5 ics ICS_AUTO{
  //   }
  // THIS CHANNEL IS AUTOMATICALLY ENABLED AFTER A BLOCK
  // OR ERROR ABORT EVENT, THIS SHOULD TAKE PLACE IF A
- // '\n' HAS BEEN RECIEVED OR 200 BYTES EXCEEDED
+ // pattern match HAS BEEN RECEIVED or 200 BYTES EXCEEDED
     if (DCH0INTbits.CHBCIF == 1){
          i = strlen(rxBuf);
+         
+         // Check if we received a pattern match character
+         if (i > 0) {
+             char last_char = rxBuf[i-1];
+             
+             // If we received '?' and current pattern is '?', switch to '\n' pattern
+             if (last_char == '?' && current_pattern == '?') {
+                 DMA_Switch_Pattern('\n');
+             }
+             // If we received '\n' and current pattern is '\n', handle the switch
+             else if (last_char == '\n' && current_pattern == '\n') {
+                 DMA_Handle_Pattern_Switch();
+                 // Switch back to '?' pattern for next status query
+                 DMA_Switch_Pattern('?');
+             }
+         }
     }
 
     // copy RxBuf -> temp_buffer  BUFFER_LENGTH
@@ -592,4 +602,22 @@ int i=0,j,k;
    d++;
  }
  *d = 0;
+}
+
+// Function to switch DMA pattern matching
+void DMA_Switch_Pattern(char new_pattern) {
+    if (current_pattern != new_pattern) {
+        current_pattern = new_pattern;
+        DCH0DAT = new_pattern;
+        pattern_switched = 1;
+    }
+}
+
+// Function to add \r\n when pattern switches from '?' to '\n'
+void DMA_Handle_Pattern_Switch(void) {
+    if (pattern_switched && current_pattern == '\n') {
+        // Add \r\n to the output buffer when switching from '?' to '\n'
+        dma_printf("\r\n");
+        pattern_switched = 0;  // Reset the flag
+    }
 }

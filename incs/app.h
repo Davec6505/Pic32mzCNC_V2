@@ -375,7 +375,7 @@ void APP_EmergencyStop(void);
     None (responses sent via DMA parser)
 */
 
-void APP_ExecuteGcodeCommand(gcode_parsed_line_t *command);
+void APP_ExecuteGcodeCommand(const char *command);
 
 /*******************************************************************************
   Function:

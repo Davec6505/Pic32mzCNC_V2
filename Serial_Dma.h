@@ -77,4 +77,14 @@ void Reset_Ring();
 int  Loopback();
 int dma_printf(char* str,...);
 void lTrim(char* d,char* s);
+
+//////////////////////////////////////////
+//Pattern matching functions
+void DMA_Switch_Pattern(char new_pattern);
+void DMA_Handle_Pattern_Switch(void);
+
+//Global pattern variables
+extern char current_pattern;
+extern char pattern_switched;
+
 #endif

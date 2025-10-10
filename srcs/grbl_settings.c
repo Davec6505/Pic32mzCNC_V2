@@ -416,6 +416,9 @@ void GRBL_PrintSettings(void)
         
         GRBL_PrintSetting((grbl_setting_id_t)i);
     }
+    
+    // Send ok after all settings are printed (GRBL standard)
+    GCODE_DMA_SendOK();
 }
 
 void GRBL_PrintSetting(grbl_setting_id_t setting_id)
@@ -482,6 +485,23 @@ bool GRBL_ProcessSystemCommand(const char *command)
     if (strcmp(command, "$C") == 0) {
         // Check mode toggle
         printf("Check mode toggled\n");
+        GRBL_SendOK();
+        return true;
+    }
+    
+    // Handle $I command (build info) - required by UGS
+    if (strcmp(command, "$I") == 0) {
+        // Send GRBL build info in exact v1.1f format as per official GRBL
+        GCODE_DMA_SendResponse("[VER:1.1f.20161014:]");
+        GCODE_DMA_SendResponse("[OPT:VL,15,128]");  // VL = Variable spindle + Laser mode, 15 blocks, 128 bytes
+        GRBL_SendOK();
+        return true;
+    }
+    
+    // Handle $G command (parser state) - required by UGS  
+    if (strcmp(command, "$G") == 0) {
+        // Send GRBL parser state in standard format
+        GCODE_DMA_SendResponse("[GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0.0 S0]");
         GRBL_SendOK();
         return true;
     }
