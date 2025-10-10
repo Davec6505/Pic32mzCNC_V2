@@ -1,0 +1,72 @@
+../objs/gcode_parser_dma.o: ../srcs/gcode_parser_dma.c \
+ ../incs/gcode_parser_dma.h ../incs/config/default/definitions.h \
+ ../incs/config/default/peripheral/coretimer/plib_coretimer.h \
+ ../incs/config/default/peripheral/tmr/plib_tmr4.h \
+ ../incs/config/default/device.h \
+ ../incs/config/default/toolchain_specifics.h \
+ ../incs/config/default/peripheral/tmr/plib_tmr_common.h \
+ ../incs/config/default/peripheral/uart/plib_uart2.h \
+ ../incs/config/default/peripheral/uart/plib_uart_common.h \
+ ../incs/config/default/peripheral/tmr/plib_tmr2.h \
+ ../incs/config/default/peripheral/tmr/plib_tmr3.h \
+ ../incs/config/default/peripheral/clk/plib_clk.h \
+ ../incs/config/default/peripheral/gpio/plib_gpio.h \
+ ../incs/config/default/peripheral/cache/plib_cache.h \
+ ../incs/config/default/peripheral/evic/plib_evic.h \
+ ../incs/config/default/peripheral/dmac/plib_dmac.h \
+ ../incs/config/default/peripheral/tmr1/plib_tmr1.h \
+ ../incs/config/default/peripheral/tmr1/plib_tmr1_common.h \
+ ../incs/config/default/peripheral/ocmp/plib_ocmp1.h \
+ ../incs/config/default/peripheral/ocmp/plib_ocmp_common.h \
+ ../incs/config/default/peripheral/ocmp/plib_ocmp4.h \
+ ../incs/config/default/peripheral/ocmp/plib_ocmp5.h \
+ ../incs/grbl_settings.h \
+ ../incs/config/default/peripheral/uart/plib_uart2.h
+
+../incs/gcode_parser_dma.h:
+
+../incs/config/default/definitions.h:
+
+../incs/config/default/peripheral/coretimer/plib_coretimer.h:
+
+../incs/config/default/peripheral/tmr/plib_tmr4.h:
+
+../incs/config/default/device.h:
+
+../incs/config/default/toolchain_specifics.h:
+
+../incs/config/default/peripheral/tmr/plib_tmr_common.h:
+
+../incs/config/default/peripheral/uart/plib_uart2.h:
+
+../incs/config/default/peripheral/uart/plib_uart_common.h:
+
+../incs/config/default/peripheral/tmr/plib_tmr2.h:
+
+../incs/config/default/peripheral/tmr/plib_tmr3.h:
+
+../incs/config/default/peripheral/clk/plib_clk.h:
+
+../incs/config/default/peripheral/gpio/plib_gpio.h:
+
+../incs/config/default/peripheral/cache/plib_cache.h:
+
+../incs/config/default/peripheral/evic/plib_evic.h:
+
+../incs/config/default/peripheral/dmac/plib_dmac.h:
+
+../incs/config/default/peripheral/tmr1/plib_tmr1.h:
+
+../incs/config/default/peripheral/tmr1/plib_tmr1_common.h:
+
+../incs/config/default/peripheral/ocmp/plib_ocmp1.h:
+
+../incs/config/default/peripheral/ocmp/plib_ocmp_common.h:
+
+../incs/config/default/peripheral/ocmp/plib_ocmp4.h:
+
+../incs/config/default/peripheral/ocmp/plib_ocmp5.h:
+
+../incs/grbl_settings.h:
+
+../incs/config/default/peripheral/uart/plib_uart2.h:

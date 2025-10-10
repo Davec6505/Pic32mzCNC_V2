@@ -1,0 +1,30 @@
+# Build artifacts
+objs/
+bins/
+*.o
+*.hex
+*.map
+*.elf
+*.d
+
+# IDE files
+.mcp*
+*.mcp
+*.mcw
+*.workspace
+.vs/
+*.suo
+*.user
+
+# Temporary files
+*~
+*.tmp
+*.bak
+*.swp
+
+# Generated files
+other/production.map
+other/memoryfile.xml
+
+# Keep important binaries for reference
+!bins/CS23_working_backup
