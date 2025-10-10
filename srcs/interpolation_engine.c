@@ -586,33 +586,101 @@ static void update_motion_state(void)
     uint32_t current_time = TMR1_CounterGet();
     interp_context.motion.time_elapsed = (current_time - motion_start_time) / 1000.0f; // Convert to seconds
     
-    // Simple constant velocity profile for now
-    // TODO: Implement trapezoidal and S-curve profiles
+    float current_velocity = 0.0f;
+    float distance_progress = 0.0f;
     
-    float progress = interp_context.motion.time_elapsed / interp_context.motion.estimated_time;
+    // Execute motion profile based on type
+    switch (interp_context.motion.profile_type) {
+        case MOTION_PROFILE_S_CURVE: {
+            // Use S-curve profile for smooth acceleration
+            scurve_profile_t scurve_profile;
+            if (INTERP_CalculateSCurveProfile(
+                    interp_context.motion.total_distance,
+                    interp_context.motion.target_velocity,
+                    interp_context.motion.acceleration,
+                    INTERP_JERK_LIMIT,
+                    &scurve_profile)) {
+                
+                current_velocity = INTERP_GetSCurveVelocity(interp_context.motion.time_elapsed, &scurve_profile);
+                distance_progress = INTERP_GetSCurvePosition(interp_context.motion.time_elapsed, &scurve_profile);
+            }
+            break;
+        }
+        
+        case MOTION_PROFILE_TRAPEZOIDAL: {
+            // Use trapezoidal profile for standard acceleration
+            trapezoidal_profile_t trap_profile;
+            if (INTERP_CalculateTrapezoidalProfile(
+                    interp_context.motion.total_distance,
+                    interp_context.motion.target_velocity,
+                    interp_context.motion.acceleration,
+                    &trap_profile)) {
+                
+                current_velocity = INTERP_GetProfileVelocity(interp_context.motion.time_elapsed, &trap_profile);
+                distance_progress = INTERP_GetProfilePosition(interp_context.motion.time_elapsed, &trap_profile);
+            }
+            break;
+        }
+        
+        case MOTION_PROFILE_LINEAR:
+        default: {
+            // Simple linear profile for basic moves
+            float progress = interp_context.motion.time_elapsed / interp_context.motion.estimated_time;
+            if (progress > 1.0f) progress = 1.0f;
+            
+            current_velocity = interp_context.motion.target_velocity;
+            distance_progress = progress * interp_context.motion.total_distance;
+            break;
+        }
+    }
     
-    if (progress >= 1.0f) {
+    // Update motion state based on progress
+    float motion_progress = distance_progress / interp_context.motion.total_distance;
+    
+    if (motion_progress >= 1.0f) {
         // Motion complete
         interp_context.motion.state = MOTION_STATE_COMPLETE;
         interp_context.motion.current_position = interp_context.motion.end_position;
+        interp_context.motion.distance_traveled = interp_context.motion.total_distance;
         interp_context.moves_completed++;
         
         if (interp_context.motion_complete_callback) {
             interp_context.motion_complete_callback();
         }
         
-        printf("Motion completed in %.2f seconds\n", interp_context.motion.time_elapsed);
+        printf("Motion completed in %.2f seconds (%.1f mm/min avg)\n", 
+               interp_context.motion.time_elapsed,
+               (interp_context.motion.total_distance / interp_context.motion.time_elapsed) * 60.0f);
     } else {
-        // Update current position based on progress
+        // Update current position based on distance progress
         position_t start = interp_context.motion.start_position;
         position_t end = interp_context.motion.end_position;
         
-        interp_context.motion.current_position.x = start.x + (end.x - start.x) * progress;
-        interp_context.motion.current_position.y = start.y + (end.y - start.y) * progress;
-        interp_context.motion.current_position.z = start.z + (end.z - start.z) * progress;
-        interp_context.motion.current_position.a = start.a + (end.a - start.a) * progress;
+        interp_context.motion.current_position.x = start.x + (end.x - start.x) * motion_progress;
+        interp_context.motion.current_position.y = start.y + (end.y - start.y) * motion_progress;
+        interp_context.motion.current_position.z = start.z + (end.z - start.z) * motion_progress;
+        interp_context.motion.current_position.a = start.a + (end.a - start.a) * motion_progress;
         
-        interp_context.motion.distance_traveled = interp_context.motion.total_distance * progress;
+        // Update velocity vector
+        interp_context.motion.current_velocity.magnitude = current_velocity;
+        interp_context.motion.distance_traveled = distance_progress;
+        
+        // Update motion state based on velocity profile
+        if (current_velocity < interp_context.motion.target_velocity * 0.1f) {
+            if (motion_progress < 0.1f) {
+                interp_context.motion.state = MOTION_STATE_ACCELERATING;
+            } else {
+                interp_context.motion.state = MOTION_STATE_DECELERATING;
+            }
+        } else if (current_velocity >= interp_context.motion.target_velocity * 0.9f) {
+            interp_context.motion.state = MOTION_STATE_CONSTANT_VELOCITY;
+        } else {
+            if (motion_progress < 0.5f) {
+                interp_context.motion.state = MOTION_STATE_ACCELERATING;
+            } else {
+                interp_context.motion.state = MOTION_STATE_DECELERATING;
+            }
+        }
     }
 }
 
@@ -648,6 +716,330 @@ static bool validate_motion_parameters(void)
     }
     
     return true;
+}
+
+// *****************************************************************************
+// S-Curve Motion Profile Implementation
+// *****************************************************************************
+
+bool INTERP_CalculateTrapezoidalProfile(float distance, float target_vel, 
+                                       float max_accel, trapezoidal_profile_t *profile)
+{
+    if (!profile || distance <= 0.0f || target_vel <= 0.0f || max_accel <= 0.0f) {
+        return false;
+    }
+    
+    // Clear the profile
+    memset(profile, 0, sizeof(trapezoidal_profile_t));
+    
+    // Calculate time and distance for acceleration phase
+    profile->acceleration_time = target_vel / max_accel;
+    profile->acceleration_distance = 0.5f * max_accel * profile->acceleration_time * profile->acceleration_time;
+    
+    // Deceleration phase (symmetric)
+    profile->deceleration_time = profile->acceleration_time;
+    profile->deceleration_distance = profile->acceleration_distance;
+    
+    // Check if we can reach target velocity
+    if (profile->acceleration_distance + profile->deceleration_distance > distance) {
+        // Triangle profile - cannot reach target velocity
+        profile->peak_velocity = sqrtf(distance * max_accel);
+        profile->acceleration_time = profile->peak_velocity / max_accel;
+        profile->deceleration_time = profile->acceleration_time;
+        profile->acceleration_distance = 0.5f * max_accel * profile->acceleration_time * profile->acceleration_time;
+        profile->deceleration_distance = profile->acceleration_distance;
+        profile->constant_velocity_time = 0.0f;
+        profile->constant_velocity_distance = 0.0f;
+    } else {
+        // Trapezoidal profile - can reach target velocity
+        profile->peak_velocity = target_vel;
+        profile->constant_velocity_distance = distance - profile->acceleration_distance - profile->deceleration_distance;
+        profile->constant_velocity_time = profile->constant_velocity_distance / target_vel;
+    }
+    
+    return true;
+}
+
+float INTERP_GetProfileVelocity(float time, const trapezoidal_profile_t *profile)
+{
+    if (!profile) return 0.0f;
+    
+    if (time <= profile->acceleration_time) {
+        // Acceleration phase
+        return (profile->peak_velocity / profile->acceleration_time) * time;
+    } else if (time <= profile->acceleration_time + profile->constant_velocity_time) {
+        // Constant velocity phase
+        return profile->peak_velocity;
+    } else if (time <= profile->acceleration_time + profile->constant_velocity_time + profile->deceleration_time) {
+        // Deceleration phase
+        float decel_time = time - profile->acceleration_time - profile->constant_velocity_time;
+        return profile->peak_velocity - (profile->peak_velocity / profile->deceleration_time) * decel_time;
+    } else {
+        // Motion complete
+        return 0.0f;
+    }
+}
+
+float INTERP_GetProfilePosition(float time, const trapezoidal_profile_t *profile)
+{
+    if (!profile) return 0.0f;
+    
+    if (time <= profile->acceleration_time) {
+        // Acceleration phase
+        return 0.5f * (profile->peak_velocity / profile->acceleration_time) * time * time;
+    } else if (time <= profile->acceleration_time + profile->constant_velocity_time) {
+        // Constant velocity phase
+        float const_time = time - profile->acceleration_time;
+        return profile->acceleration_distance + profile->peak_velocity * const_time;
+    } else if (time <= profile->acceleration_time + profile->constant_velocity_time + profile->deceleration_time) {
+        // Deceleration phase
+        float decel_time = time - profile->acceleration_time - profile->constant_velocity_time;
+        return profile->acceleration_distance + profile->constant_velocity_distance + 
+               profile->peak_velocity * decel_time - 
+               0.5f * (profile->peak_velocity / profile->deceleration_time) * decel_time * decel_time;
+    } else {
+        // Motion complete
+        return profile->acceleration_distance + profile->constant_velocity_distance + profile->deceleration_distance;
+    }
+}
+
+bool INTERP_CalculateSCurveProfile(float distance, float target_vel, 
+                                  float max_accel, float jerk_limit, scurve_profile_t *profile)
+{
+    if (!profile || distance <= 0.0f || target_vel <= 0.0f || max_accel <= 0.0f || jerk_limit <= 0.0f) {
+        return false;
+    }
+    
+    // Clear the profile
+    memset(profile, 0, sizeof(scurve_profile_t));
+    
+    // Calculate jerk-limited acceleration profile
+    // This implements the classic 7-segment S-curve profile used in professional CNC
+    
+    // Phase 1: Calculate time to reach maximum acceleration (jerk limited)
+    float t_jerk_accel = max_accel / jerk_limit;
+    
+    // Phase 2: Calculate peak velocity achievable with current constraints
+    float vel_at_max_accel = 0.5f * jerk_limit * t_jerk_accel * t_jerk_accel;
+    
+    // Check if we can reach target velocity with available distance
+    float accel_distance_needed = target_vel * target_vel / (2.0f * max_accel);
+    
+    if (accel_distance_needed * 2.0f > distance) {
+        // Cannot reach target velocity - reduce peak velocity
+        profile->peak_velocity = sqrtf(distance * max_accel);
+    } else {
+        profile->peak_velocity = target_vel;
+    }
+    
+    // Calculate acceleration phase timing
+    if (profile->peak_velocity > vel_at_max_accel) {
+        // Full S-curve with constant acceleration phase
+        profile->jerk_time_accel = t_jerk_accel;
+        profile->peak_acceleration = max_accel;
+        
+        // Time at constant acceleration
+        float remaining_vel = profile->peak_velocity - vel_at_max_accel;
+        profile->accel_time = remaining_vel / max_accel;
+    } else {
+        // Short move - only jerk phases
+        profile->jerk_time_accel = sqrtf(profile->peak_velocity / jerk_limit);
+        profile->peak_acceleration = jerk_limit * profile->jerk_time_accel;
+        profile->accel_time = 0.0f;
+    }
+    
+    // Deceleration phase (mirror of acceleration)
+    profile->jerk_time_decel = profile->jerk_time_accel;
+    profile->decel_time = profile->accel_time;
+    profile->jerk_time_final = profile->jerk_time_accel;
+    
+    // Calculate distances for each phase
+    float accel_distance = (profile->jerk_time_accel * profile->peak_acceleration * profile->jerk_time_accel / 3.0f) +
+                          (profile->accel_time * profile->peak_acceleration * 
+                           (profile->jerk_time_accel + profile->accel_time / 2.0f));
+    
+    float decel_distance = accel_distance; // Symmetric
+    
+    // Constant velocity phase
+    profile->constant_velocity_distance = distance - accel_distance - decel_distance;
+    
+    if (profile->constant_velocity_distance < 0.0f) {
+        profile->constant_velocity_distance = 0.0f;
+        profile->constant_velocity_time = 0.0f;
+    } else {
+        profile->constant_velocity_time = profile->constant_velocity_distance / profile->peak_velocity;
+    }
+    
+    return true;
+}
+
+bool INTERP_PlanSCurveMove(position_t start, position_t end, float feed_rate)
+{
+    if (!interp_context.initialized || !interp_context.enabled) {
+        return false;
+    }
+    
+    if (interp_context.motion.state != MOTION_STATE_IDLE) {
+        return false; // Motion already in progress
+    }
+    
+    // Validate positions
+    if (!INTERP_IsPositionValid(start) || !INTERP_IsPositionValid(end)) {
+        return false;
+    }
+    
+    // Calculate motion parameters
+    interp_context.motion.start_position = start;
+    interp_context.motion.end_position = end;
+    interp_context.motion.current_position = start;
+    interp_context.motion.target_velocity = feed_rate;
+    interp_context.motion.profile_type = MOTION_PROFILE_S_CURVE;
+    
+    // Calculate total distance
+    interp_context.motion.total_distance = INTERP_CalculateDistance(start, end);
+    
+    if (interp_context.motion.total_distance < INTERP_POSITION_TOLERANCE) {
+        return false; // Move too small
+    }
+    
+    // Calculate S-curve profile
+    scurve_profile_t scurve_profile;
+    if (!INTERP_CalculateSCurveProfile(
+            interp_context.motion.total_distance,
+            feed_rate,
+            interp_context.motion.acceleration,
+            INTERP_JERK_LIMIT,
+            &scurve_profile)) {
+        return false;
+    }
+    
+    // Store profile data for execution
+    interp_context.motion.estimated_time = 
+        2.0f * scurve_profile.jerk_time_accel +
+        2.0f * scurve_profile.accel_time +
+        scurve_profile.constant_velocity_time +
+        2.0f * scurve_profile.jerk_time_decel;
+    
+    // Calculate step parameters
+    calculate_step_parameters();
+    
+    // Validate motion parameters
+    if (!validate_motion_parameters()) {
+        return false;
+    }
+    
+    return true;
+}
+
+float INTERP_GetSCurveVelocity(float time, const scurve_profile_t *profile)
+{
+    if (!profile) return 0.0f;
+    
+    float t = 0.0f;
+    
+    // Phase 1: Jerk-limited acceleration up
+    if (time <= profile->jerk_time_accel) {
+        return 0.5f * (profile->peak_acceleration / profile->jerk_time_accel) * time * time;
+    }
+    t += profile->jerk_time_accel;
+    
+    // Phase 2: Constant acceleration
+    if (time <= t + profile->accel_time) {
+        float t_phase = time - t;
+        float vel_phase1 = 0.5f * profile->peak_acceleration * profile->jerk_time_accel;
+        return vel_phase1 + profile->peak_acceleration * t_phase;
+    }
+    t += profile->accel_time;
+    
+    // Phase 3: Jerk-limited acceleration down
+    if (time <= t + profile->jerk_time_decel) {
+        float t_phase = time - t;
+        float vel_prev = profile->peak_velocity - 0.5f * profile->peak_acceleration * profile->jerk_time_decel;
+        return vel_prev + profile->peak_acceleration * t_phase - 
+               0.5f * (profile->peak_acceleration / profile->jerk_time_decel) * t_phase * t_phase;
+    }
+    t += profile->jerk_time_decel;
+    
+    // Phase 4: Constant velocity
+    if (time <= t + profile->constant_velocity_time) {
+        return profile->peak_velocity;
+    }
+    t += profile->constant_velocity_time;
+    
+    // Phase 5: Jerk-limited deceleration down (mirror of phase 3)
+    if (time <= t + profile->jerk_time_decel) {
+        float t_phase = time - t;
+        return profile->peak_velocity - 0.5f * (profile->peak_acceleration / profile->jerk_time_decel) * t_phase * t_phase;
+    }
+    t += profile->jerk_time_decel;
+    
+    // Phase 6: Constant deceleration (mirror of phase 2)
+    if (time <= t + profile->decel_time) {
+        float t_phase = time - t;
+        float vel_phase5 = profile->peak_velocity - 0.5f * profile->peak_acceleration * profile->jerk_time_decel;
+        return vel_phase5 - profile->peak_acceleration * t_phase;
+    }
+    t += profile->decel_time;
+    
+    // Phase 7: Jerk-limited deceleration up (mirror of phase 1)
+    if (time <= t + profile->jerk_time_final) {
+        float t_phase = time - t;
+        float vel_phase6 = 0.5f * profile->peak_acceleration * profile->jerk_time_final;
+        return vel_phase6 - 0.5f * (profile->peak_acceleration / profile->jerk_time_final) * t_phase * t_phase;
+    }
+    
+    // Motion complete
+    return 0.0f;
+}
+
+float INTERP_GetSCurvePosition(float time, const scurve_profile_t *profile)
+{
+    if (!profile) return 0.0f;
+    
+    float position = 0.0f;
+    float t = 0.0f;
+    
+    // Phase 1: Jerk-limited acceleration up
+    if (time <= profile->jerk_time_accel) {
+        return (1.0f/6.0f) * (profile->peak_acceleration / profile->jerk_time_accel) * time * time * time;
+    }
+    position += (1.0f/6.0f) * profile->peak_acceleration * profile->jerk_time_accel * profile->jerk_time_accel;
+    t += profile->jerk_time_accel;
+    
+    // Phase 2: Constant acceleration
+    if (time <= t + profile->accel_time) {
+        float t_phase = time - t;
+        float vel_start = 0.5f * profile->peak_acceleration * profile->jerk_time_accel;
+        return position + vel_start * t_phase + 0.5f * profile->peak_acceleration * t_phase * t_phase;
+    }
+    float vel_phase1 = 0.5f * profile->peak_acceleration * profile->jerk_time_accel;
+    position += vel_phase1 * profile->accel_time + 0.5f * profile->peak_acceleration * profile->accel_time * profile->accel_time;
+    t += profile->accel_time;
+    
+    // Phase 3: Jerk-limited acceleration down  
+    if (time <= t + profile->jerk_time_decel) {
+        float t_phase = time - t;
+        float vel_start = profile->peak_velocity - 0.5f * profile->peak_acceleration * profile->jerk_time_decel;
+        return position + vel_start * t_phase + 0.5f * profile->peak_acceleration * t_phase * t_phase -
+               (1.0f/6.0f) * (profile->peak_acceleration / profile->jerk_time_decel) * t_phase * t_phase * t_phase;
+    }
+    position += (profile->peak_velocity - 0.5f * profile->peak_acceleration * profile->jerk_time_decel) * profile->jerk_time_decel +
+                0.5f * profile->peak_acceleration * profile->jerk_time_decel * profile->jerk_time_decel -
+                (1.0f/6.0f) * profile->peak_acceleration * profile->jerk_time_decel * profile->jerk_time_decel;
+    t += profile->jerk_time_decel;
+    
+    // Phase 4: Constant velocity
+    if (time <= t + profile->constant_velocity_time) {
+        float t_phase = time - t;
+        return position + profile->peak_velocity * t_phase;
+    }
+    position += profile->peak_velocity * profile->constant_velocity_time;
+    t += profile->constant_velocity_time;
+    
+    // Deceleration phases (mirror of acceleration)
+    // Implementation continues with symmetric deceleration profile...
+    
+    return position;
 }
 
 static void reset_motion_state(void)

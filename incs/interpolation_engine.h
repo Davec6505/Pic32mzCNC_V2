@@ -227,6 +227,7 @@ typedef struct {
     float accel_time;
     float jerk_time_decel;
     float constant_velocity_time;
+    float constant_velocity_distance;
     float decel_time;
     float jerk_time_final;
     float peak_velocity;
@@ -240,6 +241,10 @@ bool INTERP_CalculateSCurveProfile(float distance, float target_vel,
                                   float max_accel, float jerk_limit, scurve_profile_t *profile);
 float INTERP_GetProfileVelocity(float time, const trapezoidal_profile_t *profile);
 float INTERP_GetProfilePosition(float time, const trapezoidal_profile_t *profile);
+
+/* S-Curve Profile Functions */
+float INTERP_GetSCurveVelocity(float time, const scurve_profile_t *profile);
+float INTERP_GetSCurvePosition(float time, const scurve_profile_t *profile);
 
 // *****************************************************************************
 // *****************************************************************************
