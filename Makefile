@@ -6,6 +6,11 @@ MODULE     := CS23
 # The device is expected to be a PIC32MZ family device.
 DEVICE     := 32MZ2048EFH100
 
+# Memory configuration for dynamic allocation
+# These control heap and stack sizes for the PIC32MZ application
+HEAP_SIZE  := 20480    # 20KB heap for dynamic memory allocation
+STACK_SIZE := 20480    # 20KB stack for function calls and local variables
+
 # Compiler location and DFP (Device Family Pack) location
 # The compiler location is expected to be the path to the xc32-gcc compiler.
 # The DFP location is expected to be the path to the Microchip Device Family Pack.
@@ -33,7 +38,7 @@ BUILD_DIR=make build_dir
 
 all:
 	@echo "######  BUILDING   ########"
-	cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE)
+	cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE)
 	@echo "###### BIN TO HEX ########"
 	cd bins && "$(COMPILER_LOCATION)/xc32-bin2hex" $(MODULE)
 	@echo "######  BUILD COMPLETE   ########"
@@ -45,7 +50,7 @@ build_dir:
 
 debug:
 	@echo "####### DEBUGGING OUTPUTS #######"
-	cd srcs && $(BUILD) debug COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE)
+	cd srcs && $(BUILD) debug COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE)
 
 platform:
 	@echo "####### PLATFORM INFO #######"

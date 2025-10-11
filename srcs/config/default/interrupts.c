@@ -20,26 +20,26 @@
 
 // DOM-IGNORE-BEGIN
 /*******************************************************************************
-* Copyright (C) 2018 Microchip Technology Inc. and its subsidiaries.
-*
-* Subject to your compliance with these terms, you may use Microchip software
-* and any derivatives exclusively with Microchip products. It is your
-* responsibility to comply with third party license terms applicable to your
-* use of third party software (including open source software) that may
-* accompany Microchip software.
-*
-* THIS SOFTWARE IS SUPPLIED BY MICROCHIP "AS IS". NO WARRANTIES, WHETHER
-* EXPRESS, IMPLIED OR STATUTORY, APPLY TO THIS SOFTWARE, INCLUDING ANY IMPLIED
-* WARRANTIES OF NON-INFRINGEMENT, MERCHANTABILITY, AND FITNESS FOR A
-* PARTICULAR PURPOSE.
-*
-* IN NO EVENT WILL MICROCHIP BE LIABLE FOR ANY INDIRECT, SPECIAL, PUNITIVE,
-* INCIDENTAL OR CONSEQUENTIAL LOSS, DAMAGE, COST OR EXPENSE OF ANY KIND
-* WHATSOEVER RELATED TO THE SOFTWARE, HOWEVER CAUSED, EVEN IF MICROCHIP HAS
-* BEEN ADVISED OF THE POSSIBILITY OR THE DAMAGES ARE FORESEEABLE. TO THE
-* FULLEST EXTENT ALLOWED BY LAW, MICROCHIP'S TOTAL LIABILITY ON ALL CLAIMS IN
-* ANY WAY RELATED TO THIS SOFTWARE WILL NOT EXCEED THE AMOUNT OF FEES, IF ANY,
-* THAT YOU HAVE PAID DIRECTLY TO MICROCHIP FOR THIS SOFTWARE.
+ * Copyright (C) 2018 Microchip Technology Inc. and its subsidiaries.
+ *
+ * Subject to your compliance with these terms, you may use Microchip software
+ * and any derivatives exclusively with Microchip products. It is your
+ * responsibility to comply with third party license terms applicable to your
+ * use of third party software (including open source software) that may
+ * accompany Microchip software.
+ *
+ * THIS SOFTWARE IS SUPPLIED BY MICROCHIP "AS IS". NO WARRANTIES, WHETHER
+ * EXPRESS, IMPLIED OR STATUTORY, APPLY TO THIS SOFTWARE, INCLUDING ANY IMPLIED
+ * WARRANTIES OF NON-INFRINGEMENT, MERCHANTABILITY, AND FITNESS FOR A
+ * PARTICULAR PURPOSE.
+ *
+ * IN NO EVENT WILL MICROCHIP BE LIABLE FOR ANY INDIRECT, SPECIAL, PUNITIVE,
+ * INCIDENTAL OR CONSEQUENTIAL LOSS, DAMAGE, COST OR EXPENSE OF ANY KIND
+ * WHATSOEVER RELATED TO THE SOFTWARE, HOWEVER CAUSED, EVEN IF MICROCHIP HAS
+ * BEEN ADVISED OF THE POSSIBILITY OR THE DAMAGES ARE FORESEEABLE. TO THE
+ * FULLEST EXTENT ALLOWED BY LAW, MICROCHIP'S TOTAL LIABILITY ON ALL CLAIMS IN
+ * ANY WAY RELATED TO THIS SOFTWARE WILL NOT EXCEED THE AMOUNT OF FEES, IF ANY,
+ * THAT YOU HAVE PAID DIRECTLY TO MICROCHIP FOR THIS SOFTWARE.
  *******************************************************************************/
 // DOM-IGNORE-END
 
@@ -51,14 +51,11 @@
 #include "interrupts.h"
 #include "definitions.h"
 
-
-
 // *****************************************************************************
 // *****************************************************************************
 // Section: System Interrupt Vector Functions
 // *****************************************************************************
 // *****************************************************************************
-
 
 /* All the handlers are defined here.  Each will call its PLIB-specific function. */
 // *****************************************************************************
@@ -66,57 +63,53 @@
 // Section: System Interrupt Vector declarations
 // *****************************************************************************
 // *****************************************************************************
-void CORE_TIMER_Handler (void);
-void TIMER_1_Handler (void);
-void OUTPUT_COMPARE_1_Handler (void);
-void OUTPUT_COMPARE_4_Handler (void);
-void OUTPUT_COMPARE_5_Handler (void);
-void DMA0_Handler (void);
-void DMA1_Handler (void);
-
+void CORE_TIMER_Handler(void);
+void TIMER_1_Handler(void);
+void OUTPUT_COMPARE_1_Handler(void);
+void OUTPUT_COMPARE_4_Handler(void);
+void OUTPUT_COMPARE_5_Handler(void);
+void DMA0_Handler(void);
+void DMA1_Handler(void);
 
 // *****************************************************************************
 // *****************************************************************************
 // Section: System Interrupt Vector definitions
 // *****************************************************************************
 // *****************************************************************************
-void __attribute__((used)) __ISR(_CORE_TIMER_VECTOR, ipl1SRS) CORE_TIMER_Handler (void)
+void __attribute__((used)) __ISR(_CORE_TIMER_VECTOR, ipl1SRS) CORE_TIMER_Handler(void)
 {
-    CORE_TIMER_InterruptHandler();
+  CORE_TIMER_InterruptHandler();
 }
 
-void __attribute__((used)) __ISR(_TIMER_1_VECTOR, ipl2SRS) TIMER_1_Handler (void)
+void __attribute__((used)) __ISR(_TIMER_1_VECTOR, ipl2SRS) TIMER_1_Handler(void)
 {
-    TIMER_1_InterruptHandler();
+  TIMER_1_InterruptHandler();
 }
 
-void __attribute__((used)) __ISR(_OUTPUT_COMPARE_1_VECTOR, ipl3SRS) OUTPUT_COMPARE_1_Handler (void)
+void __attribute__((used)) __ISR(_OUTPUT_COMPARE_1_VECTOR, ipl3SRS) OUTPUT_COMPARE_1_Handler(void)
 {
-    OUTPUT_COMPARE_1_InterruptHandler();
+  OUTPUT_COMPARE_1_InterruptHandler();
 }
 
-void __attribute__((used)) __ISR(_OUTPUT_COMPARE_4_VECTOR, ipl3SRS) OUTPUT_COMPARE_4_Handler (void)
+void __attribute__((used)) __ISR(_OUTPUT_COMPARE_4_VECTOR, ipl3SRS) OUTPUT_COMPARE_4_Handler(void)
 {
-    OUTPUT_COMPARE_4_InterruptHandler();
+  OUTPUT_COMPARE_4_InterruptHandler();
 }
 
-void __attribute__((used)) __ISR(_OUTPUT_COMPARE_5_VECTOR, ipl3SRS) OUTPUT_COMPARE_5_Handler (void)
+void __attribute__((used)) __ISR(_OUTPUT_COMPARE_5_VECTOR, ipl3SRS) OUTPUT_COMPARE_5_Handler(void)
 {
-    OUTPUT_COMPARE_5_InterruptHandler();
+  OUTPUT_COMPARE_5_InterruptHandler();
 }
 
-void __attribute__((used)) __ISR(_DMA0_VECTOR, ipl1SRS) DMA0_Handler (void)
+void __attribute__((used)) __ISR(_DMA0_VECTOR, ipl1SRS) DMA0_Handler(void)
 {
-    DMA0_InterruptHandler();
+  DMA0_InterruptHandler();
 }
 
-void __attribute__((used)) __ISR(_DMA1_VECTOR, ipl1SRS) DMA1_Handler (void)
+void __attribute__((used)) __ISR(_DMA1_VECTOR, ipl1SRS) DMA1_Handler(void)
 {
-    DMA1_InterruptHandler();
+  DMA1_InterruptHandler();
 }
-
-
-
 
 /*******************************************************************************
  End of File

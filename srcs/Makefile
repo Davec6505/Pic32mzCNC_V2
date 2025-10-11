@@ -167,7 +167,7 @@ DIRECT_OBJ := $(CC)  -g  -c $(MCU)  -ffunction-sections -fdata-sections -O1 -fno
 			
 
 LINKER_SCRIPT := $(DFP)/xc32/$(DEVICE)/p$(DEVICE).ld
-DIRECT_LINK := $(CC)  $(MCU) -nostartfiles -DXPRJ_default=default -mdfp="$(DFP)" 				-Wl,--defsym=__MPLAB_BUILD=1,--script="$(LINKER_SCRIPT)",--defsym=_min_heap_size=512,--gc-sections,--no-code-in-dinit,--no-dinit-in-serial-mem,-Map="$(OUT_DIR)/production.map",--memorysummary,$(OUT_DIR)/memoryfile.xml 
+DIRECT_LINK := $(CC)  $(MCU) -nostartfiles -DXPRJ_default=default -mdfp="$(DFP)" 				-Wl,--defsym=__MPLAB_BUILD=1,--script="$(LINKER_SCRIPT)",--defsym=_min_heap_size=$(HEAP_SIZE),--defsym=_min_stack_size=$(STACK_SIZE),--gc-sections,--no-code-in-dinit,--no-dinit-in-serial-mem,-Map="$(OUT_DIR)/production.map",--memorysummary,$(OUT_DIR)/memoryfile.xml 
 
 
 

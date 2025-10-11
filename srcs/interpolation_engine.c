@@ -476,7 +476,7 @@ void INTERP_HandleHardLimit(axis_id_t axis, bool min_limit, bool max_limit)
     // Optional: Stop all motion if any hard limit is hit (GRBL behavior)
     if (min_limit || max_limit)
     {
-        printf("Hard limit detected - stopping ALL motion for safety\n");
+        // printf("Hard limit detected - stopping ALL motion for safety\n");  // Commented out - UGS treats as error
         INTERP_EmergencyStop();
     }
 }
@@ -1035,7 +1035,7 @@ void INTERP_StopStepGeneration(void)
         interp_context.steps.step_period[i] = 65535;
     }
 
-    printf("Hardware step pulse generation STOPPED\n");
+    // printf("Hardware step pulse generation STOPPED\n");  // Commented out - UGS treats as error
 }
 
 bool INTERP_ConfigureStepperGPIO(void)

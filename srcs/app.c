@@ -34,6 +34,7 @@
 #include "motion_profile.h"
 #include "speed_control.h"
 #include "peripheral/uart/plib_uart2.h"
+#include "peripheral/coretimer/plib_coretimer.h"
 #include "peripheral/tmr1/plib_tmr1.h"
 #include "peripheral/tmr/plib_tmr2.h"
 #include "peripheral/tmr/plib_tmr4.h"
@@ -63,6 +64,19 @@
 */
 
 APP_DATA appData;
+
+// Debug variable to control step-by-step initialization testing
+// 1 = Test INIT only
+// 2 = Test INIT + SERVICE_TASKS
+// 3 = Test INIT + SERVICE_TASKS + GCODE_INIT
+// 4 = Test full initialization (INIT + SERVICE_TASKS + GCODE_INIT + MOTION_INIT)
+static uint8_t debug_init_step = 4;
+
+// TIMER1 ISSUE DOCUMENTED:
+// Timer1 causes system hang when started (TMR1_Start())
+// Issue is likely interrupt priority conflict or configuration problem
+// System works perfectly without Timer1 trajectory timer
+// TODO: Investigate Timer1 interrupt priorities in MCC when time allows
 
 // CNC Axis data structures
 cnc_axis_t cnc_axes[MAX_AXES];
@@ -97,12 +111,15 @@ static void APP_UARTPrint(const char *str)
 static void APP_MotionSystemInit(void);
 static void APP_ProcessSwitches(void);
 static void APP_ProcessLimitSwitches(void);
-static void APP_CalculateTrajectory(uint8_t axis_id);
-static void APP_UpdateOCRPeriod(uint8_t axis_id);
+/* static void APP_CalculateTrajectory(uint8_t axis_id); */ /* TEMPORARILY COMMENTED FOR DEBUG */
+/* static void APP_UpdateOCRPeriod(uint8_t axis_id); */     /* TEMPORARILY COMMENTED FOR DEBUG */
 static void APP_ExecuteNextMotionBlock(void);
 static void APP_ProcessLookAhead(void);
 static bool APP_IsBufferEmpty(void);
 static bool APP_IsBufferFull(void);
+
+// Callback function declarations
+void APP_TrajectoryTimerCallback_CoreTimer(uint32_t status, uintptr_t context);
 
 // *****************************************************************************
 // *****************************************************************************
@@ -154,6 +171,7 @@ void APP_Initialize(void)
     }
 
     /* Initialize G-code UART Parser (Simple Mode) */
+    // RE-ENABLED: Testing with increased heap size and smaller buffers
     UART_GRBL_Initialize();
 
     APP_UARTPrint("CNC Controller initialization complete\r\n");
@@ -186,7 +204,16 @@ void APP_Tasks(void)
 
         if (appInitialized)
         {
-            appData.state = APP_STATE_SERVICE_TASKS;
+            // Debug step-by-step initialization
+            if (debug_init_step >= 2)
+            {
+                appData.state = APP_STATE_SERVICE_TASKS;
+            }
+            else
+            {
+                // Step 1: Test INIT only - go straight to idle
+                appData.state = APP_STATE_MOTION_IDLE;
+            }
         }
         break;
     }
@@ -194,7 +221,15 @@ void APP_Tasks(void)
     case APP_STATE_SERVICE_TASKS:
     {
         /* Initialize G-code parser and UART communication */
-        appData.state = APP_STATE_GCODE_INIT;
+        if (debug_init_step >= 3)
+        {
+            appData.state = APP_STATE_GCODE_INIT;
+        }
+        else
+        {
+            // Step 2: Test INIT + SERVICE_TASKS - go straight to idle
+            appData.state = APP_STATE_MOTION_IDLE;
+        }
         break;
     }
 
@@ -218,7 +253,15 @@ void APP_Tasks(void)
         /* Initialize motion profile system */
         MOTION_PROFILE_Initialize();
 
-        appData.state = APP_STATE_MOTION_INIT;
+        if (debug_init_step >= 4)
+        {
+            appData.state = APP_STATE_MOTION_INIT;
+        }
+        else
+        {
+            // Step 3: Test INIT + SERVICE_TASKS + GCODE_INIT - go straight to idle
+            appData.state = APP_STATE_MOTION_IDLE;
+        }
         break;
     }
 
@@ -232,9 +275,10 @@ void APP_Tasks(void)
         APP_TestArcInterpolation();
 #endif
 
-        /* Send GRBL startup greeting for UGS compatibility */
-        GCODE_DMA_SendResponse("Grbl 1.1f ['$' for help]");
+        /* REMOVED: Don't send greeting here - UGS handshake handles this properly */
+        /* GCODE_DMA_SendResponse("Grbl 1.1f ['$' for help]"); */
 
+        // Step 4: Full initialization - proceed to idle
         appData.state = APP_STATE_MOTION_IDLE;
         break;
     }
@@ -373,20 +417,19 @@ static void APP_MotionSystemInit(void)
         cnc_axes[i].buffer_active = false;
     }
 
-    /* Initialize speed control system (legacy compatibility) */
-    speed_cntr_Init_Timer1();
-
     /* Setup OCR callbacks for step pulse generation */
     OCMP1_CallbackRegister(APP_OCMP1_Callback, 0);
     OCMP4_CallbackRegister(APP_OCMP4_Callback, 0);
     OCMP5_CallbackRegister(APP_OCMP5_Callback, 0);
 
-    /* Setup Timer1 for trajectory calculation at 1kHz */
+    /* TRAJECTORY SYSTEM - Using Core Timer instead of Timer1 */
+    /* Core Timer runs at 100MHz, set period for 1kHz trajectory updates */
+    /* Period = 100MHz / 1000Hz = 100000 */
     if (!appData.trajectory_timer_active)
     {
-        TMR1_CallbackRegister(APP_TrajectoryTimerCallback, 0);
-        /* Set Timer1 period for 1kHz (assuming Timer1 is configured in MCC) */
-        TMR1_Start();
+        CORETIMER_CallbackSet(APP_TrajectoryTimerCallback_CoreTimer, 0);
+        CORETIMER_PeriodSet(100000); // 1kHz trajectory updates
+        CORETIMER_Start();
         appData.trajectory_timer_active = true;
     }
 
@@ -436,6 +479,11 @@ static void APP_ProcessSwitches(void)
 
 static void APP_ProcessLimitSwitches(void)
 {
+    /* TEMPORARY: Disable limit checking for UGS testing
+     * Enable this when physical limit switches are connected
+     */
+    return; // Skip limit checking for now
+
     /* Check for hard limit switch activation
      * Min switches: Your actual MCC-configured pins (active for min limits)
      * Max switches: Dummy for now - will be configured later:
@@ -573,140 +621,21 @@ static void APP_ExecuteNextMotionBlock(void)
     }
 }
 
+/* TEMPORARILY COMMENTED FOR DEBUG - APP_CalculateTrajectory function
 static void APP_CalculateTrajectory(uint8_t axis_id)
 {
-    if (axis_id >= MAX_AXES)
-        return;
-
-    cnc_axis_t *axis = &cnc_axes[axis_id];
-
-    if (!axis->is_active || axis->motion_state == AXIS_IDLE || axis->motion_state == AXIS_COMPLETE)
-    {
-        return;
-    }
-
-    const float dt = 1.0f / TRAJECTORY_TIMER_FREQ; // Time step in seconds
-
-    switch (axis->motion_state)
-    {
-    case AXIS_ACCEL:
-        /* Accelerate until we reach target velocity or need to decelerate */
-        axis->current_velocity += axis->acceleration * dt;
-
-        if (axis->current_velocity >= axis->target_velocity)
-        {
-            axis->current_velocity = axis->target_velocity;
-            axis->motion_state = AXIS_CONSTANT;
-        }
-
-        /* Check if we need to start decelerating */
-        int32_t remaining_steps = abs(axis->target_position - axis->current_position);
-        float decel_distance = (axis->current_velocity * axis->current_velocity) /
-                               (2.0f * axis->deceleration);
-
-        if (remaining_steps <= decel_distance)
-        {
-            axis->motion_state = AXIS_DECEL;
-        }
-        break;
-
-    case AXIS_CONSTANT:
-        /* Check if we need to start decelerating */
-        remaining_steps = abs(axis->target_position - axis->current_position);
-        decel_distance = (axis->current_velocity * axis->current_velocity) /
-                         (2.0f * axis->deceleration);
-
-        if (remaining_steps <= decel_distance)
-        {
-            axis->motion_state = AXIS_DECEL;
-        }
-        break;
-
-    case AXIS_DECEL:
-        /* Decelerate until we reach target or stop */
-        axis->current_velocity -= axis->deceleration * dt;
-
-        if (axis->current_velocity <= 0 ||
-            axis->current_position == axis->target_position)
-        {
-            axis->current_velocity = 0;
-            axis->motion_state = AXIS_COMPLETE;
-
-            /* Disable the OCR for this axis */
-            switch (axis_id)
-            {
-            case 0:
-                OCMP4_Disable();
-                break;
-            case 1:
-                OCMP1_Disable();
-                break;
-            case 2:
-                OCMP5_Disable();
-                break;
-            }
-            return;
-        }
-        break;
-
-    default:
-        return;
-    }
-
-    /* Update OCR period based on new velocity */
-    APP_UpdateOCRPeriod(axis_id);
+    // Function implementation commented out to isolate Timer1 callback issue
+    // Will restore once Timer1 hang is resolved
 }
+*/
 
+/* TEMPORARILY COMMENTED FOR DEBUG - APP_UpdateOCRPeriod function
 static void APP_UpdateOCRPeriod(uint8_t axis_id)
 {
-    if (axis_id >= MAX_AXES)
-        return;
-
-    cnc_axis_t *axis = &cnc_axes[axis_id];
-
-    if (axis->current_velocity > 0)
-    {
-        uint32_t timer_freq;
-
-        /* Use the appropriate timer frequency for each OCR module */
-        switch (axis_id)
-        {
-        case 0: // X-axis -> OCMP4 -> TMR3
-            timer_freq = TMR3_FrequencyGet();
-            break;
-        case 1: // Y-axis -> OCMP1 -> TMR2
-            timer_freq = TMR2_FrequencyGet();
-            break;
-        case 2: // Z-axis -> OCMP5 -> TMR4
-            timer_freq = TMR4_FrequencyGet();
-            break;
-        default:
-            return;
-        }
-
-        axis->ocr_period = (uint16_t)(timer_freq / (2.0f * axis->current_velocity)); // Divide by 2 for 50% duty cycle
-
-        /* Ensure minimum period to prevent timer overflow */
-        if (axis->ocr_period < 10)
-        {
-            axis->ocr_period = 10;
-        }
-
-        /* Update the appropriate OCR module */
-        switch (axis_id)
-        {
-        case 0: // X-axis -> OCMP4
-            OCMP4_CompareSecondaryValueSet(axis->ocr_period);
-            break;
-        case 1: // Y-axis -> OCMP1
-            OCMP1_CompareSecondaryValueSet(axis->ocr_period);
-            break;
-        case 2: // Z-axis -> OCMP5
-            OCMP5_CompareSecondaryValueSet(axis->ocr_period);
-            break;
-        }
-    }
+    // Function implementation commented out to isolate Timer1 callback issue
+    // Will restore once Timer1 hang is resolved
 }
+*/
 
 static void APP_ProcessLookAhead(void)
 {
@@ -736,21 +665,35 @@ static bool APP_IsBufferFull(void)
 
 void APP_TrajectoryTimerCallback(uint32_t status, uintptr_t context)
 {
-    /* Increment system tick counter */
-    appData.system_tick_counter++;
+    /* MINIMAL TEST CALLBACK - should not corrupt stack */
+    /* Even this simple increment might be too much during rapid interrupts */
 
-    /* Calculate trajectory for all active axes */
-    for (int i = 0; i < MAX_AXES; i++)
-    {
-        if (cnc_axes[i].is_active)
-        {
-            APP_CalculateTrajectory(i);
-        }
-    }
+    /* Try completely empty callback first */
+    /* appData.system_tick_counter++; */
+
+    /* If empty works, uncomment the above line and test again */
 }
 
+void APP_TrajectoryTimerCallback_CoreTimer(uint32_t status, uintptr_t context)
+{
+    /* Core Timer trajectory callback - handles both LED heartbeat and trajectory */
+    /* This replaces the problematic Timer1 implementation */
+
+    appData.system_tick_counter++;
+
+    /* LED heartbeat every 100ms (100 ticks at 1kHz) */
+    if ((appData.system_tick_counter % 100) == 0)
+    {
+        LED1_Toggle(); // System heartbeat indicator
+    }
+
+    /* TODO: Add trajectory calculations here once proven stable */
+    /* APP_CalculateTrajectory() calls will go here */
+}
 void APP_CoreTimerCallback(uint32_t status, uintptr_t context)
 {
+    /* This function is now replaced by APP_TrajectoryTimerCallback_CoreTimer */
+    /* Left here for compatibility but should not be called */
     LED1_Toggle(); // System heartbeat indicator
 }
 
@@ -1157,12 +1100,6 @@ void APP_ExecuteGcodeCommand(const char *command)
         // Resume
         INTERP_FeedHold(false);
         return; // No response for real-time commands
-    }
-    else if (command[0] == '?')
-    {
-        // Status report query - immediate response
-        APP_SendStatusReport();
-        return; // No additional response for real-time commands
     }
     else if (command[0] == 18) // Ctrl-R (reset)
     {
