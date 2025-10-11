@@ -49,7 +49,7 @@
 // *****************************************************************************
 // Limit Switch Pin Assignments
 // *****************************************************************************
-/* 
+/*
  * Limit switch GPIO pins are defined in plib_gpio.h
  * Pin assignments for this CNC controller (active low):
  * GPIO_PIN_RA7  - X-axis negative limit
@@ -79,15 +79,15 @@
 
 typedef enum
 {
-    /* Application's state machine's initial state. */
-    APP_STATE_INIT=0,
-    APP_STATE_SERVICE_TASKS,
-    APP_STATE_GCODE_INIT,
-    APP_STATE_MOTION_INIT,
-    APP_STATE_MOTION_IDLE,
-    APP_STATE_MOTION_PLANNING,
-    APP_STATE_MOTION_EXECUTING,
-    APP_STATE_MOTION_ERROR,
+  /* Application's state machine's initial state. */
+  APP_STATE_INIT = 0,
+  APP_STATE_SERVICE_TASKS,
+  APP_STATE_GCODE_INIT,
+  APP_STATE_MOTION_INIT,
+  APP_STATE_MOTION_IDLE,
+  APP_STATE_MOTION_PLANNING,
+  APP_STATE_MOTION_EXECUTING,
+  APP_STATE_MOTION_ERROR,
 } APP_STATES;
 
 // *****************************************************************************
@@ -100,12 +100,13 @@ typedef enum
     This enumeration defines the motion states for trajectory planning
 */
 
-typedef enum {
-    AXIS_IDLE,
-    AXIS_ACCEL,
-    AXIS_CONSTANT,
-    AXIS_DECEL,
-    AXIS_COMPLETE
+typedef enum
+{
+  AXIS_IDLE,
+  AXIS_ACCEL,
+  AXIS_CONSTANT,
+  AXIS_DECEL,
+  AXIS_COMPLETE
 } axis_state_t;
 
 // *****************************************************************************
@@ -119,33 +120,34 @@ typedef enum {
     real-time trajectory calculation and stepper motor control
 */
 
-typedef struct {
-    // Position tracking
-    int32_t current_position;      // Current position in steps
-    int32_t target_position;       // Target position in steps
-    
-    // Velocity profile (steps/sec)
-    float current_velocity;        // Current velocity
-    float target_velocity;         // Target velocity for this move
-    float max_velocity;            // Maximum allowed velocity
-    
-    // Acceleration parameters (steps/sec²)
-    float acceleration;            // Acceleration rate
-    float deceleration;            // Deceleration rate
-    
-    // State management
-    axis_state_t motion_state;     // Current motion state
-    bool direction_forward;        // Direction flag
-    bool is_active;               // Axis is currently moving
-    
-    // Hardware control
-    uint16_t ocr_period;          // Current OCR period value
-    uint32_t step_count;          // Steps completed in current move
-    
-    // Look-ahead support
-    float junction_velocity;       // Velocity at path junctions
-    bool buffer_active;           // Motion buffer is active
-    
+typedef struct
+{
+  // Position tracking
+  int32_t current_position; // Current position in steps
+  int32_t target_position;  // Target position in steps
+
+  // Velocity profile (steps/sec)
+  float current_velocity; // Current velocity
+  float target_velocity;  // Target velocity for this move
+  float max_velocity;     // Maximum allowed velocity
+
+  // Acceleration parameters (steps/sec²)
+  float acceleration; // Acceleration rate
+  float deceleration; // Deceleration rate
+
+  // State management
+  axis_state_t motion_state; // Current motion state
+  bool direction_forward;    // Direction flag
+  bool is_active;            // Axis is currently moving
+
+  // Hardware control
+  uint16_t ocr_period; // Current OCR period value
+  uint32_t step_count; // Steps completed in current move
+
+  // Look-ahead support
+  float junction_velocity; // Velocity at path junctions
+  bool buffer_active;      // Motion buffer is active
+
 } cnc_axis_t;
 
 // *****************************************************************************
@@ -159,14 +161,15 @@ typedef struct {
     with look-ahead capability for smooth path execution
 */
 
-typedef struct {
-    float target_pos[3];          // Target coordinates [X, Y, Z]
-    float feedrate;               // Requested feedrate (steps/sec)
-    float entry_velocity;         // Calculated entry velocity
-    float exit_velocity;          // Calculated exit velocity
-    float max_velocity;           // Maximum velocity for this segment
-    uint8_t motion_type;          // Motion type (G0, G1, etc.)
-    bool is_valid;               // Buffer entry is valid
+typedef struct
+{
+  float target_pos[3];  // Target coordinates [X, Y, Z]
+  float feedrate;       // Requested feedrate (steps/sec)
+  float entry_velocity; // Calculated entry velocity
+  float exit_velocity;  // Calculated exit velocity
+  float max_velocity;   // Maximum velocity for this segment
+  uint8_t motion_type;  // Motion type (G0, G1, etc.)
+  bool is_valid;        // Buffer entry is valid
 } motion_block_t;
 
 // *****************************************************************************
@@ -184,21 +187,21 @@ typedef struct {
 
 typedef struct
 {
-    /* The application's current state */
-    APP_STATES state;
-    
-    /* Motion control system status */
-    bool motion_system_ready;
-    bool trajectory_timer_active;
-    
-    /* User interface */
-    bool switch_pressed;
-    uint32_t switch_debounce_timer;
-    uint32_t last_switch_time;
-    
-    /* System timing */
-    uint32_t system_tick_counter;
-    
+  /* The application's current state */
+  APP_STATES state;
+
+  /* Motion control system status */
+  bool motion_system_ready;
+  bool trajectory_timer_active;
+
+  /* User interface */
+  bool switch_pressed;
+  uint32_t switch_debounce_timer;
+  uint32_t last_switch_time;
+
+  /* System timing */
+  uint32_t system_tick_counter;
+
 } APP_DATA;
 
 // *****************************************************************************
@@ -207,12 +210,12 @@ typedef struct
 // *****************************************************************************
 // *****************************************************************************
 
-#define MAX_AXES 3                    // X, Y, Z axes
-#define MOTION_BUFFER_SIZE 8          // Look-ahead buffer size
-#define SWITCH_DEBOUNCE_MS 100        // Switch debounce time
-#define TRAJECTORY_TIMER_FREQ 1000    // 1kHz trajectory calculation
-#define DEFAULT_ACCELERATION 500.0f   // Default acceleration (steps/sec²)
-#define DEFAULT_MAX_VELOCITY 1000.0f  // Default max velocity (steps/sec)
+#define MAX_AXES 3                   // X, Y, Z axes
+#define MOTION_BUFFER_SIZE 8         // Look-ahead buffer size
+#define SWITCH_DEBOUNCE_MS 100       // Switch debounce time
+#define TRAJECTORY_TIMER_FREQ 1000   // 1kHz trajectory calculation
+#define DEFAULT_ACCELERATION 500.0f  // Default acceleration (steps/sec²)
+#define DEFAULT_MAX_VELOCITY 1000.0f // Default max velocity (steps/sec)
 
 // *****************************************************************************
 // *****************************************************************************
@@ -266,8 +269,7 @@ void APP_OCMP5_Callback(uintptr_t context);
     This routine must be called from the SYS_Initialize function.
 */
 
-void APP_Initialize ( void );
-
+void APP_Initialize(void);
 
 /*******************************************************************************
   Function:
@@ -299,7 +301,7 @@ void APP_Initialize ( void );
     This routine must be called from SYS_Tasks() routine.
  */
 
-void APP_Tasks( void );
+void APP_Tasks(void);
 
 // *****************************************************************************
 // *****************************************************************************
@@ -387,7 +389,7 @@ void APP_EmergencyStop(void);
     Reset alarm state after limit switch trigger
 
   Description:
-    This function clears the alarm state after verifying that all limit 
+    This function clears the alarm state after verifying that all limit
     switches are released. Used to recover from hard limit triggers.
 */
 
@@ -445,6 +447,69 @@ void APP_HandleEmergencyStop(void);
 
 /*******************************************************************************
   Function:
+    void APP_EnableZMinMask(void)
+
+  Summary:
+    Enable Z minimum limit masking for pick-and-place operations
+
+  Description:
+    Masks the Z minimum limit switch to allow the nozzle to move below
+    the normal limit for component placement with spring-loaded mechanism.
+    CRITICAL for pick-and-place operations.
+*/
+
+void APP_EnableZMinMask(void);
+
+/*******************************************************************************
+  Function:
+    void APP_DisableZMinMask(void)
+
+  Summary:
+    Disable Z minimum limit masking to restore normal CNC operation
+
+  Description:
+    Re-enables the Z minimum limit switch for normal CNC operation.
+    Should be called after pick-and-place operations are complete.
+*/
+
+void APP_DisableZMinMask(void);
+
+/*******************************************************************************
+  Function:
+    void APP_SetPickAndPlaceMode(bool enable)
+
+  Summary:
+    Enable/disable pick-and-place mode with appropriate limit masking
+
+  Description:
+    Convenience function that sets up limit masking for pick-and-place
+    operations. When enabled, masks Z minimum limit. When disabled,
+    restores all limits for normal CNC operation.
+*/
+
+void APP_SetPickAndPlaceMode(bool enable);
+
+/*******************************************************************************
+  Function:
+    bool APP_IsPickAndPlaceMode(void)
+
+  Summary:
+    Check if system is in pick-and-place mode
+
+  Description:
+    Returns true if Z minimum limit is currently masked for
+    pick-and-place operations.
+*/
+
+bool APP_IsPickAndPlaceMode(void);
+
+// *****************************************************************************
+// *****************************************************************************
+// Section: extern declarations
+// *****************************************************************************
+
+/*******************************************************************************
+  Function:
     void APP_SendStatusReport(void)
 
   Summary:
@@ -491,11 +556,11 @@ extern motion_block_t motion_buffer[MOTION_BUFFER_SIZE];
 extern uint8_t motion_buffer_head;
 extern uint8_t motion_buffer_tail;
 
-//DOM-IGNORE-BEGIN
+// DOM-IGNORE-BEGIN
 #ifdef __cplusplus
 }
 #endif
-//DOM-IGNORE-END
+// DOM-IGNORE-END
 
 #endif /* _APP_H */
 
