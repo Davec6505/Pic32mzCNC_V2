@@ -232,6 +232,9 @@ void APP_Tasks(void)
         APP_TestArcInterpolation();
 #endif
 
+        /* Send GRBL startup greeting for UGS compatibility */
+        GCODE_DMA_SendResponse("Grbl 1.1f ['$' for help]");
+
         appData.state = APP_STATE_MOTION_IDLE;
         break;
     }
@@ -1030,6 +1033,113 @@ void APP_ExecuteGcodeCommand(const char *command)
             GCODE_DMA_SendResponse("ok");
             return;
         }
+        else if (command[1] == 'G' || command[1] == 'g')
+        {
+            // $G - View gcode parser state
+            GCODE_DMA_SendResponse("[GC:G0 G54 G17 G21 G90 G94 M0 M5 M9 T0 S0.0 F100.0]");
+            GCODE_DMA_SendResponse("ok");
+            return;
+        }
+        else if (command[1] == 'I' || command[1] == 'i')
+        {
+            // $I - View build info
+            GCODE_DMA_SendResponse("[VER:1.1f.20170131:PIC32MZ CNC Controller v2.0]");
+            GCODE_DMA_SendResponse("[OPT:V,15,128]"); // Options: Variable spindle, 15 chars line, 128 buffer
+            GCODE_DMA_SendResponse("ok");
+            return;
+        }
+        else if (command[1] == '#')
+        {
+            // $# - View gcode parameters (work coordinates, tool offsets, probe)
+            GCODE_DMA_SendResponse("[G54:0.000,0.000,0.000]");
+            GCODE_DMA_SendResponse("[G55:0.000,0.000,0.000]");
+            GCODE_DMA_SendResponse("[G56:0.000,0.000,0.000]");
+            GCODE_DMA_SendResponse("[G57:0.000,0.000,0.000]");
+            GCODE_DMA_SendResponse("[G58:0.000,0.000,0.000]");
+            GCODE_DMA_SendResponse("[G59:0.000,0.000,0.000]");
+            GCODE_DMA_SendResponse("[G28:0.000,0.000,0.000]");
+            GCODE_DMA_SendResponse("[G30:0.000,0.000,0.000]");
+            GCODE_DMA_SendResponse("[G92:0.000,0.000,0.000]");
+            GCODE_DMA_SendResponse("[TLO:0.000]");
+            GCODE_DMA_SendResponse("[PRB:0.000,0.000,0.000:0]");
+            GCODE_DMA_SendResponse("ok");
+            return;
+        }
+        else if (command[1] == 'N')
+        {
+            // $N - View startup blocks
+            GCODE_DMA_SendResponse("$N0=");
+            GCODE_DMA_SendResponse("$N1=");
+            GCODE_DMA_SendResponse("ok");
+            return;
+        }
+        else if (command[1] == 'X' || command[1] == 'x')
+        {
+            // $X - Kill alarm lock
+            if (appData.state == APP_STATE_MOTION_ERROR)
+            {
+                appData.state = APP_STATE_MOTION_IDLE;
+                GCODE_DMA_SendResponse("ok");
+            }
+            else
+            {
+                GCODE_DMA_SendResponse("ok"); // Always respond ok even if not in alarm
+            }
+            return;
+        }
+        else if (command[1] == 'C' || command[1] == 'c')
+        {
+            // $C - Check gcode mode toggle
+            // TODO: Implement check mode (parse without motion)
+            GCODE_DMA_SendResponse("[MSG:'$C' Check Mode Enabled]");
+            GCODE_DMA_SendResponse("ok");
+            return;
+        }
+        else if (command[1] == 'J' && command[2] == '=')
+        {
+            // $J=line - Jogging motion
+            // Extract jog command after $J=
+            const char *jog_cmd = &command[3];
+
+            // For now, acknowledge jog commands but implement basic parsing
+            // TODO: Parse jog parameters and execute motion
+            (void)jog_cmd; // Suppress unused variable warning
+            GCODE_DMA_SendResponse("ok");
+            return;
+        }
+        else if (strncmp(&command[1], "RST=", 4) == 0)
+        {
+            // $RST commands - restore defaults
+            char restore_type = command[5];
+
+            if (restore_type == '$')
+            {
+                // $RST=$ - Restore GRBL settings
+                GCODE_DMA_SendResponse("[MSG:Restoring defaults]");
+            }
+            else if (restore_type == '#')
+            {
+                // $RST=# - Restore coordinate parameters
+                GCODE_DMA_SendResponse("[MSG:Restoring coordinate systems]");
+            }
+            else if (restore_type == '*')
+            {
+                // $RST=* - Restore everything
+                GCODE_DMA_SendResponse("[MSG:Restoring factory defaults]");
+            }
+
+            GCODE_DMA_SendResponse("ok");
+            // Note: Would normally trigger soft reset here
+            return;
+        }
+        else if (strncmp(&command[1], "SLP", 3) == 0)
+        {
+            // $SLP - Sleep mode
+            GCODE_DMA_SendResponse("[MSG:Entering sleep mode]");
+            // TODO: Implement actual sleep mode - disable steppers, spindle, coolant
+            GCODE_DMA_SendResponse("ok");
+            return;
+        }
         // Other $ commands - acknowledge but don't implement yet
         GCODE_DMA_SendResponse("ok");
         return;
@@ -1588,31 +1698,37 @@ void APP_SendStatusReport(void)
 
     // Determine state
     const char *state_name = "Idle";
-    switch (appData.state)
+
+    // Check for homing first (takes priority)
+    if (INTERP_IsHomingActive())
     {
-    case APP_STATE_MOTION_IDLE:
-        state_name = "Idle";
-        break;
-    case APP_STATE_MOTION_PLANNING:
-    case APP_STATE_MOTION_EXECUTING:
-        state_name = "Run";
-        break;
-    case APP_STATE_MOTION_ERROR:
-        state_name = "Alarm";
-        break;
-    case APP_STATE_HOMING:
         state_name = "Home";
-        break;
-    default:
-        state_name = "Idle";
-        break;
+    }
+    else
+    {
+        switch (appData.state)
+        {
+        case APP_STATE_MOTION_IDLE:
+            state_name = "Idle";
+            break;
+        case APP_STATE_MOTION_PLANNING:
+        case APP_STATE_MOTION_EXECUTING:
+            state_name = "Run";
+            break;
+        case APP_STATE_MOTION_ERROR:
+            state_name = "Alarm";
+            break;
+        default:
+            state_name = "Idle";
+            break;
+        }
     }
 
     // Get machine positions (absolute coordinates)
     float mpos_x = cnc_axes[0].current_position;
-    float mpos_y = cnc_axes[1].current_position; 
+    float mpos_y = cnc_axes[1].current_position;
     float mpos_z = cnc_axes[2].current_position;
-    
+
     // Calculate work positions (machine pos - work coordinate offset)
     // For now, use G54 work coordinate system (future: implement G54-G59)
     static float work_offset[3] = {0.0f, 0.0f, 0.0f}; // G54 offset
@@ -1621,11 +1737,11 @@ void APP_SendStatusReport(void)
     float wpos_z = mpos_z - work_offset[2];
 
     // Get buffer status (blocks used, characters available)
-    uint8_t blocks_used = (motion_buffer_head >= motion_buffer_tail) 
-        ? (motion_buffer_head - motion_buffer_tail) 
-        : (MOTION_BUFFER_SIZE - motion_buffer_tail + motion_buffer_head);
+    uint8_t blocks_used = (motion_buffer_head >= motion_buffer_tail)
+                              ? (motion_buffer_head - motion_buffer_tail)
+                              : (MOTION_BUFFER_SIZE - motion_buffer_tail + motion_buffer_head);
     uint8_t blocks_available = MOTION_BUFFER_SIZE - blocks_used;
-    
+
     // Get current feed rate and spindle speed
     float current_feed = 0.0f;
     for (int i = 0; i < MAX_AXES; i++)
@@ -1635,7 +1751,7 @@ void APP_SendStatusReport(void)
             current_feed = cnc_axes[i].current_velocity * 60.0f; // Convert to mm/min
         }
     }
-    
+
     // Spindle speed (future: get from actual spindle controller)
     int spindle_speed = 0; // TODO: Implement spindle speed feedback
 
