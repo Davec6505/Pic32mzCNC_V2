@@ -30,6 +30,9 @@
 #include "peripheral/ocmp/plib_ocmp1.h"
 #include "peripheral/ocmp/plib_ocmp4.h"
 #include "peripheral/ocmp/plib_ocmp5.h"
+#include "peripheral/tmr/plib_tmr2.h" // For OCMP1
+#include "peripheral/tmr/plib_tmr3.h" // For OCMP4
+#include "peripheral/tmr/plib_tmr4.h" // For OCMP5
 #include "peripheral/coretimer/plib_coretimer.h"
 #include <math.h>
 #include <string.h>
@@ -123,11 +126,48 @@ static void UpdateAxisOCRPeriods(void)
     uint32_t x_period = MotionPlanner_CalculateOCRPeriod(current_axis_velocities[0]); // X-axis = OCMP4
     uint32_t z_period = MotionPlanner_CalculateOCRPeriod(current_axis_velocities[2]); // Z-axis = OCMP5
 
-    // Update OCR compare values
-    // Note: This sets the period for continuous pulse generation
-    OCMP1_CompareSecondaryValueSet(y_period);
-    OCMP4_CompareSecondaryValueSet(x_period);
-    OCMP5_CompareSecondaryValueSet(z_period);
+    // CRITICAL FIX: Update cnc_axes flags to connect motion planner with step counting system
+    extern cnc_axis_t cnc_axes[MAX_AXES]; // Declared in app.c
+
+    // Update axis active flags and motion states based on current velocities
+    for (int i = 0; i < MAX_AXES; i++)
+    {
+        if (current_axis_velocities[i] > 0.0f)
+        {
+            cnc_axes[i].is_active = true;
+            cnc_axes[i].motion_state = AXIS_CONSTANT; // Non-idle state
+        }
+        else
+        {
+            cnc_axes[i].is_active = false;
+            cnc_axes[i].motion_state = AXIS_IDLE;
+        }
+    } // Based on working stepper code: Set pulse width and period, but don't start/stop timers
+    // Timers are started once during initialization and stay running
+
+    // Y-axis (OCMP1 + TMR2)
+    if (current_axis_velocities[1] > 0.0f)
+    {
+        TMR2_PeriodSet(y_period);
+        OCMP1_CompareValueSet(100);               // Short pulse width for step signals
+        OCMP1_CompareSecondaryValueSet(y_period); // Period
+    }
+
+    // X-axis (OCMP4 + TMR3)
+    if (current_axis_velocities[0] > 0.0f)
+    {
+        TMR3_PeriodSet(x_period);
+        OCMP4_CompareValueSet(100);               // Short pulse width for step signals
+        OCMP4_CompareSecondaryValueSet(x_period); // Period
+    }
+
+    // Z-axis (OCMP5 + TMR4)
+    if (current_axis_velocities[2] > 0.0f)
+    {
+        TMR4_PeriodSet(z_period);
+        OCMP5_CompareValueSet(100);               // Short pulse width for step signals
+        OCMP5_CompareSecondaryValueSet(z_period); // Period
+    }
 }
 
 // *****************************************************************************
@@ -421,11 +461,14 @@ void MotionPlanner_UpdateTrajectory(void)
         }
 
         // Calculate individual axis velocities based on motion direction
-        // This is a simple implementation - actual implementation would consider
-        // the vector components and calculate each axis velocity properly
+        motion_parser_state_t parser_state = MotionGCodeParser_GetState();
+
         for (int i = 0; i < MAX_AXES; i++)
         {
-            if (current_motion_block->target_pos[i] != 0.0f) // Axis is moving
+            // Calculate the distance this axis needs to move
+            float axis_distance = current_motion_block->target_pos[i] - parser_state.current_position[i];
+
+            if (fabsf(axis_distance) > 0.001f) // Axis is moving (with small tolerance)
             {
                 current_axis_velocities[i] = current_velocity;
             }

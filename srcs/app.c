@@ -110,6 +110,7 @@ static uint8_t grbl_alarm_code = 0;
 void APP_UARTPrint(const char *str);
 void APP_ExecuteMotionCommand(const char *command);
 void APP_SendStatus(void);
+void APP_SendDetailedStatus(void);
 void APP_EmergencyReset(void);
 static void APP_UART_Callback(uintptr_t context);
 static void APP_ProcessGRBLCommand(const char *command);
@@ -422,6 +423,12 @@ static void APP_MotionSystemInit(void)
     OCMP4_CallbackRegister(APP_OCMP4_Callback, 0);
     OCMP5_CallbackRegister(APP_OCMP5_Callback, 0);
 
+    /* Start base timers that drive OCR modules - CRITICAL for motion! */
+    /* Based on working stepper code: OCR modules need their base timers running */
+    TMR2_Start(); // Base timer for OCMP1 (Y-axis)
+    TMR3_Start(); // Base timer for OCMP4 (X-axis)
+    TMR4_Start(); // Base timer for OCMP5 (Z-axis)
+
     /* TRAJECTORY SYSTEM - Using Core Timer instead of Timer1 */
     /* Core Timer runs at 100MHz, set period for 1kHz trajectory updates */
     /* Period = 100MHz / 1000Hz = 100000 */
@@ -517,6 +524,12 @@ static void APP_ExecuteNextMotionBlock(void)
         return;
     }
 
+    // DEBUG: Print motion block details
+    char debug_msg[256];
+    sprintf(debug_msg, "[MOTION_BLOCK] Target: %.3f,%.3f,%.3f Feed:%.1f\r\n",
+            block->target_pos[0], block->target_pos[1], block->target_pos[2], block->feedrate);
+    APP_UARTPrint(debug_msg);
+
     /* Setup axes for movement */
     for (int i = 0; i < MAX_AXES; i++)
     {
@@ -531,6 +544,11 @@ static void APP_ExecuteNextMotionBlock(void)
             cnc_axes[i].motion_state = AXIS_ACCEL;
             cnc_axes[i].is_active = true;
             cnc_axes[i].step_count = 0;
+
+            // DEBUG: Print axis activation
+            sprintf(debug_msg, "[AXIS_ACTIVE] Axis %d: target=%d current=%d\r\n",
+                    i, target_pos, cnc_axes[i].current_position);
+            APP_UARTPrint(debug_msg);
 
             /* Set direction */
             cnc_axes[i].direction_forward = (target_pos > cnc_axes[i].current_position);
@@ -823,6 +841,11 @@ static void APP_ProcessGRBLCommand(const char *command)
             APP_SendError(3); // Invalid statement
         }
     }
+    else if (strncmp(command, "DEBUG", 5) == 0)
+    {
+        // Debug command - special case
+        APP_SendDetailedStatus();
+    }
     else if ((command[0] >= 'G' && command[0] <= 'Z') || (command[0] >= 'g' && command[0] <= 'z'))
     {
         // G-code command
@@ -1036,6 +1059,12 @@ static void APP_ProcessGCodeCommand(const char *command)
         MotionGCodeParser_UpdateWorkCoordinateSystem(command);
         APP_UARTPrint_blocking("ok\r\n");
     }
+    else if (command[0] == 'F')
+    {
+        // Feed rate command (F100, F500, etc.)
+        // For now, just acknowledge - feed rate is handled in G1 commands
+        APP_UARTPrint_blocking("ok\r\n");
+    }
     else
     {
         // Unknown command - Send proper error
@@ -1080,58 +1109,64 @@ void APP_CoreTimerCallback(uint32_t status, uintptr_t context)
 
 void APP_OCMP1_Callback(uintptr_t context)
 {
-    /* Y-axis step pulse */
+    /* Y-axis step pulse - PERFORMANCE CRITICAL: Direct access for speed */
     LED2_Toggle(); // Step activity indicator
 
-    if (APP_GetAxisActiveState(1) && cnc_axes[1].motion_state != AXIS_IDLE)
+    // DEBUG: Always indicate callback triggered
+    static uint32_t debug_counter = 0;
+    if ((debug_counter++ % 100) == 0) // Print every 100th callback to avoid spam
     {
-        // Update position based on direction
-        int32_t current_pos = APP_GetAxisCurrentPosition(1);
-        int32_t new_pos = current_pos + (cnc_axes[1].direction_forward ? 1 : -1);
-        APP_SetAxisCurrentPosition(1, new_pos);
+        APP_UARTPrint("[OCMP1_CB]\r\n");
+    }
 
-        // Increment step count
+    if (cnc_axes[1].is_active && cnc_axes[1].motion_state != AXIS_IDLE)
+    {
+        // Direct access for maximum speed in interrupt context
+        cnc_axes[1].current_position += cnc_axes[1].direction_forward ? 1 : -1;
         cnc_axes[1].step_count++;
 
-        // Provide position feedback to motion planner is handled by setter
+        // Provide position feedback to motion planner
+        MotionPlanner_UpdateAxisPosition(1, cnc_axes[1].current_position);
     }
 }
 
 void APP_OCMP4_Callback(uintptr_t context)
 {
-    /* X-axis step pulse */
+    /* X-axis step pulse - PERFORMANCE CRITICAL: Direct access for speed */
+    LED1_Toggle(); // X-axis OCR interrupt indicator - should blink if firing
     LED2_Toggle(); // Step activity indicator
 
-    if (APP_GetAxisActiveState(0) && cnc_axes[0].motion_state != AXIS_IDLE)
+    // DEBUG: Always indicate callback triggered
+    static uint32_t debug_counter = 0;
+    if ((debug_counter++ % 100) == 0) // Print every 100th callback to avoid spam
     {
-        // Update position based on direction
-        int32_t current_pos = APP_GetAxisCurrentPosition(0);
-        int32_t new_pos = current_pos + (cnc_axes[0].direction_forward ? 1 : -1);
-        APP_SetAxisCurrentPosition(0, new_pos);
+        APP_UARTPrint("[OCMP4_CB]\r\n");
+    }
 
-        // Increment step count
+    if (cnc_axes[0].is_active && cnc_axes[0].motion_state != AXIS_IDLE)
+    {
+        // Direct access for maximum speed in interrupt context
+        cnc_axes[0].current_position += cnc_axes[0].direction_forward ? 1 : -1;
         cnc_axes[0].step_count++;
 
-        // Provide position feedback to motion planner is handled by setter
+        // Provide position feedback to motion planner
+        MotionPlanner_UpdateAxisPosition(0, cnc_axes[0].current_position);
     }
 }
 
 void APP_OCMP5_Callback(uintptr_t context)
 {
-    /* Z-axis step pulse */
+    /* Z-axis step pulse - PERFORMANCE CRITICAL: Direct access for speed */
     LED2_Toggle(); // Step activity indicator
 
-    if (APP_GetAxisActiveState(2) && cnc_axes[2].motion_state != AXIS_IDLE)
+    if (cnc_axes[2].is_active && cnc_axes[2].motion_state != AXIS_IDLE)
     {
-        // Update position based on direction
-        int32_t current_pos = APP_GetAxisCurrentPosition(2);
-        int32_t new_pos = current_pos + (cnc_axes[2].direction_forward ? 1 : -1);
-        APP_SetAxisCurrentPosition(2, new_pos);
-
-        // Increment step count
+        // Direct access for maximum speed in interrupt context
+        cnc_axes[2].current_position += cnc_axes[2].direction_forward ? 1 : -1;
         cnc_axes[2].step_count++;
 
-        // Provide position feedback to motion planner is handled by setter
+        // Provide position feedback to motion planner
+        MotionPlanner_UpdateAxisPosition(2, cnc_axes[2].current_position);
     }
 }
 
@@ -1453,9 +1488,10 @@ void APP_ExecuteMotionCommand(const char *line)
 
 void APP_SendStatus(void)
 {
-    /* Send GRBL v1.1f compliant status report */
-    char status_buffer[256];
+    /* Send GRBL v1.1f compliant status report with enhanced feedback */
+    char status_buffer[512];
     char x_str[20], y_str[20], z_str[20];
+    char vel_str[20], feed_str[20];
 
     // Determine state name based on GRBL state
     const char *state_name;
@@ -1493,19 +1529,57 @@ void APP_SendStatus(void)
         break;
     }
 
-    // Get current position
+    // Get current position from interpolation engine
     position_t current_pos = INTERP_GetCurrentPosition();
+
+    // Get motion planner statistics for enhanced feedback
+    float current_velocity = MotionPlanner_GetCurrentVelocity(0); // Use X-axis velocity as representative
+    float feed_rate = 100.0f;                                     // Default feed rate - could be retrieved from settings
 
     // Convert floats to strings using our custom ftoa function
     ftoa(current_pos.x, x_str, 3);
     ftoa(current_pos.y, y_str, 3);
     ftoa(current_pos.z, z_str, 3);
+    ftoa(current_velocity, vel_str, 1);
+    ftoa(feed_rate, feed_str, 0);
 
-    // Build the complete string using sprintf with string arguments (no floats)
-    sprintf(status_buffer, "<%s|MPos:%s,%s,%s|FS:0,0>\r\n",
-            state_name, x_str, y_str, z_str);
+    // Get step counts for detailed feedback
+    uint32_t x_steps = APP_GetAxisStepCount(0);
+    uint32_t y_steps = APP_GetAxisStepCount(1);
+    uint32_t z_steps = APP_GetAxisStepCount(2);
 
+    // Build enhanced status string with position, velocity, and step counts
+    sprintf(status_buffer, "<%s|MPos:%s,%s,%s|FS:%s,%s|Steps:%u,%u,%u>\r\n",
+            state_name, x_str, y_str, z_str, vel_str, feed_str, x_steps, y_steps, z_steps);
     APP_UARTPrint_blocking(status_buffer);
+}
+
+void APP_SendDetailedStatus(void)
+{
+    /* Send comprehensive debug status with all motion and position details */
+    char debug_buffer[1024];
+    char pos_str[200], step_str[200], vel_str[200];
+
+    // Get positions from both interpolation engine and direct axis readings
+    position_t interp_pos = INTERP_GetCurrentPosition();
+
+    // Build position details
+    sprintf(pos_str, "InterpPos:%.3f,%.3f,%.3f AxisPos:%d,%d,%d",
+            interp_pos.x, interp_pos.y, interp_pos.z,
+            APP_GetAxisCurrentPosition(0), APP_GetAxisCurrentPosition(1), APP_GetAxisCurrentPosition(2));
+
+    // Build step count details
+    sprintf(step_str, "Steps:%u,%u,%u",
+            APP_GetAxisStepCount(0), APP_GetAxisStepCount(1), APP_GetAxisStepCount(2));
+
+    // Build velocity details
+    float current_vel = MotionPlanner_GetCurrentVelocity(0); // Use X-axis velocity as representative
+    sprintf(vel_str, "Vel:%.1f Active:%d,%d,%d",
+            current_vel,
+            APP_GetAxisActiveState(0), APP_GetAxisActiveState(1), APP_GetAxisActiveState(2)); // Build comprehensive debug message
+    sprintf(debug_buffer, "[DEBUG] %s | %s | %s\r\nok\r\n", pos_str, step_str, vel_str);
+
+    APP_UARTPrint_blocking(debug_buffer);
 }
 
 #ifdef TEST_ARC_INTERPOLATION

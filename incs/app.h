@@ -16,6 +16,18 @@
     "APP_Initialize" and "APP_Tasks" prototypes) and some of them are only used
     internally by the application (such as the "APP_STATES" definition).  Both
     are defined here for convenience.
+
+  Performance Strategy:
+    REAL-TIME CRITICAL FUNCTIONS (use direct access for speed):
+    - OCR interrupt callbacks (APP_OCMP1/4/5_Callback)
+    - MotionPlanner_UpdateTrajectory() called at 1kHz
+    - Core Timer interrupt handlers
+
+    NON-CRITICAL FUNCTIONS (use getter/setter for readability):
+    - Initialization functions
+    - Status/diagnostic functions
+    - User interface functions
+    - Configuration functions
 *******************************************************************************/
 
 #ifndef _APP_H
@@ -233,12 +245,12 @@ typedef struct
 // *****************************************************************************
 // *****************************************************************************
 
-#define MAX_AXES 3                   // X, Y, Z axes
-#define MOTION_BUFFER_SIZE 16        // Look-ahead buffer size (16-command look-ahead)
-#define SWITCH_DEBOUNCE_MS 100       // Switch debounce time
-#define TRAJECTORY_TIMER_FREQ 1000   // 1kHz trajectory calculation
-#define DEFAULT_ACCELERATION 500.0f  // Default acceleration (steps/sec²)
-#define DEFAULT_MAX_VELOCITY 1000.0f // Default max velocity (steps/sec)
+#define MAX_AXES 3                  // X, Y, Z axes
+#define MOTION_BUFFER_SIZE 16       // Look-ahead buffer size (16-command look-ahead)
+#define SWITCH_DEBOUNCE_MS 100      // Switch debounce time
+#define TRAJECTORY_TIMER_FREQ 1000  // 1kHz trajectory calculation
+#define DEFAULT_ACCELERATION 500.0f // Default acceleration (steps/sec²)
+#define DEFAULT_MAX_VELOCITY 50.0f  // Default max velocity (steps/sec) - SLOW FOR TESTING
 
 // *****************************************************************************
 // *****************************************************************************

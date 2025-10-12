@@ -37,9 +37,9 @@
 // *****************************************************************************
 
 // G-code parsing constants
-#define DEFAULT_MAX_VELOCITY 1000.0f // Default rapid velocity
-#define MIN_FEEDRATE 1.0f            // Minimum feedrate
-#define MAX_FEEDRATE 10000.0f        // Maximum feedrate
+#define DEFAULT_MAX_VELOCITY 50.0f // Default rapid velocity - SLOW FOR TESTING
+#define MIN_FEEDRATE 1.0f          // Minimum feedrate
+#define MAX_FEEDRATE 10000.0f      // Maximum feedrate
 
 // *****************************************************************************
 // *****************************************************************************
