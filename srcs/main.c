@@ -1,14 +1,4 @@
-/*******************************#include "grbl_serial.h"      // GRBL serial communication
-
-// Serial settings and callbacks
-uintptr_t ctx = 0;
-uint8_t rxBuffer[1];
-
-void UART_Read(uintptr_t context)
-{
-  GRBL_Process_Char(rxBuffer[0]);
-  UART2_Read(&rxBuffer, 1);
-}*************************************
+/*******************************************************************************
   Main Source File
 
   Company:
@@ -20,7 +10,7 @@ void UART_Read(uintptr_t context)
   Summary:
     This file contains the "main" function for a project.
 
-  Description: am starting a
+  Description:
     This file contains the "main" function for a project.  The
     "main" function calls the "SYS_Initialize" function to initialize the state
     machines of all modules in the system
@@ -41,18 +31,7 @@ void UART_Read(uintptr_t context)
 #include "plib_uart2.h"       // Direct UART2 access for testing
 #include "plib_uart_common.h" // Common UART functions
 #include "plib_coretimer.h"   // Core timer for system timing
-
-#include "grbl_serial.h" // GRBL serial communication
-
-// Serial settings and callbacks
-uintptr_t ctx = 0;
-uint8_t rxBuffer[1];
-
-void UART_Read(uintptr_t context)
-{
-  GRBL_Process_Char(rxBuffer[0]);
-  UART2_Read(&rxBuffer, 1);
-}
+#include "grbl_serial.h"      // GRBL serial communication
 
 void CORETIMER_Fp(uint32_t status, uintptr_t context)
 {
@@ -74,21 +53,17 @@ int main(void)
   /* Initialize all modules */
   SYS_Initialize(NULL);
 
-  /* Initialize UART2 for communication */
-  UART2_ReadCallbackRegister(UART_Read, ctx);
-  UART2_Read(&rxBuffer[0], 1); // Start first read
-
   /* Initialize the application */
   APP_Initialize();
-
-  CORETIMER_CallbackSet(CORETIMER_Fp, 0);
-  CORETIMER_Start();
 
   /* Main application loop */
   while (true)
   {
     /* Maintain state machines of all polled MPLAB Harmony modules. */
     SYS_Tasks();
+
+    /* Run GRBL serial tasks to process incoming data */
+    /* GRBL_Tasks(); */ // Temporarily disabled to test direct UART handling
 
     /* Maintain the application's state machine. */
     APP_Tasks();

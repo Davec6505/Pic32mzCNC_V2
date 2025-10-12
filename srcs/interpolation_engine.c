@@ -1116,11 +1116,14 @@ bool INTERP_ReadLimitSwitch(axis_id_t axis)
     switch (axis)
     {
     case AXIS_X:
-        return LIMIT_X_Get() ? true : false;
+        // return LIMIT_X_Get() ? true : false;
+        return false;
     case AXIS_Y:
-        return LIMIT_Y_Get() ? true : false;
+        // return LIMIT_Y_Get() ? true : false;
+        return false;
     case AXIS_Z:
-        return LIMIT_Z_Get() ? true : false;
+        // return LIMIT_Z_Get() ? true : false;
+        return false;
     default:
         return false;
     }
@@ -2532,7 +2535,8 @@ static bool is_limit_switch_triggered(axis_id_t axis, bool check_positive)
         }
         else
         {
-            return !GPIO_PinRead(LIMIT_X_PIN); // Min switch (homing + min limit)
+            // return !GPIO_PinRead(LIMIT_X_PIN); // Min switch (homing + min limit)
+            return false;
         }
 
     case AXIS_Y:
@@ -2544,7 +2548,8 @@ static bool is_limit_switch_triggered(axis_id_t axis, bool check_positive)
         }
         else
         {
-            return !GPIO_PinRead(LIMIT_Y_PIN); // Min switch (homing + min limit)
+            // return !GPIO_PinRead(LIMIT_Y_PIN); // Min switch (homing + min limit)
+            return false;
         }
 
     case AXIS_Z:
@@ -2556,7 +2561,8 @@ static bool is_limit_switch_triggered(axis_id_t axis, bool check_positive)
         }
         else
         {
-            return !GPIO_PinRead(LIMIT_Z_PIN); // Min switch (homing + min limit)
+            // return !GPIO_PinRead(LIMIT_Z_PIN); // Min switch (homing + min limit)
+            return false;
         }
 
     case AXIS_A:

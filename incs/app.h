@@ -34,7 +34,18 @@
 #include "definitions.h"
 
 // Public function prototypes
+void APP_UARTPrint_blocking(const char *str);
 void APP_UARTPrint(const char *str);
+void APP_UARTWrite_nonblocking(const char *str); // New non-blocking write
+bool APP_AddLinearMove(float *target, float feedrate);
+bool APP_AddRapidMove(float *target);
+bool APP_IsMotionComplete(void);
+void APP_EmergencyStop(void);
+void APP_EmergencyReset(void);
+void APP_AlarmReset(void);
+void APP_StartHomingCycle(void);
+void APP_SetPickAndPlaceMode(bool enable);
+bool APP_IsPickAndPlaceMode(void);
 
 // Temporarily commented out for UART debug
 // #include "speed_control.h"
@@ -196,14 +207,21 @@ typedef struct
   /* Motion control system status */
   bool motion_system_ready;
   bool trajectory_timer_active;
+  uint8_t limit_switch_state;
+  uint32_t last_switch_time;
+  uint32_t last_heartbeat_time;
+  uint32_t last_motion_time;
 
   /* User interface */
   bool switch_pressed;
   uint32_t switch_debounce_timer;
-  uint32_t last_switch_time;
 
   /* System timing */
   uint32_t system_tick_counter;
+
+  /* UART receive buffer */
+  char uart_rx_buffer[256];
+  uint16_t uart_rx_buffer_pos;
 
 } APP_DATA;
 
@@ -432,7 +450,7 @@ void APP_StartHomingCycle(void);
     None (responses sent via DMA parser)
 */
 
-void APP_ExecuteGcodeCommand(const char *command);
+void APP_ExecuteMotionCommand(const char *command);
 
 /*******************************************************************************
   Function:

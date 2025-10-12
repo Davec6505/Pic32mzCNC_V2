@@ -1,7 +1,7 @@
 # Simple PowerShell Serial Monitor
 param(
     [string]$Port = "COM4",
-    [int]$BaudRate = 250000
+    [int]$BaudRate = 115200
 )
 
 try {
@@ -23,8 +23,11 @@ try {
     
     if ($serialPort.IsOpen) {
         Write-Host "Connected! Press Ctrl+C to exit" -ForegroundColor Green
-        Write-Host "Type 't' and press Enter to send test command" -ForegroundColor Yellow
         
+        # Automatically send a valid GRBL command ($$) after connecting
+        Write-Host "Sending '$$' command..." -ForegroundColor Yellow
+        $serialPort.Write("`$`$`r`n")
+
         # Start reading in background
         while ($true) {
             try {

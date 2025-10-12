@@ -1,127 +1,187 @@
-// grbl_serial.c - GRBL communication using character interrupts
+// grbl_serial.c - GRBL communica    // APP_UARTPrint("Grbl 1.1f ['$' for help]\r\n"); // This is now sent by APP_Initializeing character interrupts
 
 #include "definitions.h"
 #include "grbl_serial.h"
 #include "app.h" // For APP_UARTPrint
-#include "grbl_settings.h"
 #include <string.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include "peripheral/uart/plib_uart2.h"
 
-#define LINE_BUFFER_SIZE 100
+#define RX_BUFFER_SIZE 128
 
-static char current_line_buffer[LINE_BUFFER_SIZE];
-static int current_line_pos = 0;
-static int handshake_query_count = 0;
+// --- Static function prototypes ---
+static void handle_real_time_character(uint8_t c);
+static void process_line(void);
+static void serial_write(const char *s);
 
-// Callback functions for application integration
-static void (*motion_callback)(const char *) = NULL;
-static void (*status_callback)(void) = NULL;
-static void (*emergency_callback)(void) = NULL;
+// --- Private variables ---
+static uint8_t rx_buffer[RX_BUFFER_SIZE];
+static volatile uint16_t rx_buffer_head;
+static volatile uint16_t rx_buffer_tail;
+static volatile uint8_t rt_command; // Real-time command character
 
-// Buffer state helpers for GRBL status
-static inline int get_planner_buffer_state(void)
+// Buffer for assembling a line of G-code
+static char line_buffer[RX_BUFFER_SIZE];
+static uint8_t line_char_count;
+static bool line_ready;
+
+// Persistent buffer for UART read
+static uint8_t rx_data;
+
+// --- Callback function pointers ---
+static grbl_write_callback_t write_callback = NULL;
+static grbl_motion_callback_t motion_callback = NULL;
+static grbl_status_callback_t status_callback = NULL;
+static grbl_emergency_callback_t emergency_callback = NULL;
+
+static void UART2_Read_Callback(uintptr_t context)
 {
-    // TODO: Replace with actual planner buffer state
-    return 15; // Example: 15 slots available
-}
-static inline int get_rx_buffer_state(void)
-{
-    // TODO: Replace with actual RX buffer state
-    return 128; // Example: 128 bytes available
+    // The data is now in rx_data. Process it.
+    if (UART2_ErrorGet() == UART_ERROR_NONE)
+    {
+        // Handle real-time commands immediately
+        if (rx_data == '?' || rx_data == '~' || rx_data == '!')
+        {
+            rt_command = rx_data;
+        }
+        else
+        {
+            // Buffer other characters
+            uint16_t next_head = (rx_buffer_head + 1) % RX_BUFFER_SIZE;
+            if (next_head != rx_buffer_tail)
+            {
+                rx_buffer[rx_buffer_head] = rx_data;
+                rx_buffer_head = next_head;
+            }
+        }
+    }
+
+    // IMPORTANT: Re-arm the UART read interrupt for the next byte
+    UART2_Read(&rx_data, 1);
 }
 
 void GRBL_Serial_Initialize(void)
 {
-    memset(current_line_buffer, 0, sizeof(current_line_buffer));
-    current_line_pos = 0;
-    handshake_query_count = 0;
-    APP_UARTPrint("Grbl 1.1f ['$' for help]\r\n"); // Send handshake on startup
+    rx_buffer_head = 0;
+    rx_buffer_tail = 0;
+    rt_command = 0;
+    line_char_count = 0;
+    line_ready = false;
+
+    // Register the callback and arm the first read
+    UART2_ReadCallbackRegister(UART2_Read_Callback, (uintptr_t)NULL);
+    UART2_Read(&rx_data, 1); // Initial read
 }
 
-void GRBL_Process_Char(char c)
+void GRBL_RegisterWriteCallback(grbl_write_callback_t callback)
 {
-    // Handle real-time characters immediately
-    if (c == '?' || c == '!' || c == '~' || c == 0x18)
-    {
-        handle_real_time_character(c);
-        return;
-    }
-
-    // Buffer line-based commands
-    if (c == '\n' || c == '\r')
-    {
-        if (current_line_pos > 0)
-        {
-            current_line_buffer[current_line_pos] = '\0';
-            process_line(current_line_buffer);
-            current_line_pos = 0;
-            memset(current_line_buffer, 0, sizeof(current_line_buffer));
-        }
-    }
-    else if (current_line_pos < (LINE_BUFFER_SIZE - 1))
-    {
-        current_line_buffer[current_line_pos++] = c;
-    }
+    write_callback = callback;
 }
 
-void process_line(const char *line)
+void GRBL_RegisterMotionCallback(grbl_motion_callback_t callback)
 {
-    if (strlen(line) > 0)
+    motion_callback = callback;
+}
+
+void GRBL_RegisterStatusCallback(grbl_status_callback_t callback)
+{
+    status_callback = callback;
+}
+
+void GRBL_RegisterEmergencyCallback(grbl_emergency_callback_t callback)
+{
+    emergency_callback = callback;
+}
+
+static void serial_write(const char *s)
+{
+    if (write_callback)
     {
-        if (motion_callback)
-        {
-            motion_callback(line);
-        }
-        // "ok" response is now handled by the motion_callback (APP_ExecuteMotionCommand)
+        write_callback(s);
     }
 }
 
-void handle_real_time_character(char c)
+void GRBL_Tasks(void)
 {
-    switch (c)
+    // Process real-time commands first, these are high priority
+    if (rt_command != 0)
     {
-    case '?':
-        // UGS handshake and status query
-        handshake_query_count++;
-        if (handshake_query_count == 2)
+        handle_real_time_character(rt_command);
+        rt_command = 0; // Clear the command after handling
+    }
+
+    // Process buffered characters for line commands
+    while (rx_buffer_tail != rx_buffer_head)
+    {
+        char c = rx_buffer[rx_buffer_tail];
+        rx_buffer_tail = (rx_buffer_tail + 1) % RX_BUFFER_SIZE;
+
+        if (c == '\n' || c == '\r')
         {
-            APP_UARTPrint("Grbl 1.1f ['$' for help]\r\n");
+            // End of line character received
+            if (line_char_count > 0)
+            {
+                line_buffer[line_char_count] = '\0'; // Null terminate the string
+                line_ready = true;
+            }
         }
         else
         {
-            if (status_callback)
+            // Add character to the line buffer
+            if (line_char_count < (RX_BUFFER_SIZE - 1))
             {
-                status_callback();
+                line_buffer[line_char_count++] = c;
             }
         }
+
+        if (line_ready)
+        {
+            process_line();
+            line_char_count = 0; // Reset for next line
+            line_ready = false;
+        }
+    }
+}
+
+static void handle_real_time_character(uint8_t c)
+{
+    switch (c)
+    {
+    case '?': // Status report
+        if (status_callback)
+        {
+            status_callback();
+        }
         break;
-    case '!':
-        // Feed hold - Not yet implemented
+    case '!': // Feed hold
+        // TODO: Implement feed hold
+        serial_write("ALARM:Feed Hold\r\n");
         break;
-    case 0x18: // Ctrl-X, soft-reset
+    case '~': // Cycle start/resume
+        // TODO: Implement cycle start
+        serial_write("ALARM:Cycle Start\r\n");
+        break;
+    case 0x18: // Ctrl-X, reset
         if (emergency_callback)
         {
             emergency_callback();
         }
         break;
-    case '~':
-        // Cycle start/resume - Not yet implemented
-        break;
     }
 }
 
-void GRBL_RegisterMotionCallback(void (*callback)(const char *))
+static void process_line(void)
 {
-    motion_callback = callback;
+    if (motion_callback)
+    {
+        motion_callback(line_buffer);
+    }
 }
 
-void GRBL_RegisterStatusCallback(void (*callback)(void))
+void grbl_send_response(const char *message)
 {
-    status_callback = callback;
+    serial_write(message);
 }
 
-void GRBL_RegisterEmergencyCallback(void (*callback)(void))
-{
-    emergency_callback = callback;
-}
+// Deprecated functions, no longer used in this model
+void GRBL_Process_Char(char c) {}
+void GRBL_Serial_Tasks(void) {}
