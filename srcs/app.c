@@ -34,6 +34,9 @@
 #include "interpolation_engine.h"
 #include "motion_profile.h"
 #include "speed_control.h"
+#include "motion_buffer.h"
+#include "motion_gcode_parser.h"
+#include "motion_planner.h"
 #include "peripheral/uart/plib_uart2.h"
 #include "peripheral/uart/plib_uart_common.h"
 #include "peripheral/coretimer/plib_coretimer.h"
@@ -46,6 +49,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdlib.h>
+#include <math.h>
 #include "utils.h"
 
 // *****************************************************************************
@@ -80,11 +85,6 @@ APP_DATA appData;
 // CNC Axis data structures
 cnc_axis_t cnc_axes[MAX_AXES];
 
-// Motion planning buffer for look-ahead
-motion_block_t motion_buffer[MOTION_BUFFER_SIZE];
-uint8_t motion_buffer_head = 0;
-uint8_t motion_buffer_tail = 0;
-
 // UART callback data
 static uint8_t uart_rx_char;
 
@@ -93,6 +93,9 @@ static uint8_t uart_rx_char;
 static char line_buffer[LINE_BUFFER_SIZE];
 static volatile uint8_t line_buffer_head = 0;
 static volatile uint8_t line_buffer_tail = 0;
+
+// Flag for immediate status report request
+static volatile bool status_report_requested = false;
 
 // GRBL State variables
 static grbl_state_t grbl_state = GRBL_STATE_IDLE;
@@ -115,6 +118,8 @@ static void APP_PrintGCodeParameters(void);
 static void APP_PrintParserState(void);
 static void APP_ProcessSettingChange(const char *command);
 static void APP_ProcessGCodeCommand(const char *command);
+
+// Motion System Functions
 static void APP_SendError(uint8_t error_code);
 static void APP_SendAlarm(uint8_t alarm_code);
 
@@ -166,12 +171,13 @@ void APP_Initialize(void)
     appData.system_tick_counter = 0;
 
     /* Initialize motion buffer */
-    motion_buffer_head = 0;
-    motion_buffer_tail = 0;
-    for (int i = 0; i < MOTION_BUFFER_SIZE; i++)
-    {
-        motion_buffer[i].is_valid = false;
-    }
+    MotionBuffer_Initialize();
+
+    /* Initialize motion G-code parser */
+    MotionGCodeParser_Initialize();
+
+    /* Initialize motion planner */
+    MotionPlanner_Initialize();
 
     /* Initialize motion profile system */
     MOTION_PROFILE_Initialize();
@@ -203,19 +209,26 @@ void APP_Initialize(void)
 
 void APP_Tasks(void)
 {
-    /* Hybrid UART processing:
-     * - Callback handles ? real-time commands immediately
-     * - Polling handles line-based commands like $I, $$, etc.
+    /* Unified UART processing:
+     * - All commands processed in main loop for proper sequencing
+     * - No hybrid processing to avoid race conditions
      */
+
     static char rx_buffer[64];
     static uint8_t rx_pos = 0;
-    uint8_t received_char;
-
-    // Process buffered characters from callback
+    uint8_t received_char; // Process buffered characters from callback
     while (line_buffer_tail != line_buffer_head)
     {
         received_char = line_buffer[line_buffer_tail];
         line_buffer_tail = (line_buffer_tail + 1) % LINE_BUFFER_SIZE;
+
+        // Handle real-time commands immediately (single character commands)
+        if (received_char == '?')
+        {
+            // Status report - process immediately for proper sequencing
+            APP_SendStatus();
+            continue; // Don't buffer this character
+        }
 
         if (received_char == '\r' || received_char == '\n')
         {
@@ -338,8 +351,7 @@ void APP_Tasks(void)
         if (all_axes_complete)
         {
             /* Mark current buffer entry as processed */
-            motion_buffer[motion_buffer_tail].is_valid = false;
-            motion_buffer_tail = (motion_buffer_tail + 1) % MOTION_BUFFER_SIZE;
+            MotionBuffer_Complete();
 
             /* Reset axes to idle state */
             for (int i = 0; i < MAX_AXES; i++)
@@ -498,9 +510,9 @@ static void APP_ExecuteNextMotionBlock(void)
         return;
     }
 
-    motion_block_t *block = &motion_buffer[motion_buffer_tail];
+    motion_block_t *block = MotionBuffer_GetNext();
 
-    if (!block->is_valid)
+    if (block == NULL)
     {
         return;
     }
@@ -567,13 +579,12 @@ static void APP_ProcessLookAhead(void)
 
 static bool APP_IsBufferEmpty(void)
 {
-    return motion_buffer_head == motion_buffer_tail && !motion_buffer[motion_buffer_tail].is_valid;
+    return MotionBuffer_IsEmpty();
 }
 
 static bool APP_IsBufferFull(void)
 {
-    uint8_t next_head = (motion_buffer_head + 1) % MOTION_BUFFER_SIZE;
-    return next_head == motion_buffer_tail;
+    return !MotionBuffer_HasSpace();
 }
 
 /* UART processing is now handled by GRBL serial module - removed APP_ProcessUART to avoid conflicts
@@ -631,33 +642,40 @@ static void APP_UART_Callback(uintptr_t context)
         switch (uart_rx_char)
         {
         case '?':
-            // Status report
-            APP_SendStatus();
+            // Status report - buffer it like other commands for proper sequencing
+            {
+                uint8_t next_head = (line_buffer_head + 1) % LINE_BUFFER_SIZE;
+                if (next_head != line_buffer_tail) // Buffer not full
+                {
+                    line_buffer[line_buffer_head] = uart_rx_char;
+                    line_buffer_head = next_head;
+                }
+            }
             break;
 
         case '!':
             // Feed hold
-            APP_UARTPrint("[MSG:Feed Hold]\r\n");
+            APP_UARTPrint_blocking("[MSG:Feed Hold]\r\n");
             break;
 
         case '~':
             // Cycle start (resume)
-            APP_UARTPrint("[MSG:Cycle Start]\r\n");
+            APP_UARTPrint_blocking("[MSG:Cycle Start]\r\n");
             break;
 
         case 0x18: // Ctrl-X
             // Soft reset
             grbl_state = GRBL_STATE_IDLE;
             grbl_alarm_code = 0;
-            APP_UARTPrint("\r\n\r\nGrbl 1.1f ['$' for help]\r\n");
+            APP_UARTPrint_blocking("\r\n\r\nGrbl 1.1f ['$' for help]\r\n");
             break;
 
         case 0x84: // Safety door (if enabled)
-            APP_UARTPrint("[MSG:Safety Door]\r\n");
+            APP_UARTPrint_blocking("[MSG:Safety Door]\r\n");
             break;
 
         case 0x9E: // Jog cancel
-            APP_UARTPrint("[MSG:Jog Cancelled]\r\n");
+            APP_UARTPrint_blocking("[MSG:Jog Cancelled]\r\n");
             break;
 
         default:
@@ -685,7 +703,7 @@ static void APP_ProcessGRBLCommand(const char *command)
         if (strcmp(command, "$I") == 0)
         {
             // Build info - send as single message to avoid timing issues
-            APP_UARTPrint("[VER:1.1f.20241012:CNC Controller]\r\n[OPT:V,15,128]\r\nok\r\n");
+            APP_UARTPrint_blocking("[VER:1.1f.20241012:CNC Controller]\r\n[OPT:V,15,128]\r\nok\r\n");
         }
         else if (strcmp(command, "$$") == 0)
         {
@@ -704,16 +722,13 @@ static void APP_ProcessGRBLCommand(const char *command)
         }
         else if (strcmp(command, "$N") == 0)
         {
-            // Print startup blocks
-            APP_UARTPrint("$N0=\r\n");
-            APP_UARTPrint("$N1=\r\n");
-            APP_UARTPrint("ok\r\n");
+            // Print startup blocks - send as single message to avoid timing issues
+            APP_UARTPrint_blocking("$N0=\r\n$N1=\r\nok\r\n");
         }
         else if (strcmp(command, "$C") == 0)
         {
             // Check gcode mode toggle
-            APP_UARTPrint("[MSG:Enabled]\r\n");
-            APP_UARTPrint("ok\r\n");
+            APP_UARTPrint_blocking("[MSG:Enabled]\r\nok\r\n");
         }
         else if (strcmp(command, "$X") == 0)
         {
@@ -722,19 +737,17 @@ static void APP_ProcessGRBLCommand(const char *command)
             {
                 grbl_state = GRBL_STATE_IDLE;
                 grbl_alarm_code = 0;
-                APP_UARTPrint("[MSG:Caution: Unlocked]\r\n");
+                APP_UARTPrint_blocking("[MSG:Caution: Unlocked]\r\nok\r\n");
             }
             else
             {
-                APP_UARTPrint("[MSG:Caution: Unlocked]\r\n");
+                APP_UARTPrint_blocking("[MSG:Caution: Unlocked]\r\nok\r\n");
             }
-            APP_UARTPrint("ok\r\n");
         }
         else if (strcmp(command, "$H") == 0)
         {
             // Run homing cycle
-            APP_UARTPrint("[MSG:Homing cycle completed]\r\n");
-            APP_UARTPrint("ok\r\n");
+            APP_UARTPrint_blocking("[MSG:Homing cycle completed]\r\nok\r\n");
         }
         else if (command[1] >= '0' && command[1] <= '9')
         {
@@ -783,145 +796,186 @@ static void APP_SendAlarm(uint8_t alarm_code)
 
 static void APP_PrintGRBLSettings(void)
 {
-    // GRBL 1.1f standard settings - output all key settings
-    APP_UARTPrint("$0=10\r\n");        // Step pulse time
-    APP_UARTPrint("$1=25\r\n");        // Step idle delay
-    APP_UARTPrint("$2=0\r\n");         // Step pulse invert mask
-    APP_UARTPrint("$3=0\r\n");         // Step direction invert mask
-    APP_UARTPrint("$4=0\r\n");         // Invert step enable pin
-    APP_UARTPrint("$5=0\r\n");         // Invert limit pins
-    APP_UARTPrint("$6=0\r\n");         // Invert probe pin
-    APP_UARTPrint("$10=1\r\n");        // Status report options
-    APP_UARTPrint("$11=0.010\r\n");    // Junction deviation
-    APP_UARTPrint("$12=0.002\r\n");    // Arc tolerance
-    APP_UARTPrint("$13=0\r\n");        // Report in inches
-    APP_UARTPrint("$20=0\r\n");        // Soft limits enable
-    APP_UARTPrint("$21=0\r\n");        // Hard limits enable
-    APP_UARTPrint("$22=0\r\n");        // Homing cycle enable
-    APP_UARTPrint("$23=0\r\n");        // Homing direction invert mask
-    APP_UARTPrint("$24=25.000\r\n");   // Homing locate feed rate
-    APP_UARTPrint("$25=500.000\r\n");  // Homing search seek rate
-    APP_UARTPrint("$26=250\r\n");      // Homing switch debounce delay
-    APP_UARTPrint("$27=1.000\r\n");    // Homing switch pull-off distance
-    APP_UARTPrint("$30=1000\r\n");     // Maximum spindle speed
-    APP_UARTPrint("$31=0\r\n");        // Minimum spindle speed
-    APP_UARTPrint("$32=0\r\n");        // Laser mode enable
-    APP_UARTPrint("$100=250.000\r\n"); // X-axis travel resolution
-    APP_UARTPrint("$101=250.000\r\n"); // Y-axis travel resolution
-    APP_UARTPrint("$102=250.000\r\n"); // Z-axis travel resolution
-    APP_UARTPrint("$110=500.000\r\n"); // X-axis maximum rate
-    APP_UARTPrint("$111=500.000\r\n"); // Y-axis maximum rate
-    APP_UARTPrint("$112=500.000\r\n"); // Z-axis maximum rate
-    APP_UARTPrint("$120=10.000\r\n");  // X-axis acceleration
-    APP_UARTPrint("$121=10.000\r\n");  // Y-axis acceleration
-    APP_UARTPrint("$122=10.000\r\n");  // Z-axis acceleration
-    APP_UARTPrint("$130=200.000\r\n"); // X-axis maximum travel
-    APP_UARTPrint("$131=200.000\r\n"); // Y-axis maximum travel
-    APP_UARTPrint("$132=200.000\r\n"); // Z-axis maximum travel
-    APP_UARTPrint("ok\r\n");
+    // GRBL 1.1f standard settings - send as single message to avoid timing issues
+    APP_UARTPrint_blocking("$0=10\r\n$1=25\r\n$2=0\r\n$3=0\r\n$4=0\r\n$5=0\r\n$6=0\r\n"
+                           "$10=1\r\n$11=0.010\r\n$12=0.002\r\n$13=0\r\n$20=0\r\n$21=0\r\n$22=0\r\n"
+                           "$23=0\r\n$24=25.000\r\n$25=500.000\r\n$26=250\r\n$27=1.000\r\n"
+                           "$30=1000\r\n$31=0\r\n$32=0\r\n$100=250.000\r\n$101=250.000\r\n$102=250.000\r\n"
+                           "$110=500.000\r\n$111=500.000\r\n$112=500.000\r\n$120=10.000\r\n$121=10.000\r\n$122=10.000\r\n"
+                           "$130=200.000\r\n$131=200.000\r\n$132=200.000\r\nok\r\n");
 }
 
 static void APP_ProcessSettingChange(const char *command)
 {
     // Parse setting change commands like $0=10
     // For now, just acknowledge the setting change
-    APP_UARTPrint("ok\r\n");
+    APP_UARTPrint_blocking("ok\r\n");
 }
 
 static void APP_PrintGCodeParameters(void)
 {
-    // Print coordinate system offsets and other parameters
-    APP_UARTPrint("[G54:0.000,0.000,0.000]\r\n"); // Work coordinate offset
-    APP_UARTPrint("[G55:0.000,0.000,0.000]\r\n");
-    APP_UARTPrint("[G56:0.000,0.000,0.000]\r\n");
-    APP_UARTPrint("[G57:0.000,0.000,0.000]\r\n");
-    APP_UARTPrint("[G58:0.000,0.000,0.000]\r\n");
-    APP_UARTPrint("[G59:0.000,0.000,0.000]\r\n");
-    APP_UARTPrint("[G28:0.000,0.000,0.000]\r\n");   // Home position
-    APP_UARTPrint("[G30:0.000,0.000,0.000]\r\n");   // Pre-defined position
-    APP_UARTPrint("[G92:0.000,0.000,0.000]\r\n");   // Coordinate offset
-    APP_UARTPrint("[TLO:0.000]\r\n");               // Tool length offset
-    APP_UARTPrint("[PRB:0.000,0.000,0.000:0]\r\n"); // Probe result
-    APP_UARTPrint("ok\r\n");
+    // Print coordinate system offsets and other parameters - send as single message
+    APP_UARTPrint_blocking("[G54:0.000,0.000,0.000]\r\n[G55:0.000,0.000,0.000]\r\n[G56:0.000,0.000,0.000]\r\n"
+                           "[G57:0.000,0.000,0.000]\r\n[G58:0.000,0.000,0.000]\r\n[G59:0.000,0.000,0.000]\r\n"
+                           "[G28:0.000,0.000,0.000]\r\n[G30:0.000,0.000,0.000]\r\n[G92:0.000,0.000,0.000]\r\n"
+                           "[TLO:0.000]\r\n[PRB:0.000,0.000,0.000:0]\r\nok\r\n");
 }
 
 static void APP_PrintParserState(void)
 {
-    // Print current parser state (modal groups)
-    APP_UARTPrint("[GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0 S0]\r\n");
-    APP_UARTPrint("ok\r\n");
+    // Print current parser state (modal groups) - send as single message
+    APP_UARTPrint_blocking("[GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0 S0]\r\nok\r\n");
 }
 
 static void APP_ProcessGCodeCommand(const char *command)
 {
-    // Basic G-code command processing
-    // For now, acknowledge all G-code commands
+    // Enhanced G-code command processing with motion planning buffer integration
     if (strncmp(command, "G0", 2) == 0 || strncmp(command, "G1", 2) == 0)
     {
-        // Rapid/Linear movement
-        APP_UARTPrint("ok\r\n");
+        // Check if motion buffer has space before adding new move
+        if (MotionBuffer_HasSpace())
+        {
+            motion_block_t move_block;
+            if (MotionGCodeParser_ParseMove(command, &move_block))
+            {
+                // Successfully parsed, add to motion buffer
+                MotionBuffer_Add(&move_block);
+                // Start motion processing
+                MotionPlanner_ProcessBuffer();
+                APP_UARTPrint_blocking("ok\r\n");
+            }
+            else
+            {
+                // Parse error
+                APP_UARTPrint_blocking("error:33\r\n"); // Invalid gcode ID:33
+            }
+        }
+        else
+        {
+            // Buffer full - UGS/GRBL will wait for space
+            APP_UARTPrint_blocking("error:14\r\n"); // Motion buffer overflow
+        }
     }
     else if (strncmp(command, "G2", 2) == 0 || strncmp(command, "G3", 2) == 0)
     {
-        // Circular movement
-        APP_UARTPrint("ok\r\n");
-    }
-    else if (strncmp(command, "M3", 2) == 0 || strncmp(command, "M4", 2) == 0)
-    {
-        // Spindle on
-        APP_UARTPrint("ok\r\n");
-    }
-    else if (strncmp(command, "M5", 2) == 0)
-    {
-        // Spindle off
-        APP_UARTPrint("ok\r\n");
-    }
-    else if (strncmp(command, "M8", 2) == 0 || strncmp(command, "M9", 2) == 0)
-    {
-        // Coolant control
-        APP_UARTPrint("ok\r\n");
+        // Circular movement - Check buffer space
+        if (MotionBuffer_HasSpace())
+        {
+            motion_block_t arc_block;
+            if (MotionGCodeParser_ParseArc(command, &arc_block))
+            {
+                MotionBuffer_Add(&arc_block);
+                MotionPlanner_ProcessBuffer();
+                APP_UARTPrint_blocking("ok\r\n");
+            }
+            else
+            {
+                APP_UARTPrint_blocking("error:33\r\n");
+            }
+        }
+        else
+        {
+            APP_UARTPrint_blocking("error:14\r\n");
+        }
     }
     else if (strncmp(command, "G4", 2) == 0)
     {
-        // Dwell
-        APP_UARTPrint("ok\r\n");
+        // Dwell - Add to motion buffer as zero-movement block with time delay
+        if (MotionBuffer_HasSpace())
+        {
+            motion_block_t dwell_block;
+            if (MotionGCodeParser_ParseDwell(command, &dwell_block))
+            {
+                MotionBuffer_Add(&dwell_block);
+                MotionPlanner_ProcessBuffer();
+                APP_UARTPrint_blocking("ok\r\n");
+            }
+            else
+            {
+                APP_UARTPrint_blocking("error:33\r\n");
+            }
+        }
+        else
+        {
+            APP_UARTPrint_blocking("error:14\r\n");
+        }
+    }
+    else if (strncmp(command, "M3", 2) == 0 || strncmp(command, "M4", 2) == 0)
+    {
+        // Spindle on - Update machine state immediately
+        MotionGCodeParser_UpdateSpindleState(command);
+        APP_UARTPrint_blocking("ok\r\n");
+    }
+    else if (strncmp(command, "M5", 2) == 0)
+    {
+        // Spindle off - Update machine state immediately
+        MotionGCodeParser_UpdateSpindleState(command);
+        APP_UARTPrint_blocking("ok\r\n");
+    }
+    else if (strncmp(command, "M8", 2) == 0 || strncmp(command, "M9", 2) == 0)
+    {
+        // Coolant control - Update machine state immediately
+        MotionGCodeParser_UpdateCoolantState(command);
+        APP_UARTPrint_blocking("ok\r\n");
     }
     else if (strncmp(command, "G17", 3) == 0 || strncmp(command, "G18", 3) == 0 || strncmp(command, "G19", 3) == 0)
     {
-        // Plane selection
-        APP_UARTPrint("ok\r\n");
+        // Plane selection - Update parser state
+        MotionGCodeParser_UpdatePlaneSelection(command);
+        APP_UARTPrint_blocking("ok\r\n");
     }
     else if (strncmp(command, "G20", 3) == 0 || strncmp(command, "G21", 3) == 0)
     {
-        // Units
-        APP_UARTPrint("ok\r\n");
+        // Units - Update parser state
+        MotionGCodeParser_UpdateUnits(command);
+        APP_UARTPrint_blocking("ok\r\n");
     }
     else if (strncmp(command, "G28", 3) == 0 || strncmp(command, "G30", 3) == 0)
     {
-        // Go to predefined position
-        APP_UARTPrint("ok\r\n");
+        // Go to predefined position - Add homing move to buffer
+        if (MotionBuffer_HasSpace())
+        {
+            motion_block_t home_block;
+            if (MotionGCodeParser_ParseHome(command, &home_block))
+            {
+                MotionBuffer_Add(&home_block);
+                MotionPlanner_ProcessBuffer();
+                APP_UARTPrint_blocking("ok\r\n");
+            }
+            else
+            {
+                APP_UARTPrint_blocking("error:33\r\n");
+            }
+        }
+        else
+        {
+            APP_UARTPrint_blocking("error:14\r\n");
+        }
     }
     else if (strncmp(command, "G90", 3) == 0 || strncmp(command, "G91", 3) == 0)
     {
-        // Distance mode
-        APP_UARTPrint("ok\r\n");
+        // Distance mode - Update parser state
+        MotionGCodeParser_UpdateDistanceMode(command);
+        APP_UARTPrint_blocking("ok\r\n");
     }
     else if (strncmp(command, "G92", 3) == 0)
     {
-        // Coordinate system offset
-        APP_UARTPrint("ok\r\n");
+        // Coordinate system offset - Update coordinate system
+        MotionGCodeParser_UpdateCoordinateOffset(command);
+        APP_UARTPrint_blocking("ok\r\n");
     }
     else if (strncmp(command, "G54", 3) == 0 || strncmp(command, "G55", 3) == 0 ||
              strncmp(command, "G56", 3) == 0 || strncmp(command, "G57", 3) == 0 ||
              strncmp(command, "G58", 3) == 0 || strncmp(command, "G59", 3) == 0)
     {
-        // Work coordinate systems
-        APP_UARTPrint("ok\r\n");
+        // Work coordinate systems - Update active coordinate system
+        MotionGCodeParser_UpdateWorkCoordinateSystem(command);
+        APP_UARTPrint_blocking("ok\r\n");
     }
     else
     {
-        // Unknown command
-        APP_UARTPrint("ok\r\n"); // Still acknowledge for compatibility
+        // Unknown command - Send proper error
+        APP_UARTPrint_blocking("error:20\r\n"); // Unsupported or invalid g-code ID:20
     }
 }
 
@@ -949,8 +1003,9 @@ void APP_TrajectoryTimerCallback_CoreTimer(uint32_t status, uintptr_t context)
         LED1_Toggle(); // System heartbeat indicator
     }
 
-    /* TODO: Add trajectory calculations here once proven stable */
-    /* APP_CalculateTrajectory() calls will go here */
+    /* Real-time trajectory calculations at 1kHz */
+    /* This is where the motion planner calculates velocities and updates OCR periods */
+    MotionPlanner_UpdateTrajectory();
 }
 void APP_CoreTimerCallback(uint32_t status, uintptr_t context)
 {
@@ -968,6 +1023,9 @@ void APP_OCMP1_Callback(uintptr_t context)
     {
         cnc_axes[1].current_position += cnc_axes[1].direction_forward ? 1 : -1;
         cnc_axes[1].step_count++;
+
+        // Provide position feedback to motion planner
+        MotionPlanner_UpdateAxisPosition(1, cnc_axes[1].current_position);
     }
 }
 
@@ -980,6 +1038,9 @@ void APP_OCMP4_Callback(uintptr_t context)
     {
         cnc_axes[0].current_position += cnc_axes[0].direction_forward ? 1 : -1;
         cnc_axes[0].step_count++;
+
+        // Provide position feedback to motion planner
+        MotionPlanner_UpdateAxisPosition(0, cnc_axes[0].current_position);
     }
 }
 
@@ -992,6 +1053,9 @@ void APP_OCMP5_Callback(uintptr_t context)
     {
         cnc_axes[2].current_position += cnc_axes[2].direction_forward ? 1 : -1;
         cnc_axes[2].step_count++;
+
+        // Provide position feedback to motion planner
+        MotionPlanner_UpdateAxisPosition(2, cnc_axes[2].current_position);
     }
 }
 
@@ -1053,25 +1117,23 @@ bool APP_AddLinearMove(float *target, float feedrate)
         return false;
     }
 
-    motion_block_t *block = &motion_buffer[motion_buffer_head];
+    motion_block_t block;
 
     /* Copy target positions */
     for (int i = 0; i < MAX_AXES; i++)
     {
-        block->target_pos[i] = target[i];
+        block.target_pos[i] = target[i];
     }
 
-    block->feedrate = feedrate;
-    block->entry_velocity = 0;      // Will be calculated in look-ahead
-    block->exit_velocity = 0;       // Will be calculated in look-ahead
-    block->max_velocity = feedrate; // For now, max_velocity = feedrate
-    block->motion_type = 1;         // G1 - Linear move
-    block->is_valid = true;
+    block.feedrate = feedrate;
+    block.entry_velocity = 0;      // Will be calculated in look-ahead
+    block.exit_velocity = 0;       // Will be calculated in look-ahead
+    block.max_velocity = feedrate; // For now, max_velocity = feedrate
+    block.motion_type = 1;         // G1 - Linear move
+    block.is_valid = true;
 
-    /* Advance head pointer */
-    motion_buffer_head = (motion_buffer_head + 1) % MOTION_BUFFER_SIZE;
-
-    return true;
+    /* Add to motion buffer */
+    return MotionBuffer_Add(&block);
 }
 
 bool APP_AddRapidMove(float *target)
@@ -1119,12 +1181,7 @@ void APP_EmergencyStop(void)
     }
 
     /* Clear motion buffer */
-    motion_buffer_head = 0;
-    motion_buffer_tail = 0;
-    for (int i = 0; i < MOTION_BUFFER_SIZE; i++)
-    {
-        motion_buffer[i].is_valid = false;
-    }
+    MotionBuffer_Clear();
 
     appData.state = APP_STATE_MOTION_ERROR;
     APP_UARTPrint("EMERGENCY STOP - All motion halted\r\n");
@@ -1178,12 +1235,7 @@ void APP_StartHomingCycle(void)
     APP_EmergencyStop();
 
     // Clear motion buffer
-    motion_buffer_head = 0;
-    motion_buffer_tail = 0;
-    for (int i = 0; i < MOTION_BUFFER_SIZE; i++)
-    {
-        motion_buffer[i].is_valid = false;
-    }
+    MotionBuffer_Clear();
 
     // Start homing for X, Y, Z axes (bitmask: 0x07 = 0b111)
     uint8_t axes_to_home = 0x07; // X=bit0, Y=bit1, Z=bit2
@@ -1239,7 +1291,7 @@ void APP_ExecuteMotionCommand(const char *line)
         if (strcmp(&line[start], "$I") == 0)
         {
             // Report build info - send as single message to avoid timing issues
-            APP_UARTPrint("[VER:1.1f.20241012:CNC Controller]\r\n[OPT:V,15,128]\r\nok\r\n");
+            APP_UARTPrint_blocking("[VER:1.1f.20241012:CNC Controller]\r\n[OPT:V,15,128]\r\nok\r\n");
         }
         else if (strcmp(&line[start], "$$") == 0)
         {
@@ -1377,7 +1429,7 @@ void APP_SendStatus(void)
     sprintf(status_buffer, "<%s|MPos:%s,%s,%s|FS:0,0>\r\n",
             state_name, x_str, y_str, z_str);
 
-    APP_UARTPrint(status_buffer);
+    APP_UARTPrint_blocking(status_buffer);
 }
 
 #ifdef TEST_ARC_INTERPOLATION

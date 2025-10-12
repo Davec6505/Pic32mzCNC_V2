@@ -4,6 +4,8 @@
 
 This is a professional-grade CNC motion control system implemented on the **PIC32MZ2048EFH100** microcontroller. The system provides GRBL v1.1f compatible motion control with advanced features including S-curve acceleration profiles, 16-block look-ahead motion planning, G2/G3 arc interpolation, and comprehensive safety systems.
 
+**🆕 NEW: Modular Architecture** - Recently restructured with a clean modular design for improved maintainability and code organization while preserving all real-time performance characteristics.
+
 ## Key Features
 
 ### 🚀 **Advanced Motion Control**
@@ -12,12 +14,14 @@ This is a professional-grade CNC motion control system implemented on the **PIC3
 - **Arc Interpolation**: Complete G2/G3 circular interpolation with I,J,K offset and R radius formats
 - **Multi-Axis Coordination**: Synchronized 3-axis (X,Y,Z) motion with optional 4th axis support
 - **Hardware Pulse Generation**: OCRx continuous pulse mode for precise step timing
+- **Real-time Trajectory Control**: 1kHz Core Timer updates with OCR period calculations
 
 ### 🛡️ **Comprehensive Safety Systems**
 - **Hard Limit Switches**: Real-time GPIO monitoring with immediate axis stopping
 - **Soft Limit Checking**: Preventive boundary validation before motion execution
 - **Emergency Stop**: Instant motion halt with proper system recovery
 - **Individual Axis Control**: Independent axis stopping for selective motion control
+- **Position Feedback**: Closed-loop monitoring via OCR interrupt callbacks
 
 ### 🔧 **GRBL v1.1f Compatibility**
 - **Universal G-code Sender (UGS) Support**: Full compatibility with popular CNC software
@@ -41,9 +45,8 @@ OCRx Module Assignments:
 └── OCMP5 → Z-axis step pulses
 
 Timer Sources:
-├── TMR2/TMR3 → OCRx time base
-├── TMR4 → System timing
-└── TMR1 → Motion control timing
+├── TMR2/TMR3/TMR4 → OCRx time base
+├── CORETIMER → System timing / Motion control timing
 ```
 
 ### GPIO Pin Assignments
@@ -62,7 +65,93 @@ Step/Direction Outputs:
 
 ## Software Architecture
 
-### Core Components
+### 🆕 **Modular Architecture (2024 Restructuring)**
+
+The motion control system has been restructured into clean, modular components with proper separation of concerns:
+
+```
+Motion Control Architecture:
+┌─────────────────────────────────────────────────────────────────────┐
+│                          Core Timer (1kHz)                         │
+│                    MotionPlanner_UpdateTrajectory()                │
+└───────────────────────────────┬───────────────────────────────────┘
+                                │
+                ┌───────────────▼───────────────┐
+                │        Motion Planner        │
+                │      (motion_planner.c)      │
+                │ • Real-time trajectory calc  │
+                │ • OCR period updates         │
+                │ • Velocity profiling         │
+                └───────────────┬───────────────┘
+                                │
+        ┌───────────────────────┼───────────────────────┐
+        │                       │                       │
+┌───────▼────────┐    ┌─────────▼──────────┐   ┌───────▼─────────┐
+│ Motion Buffer  │    │  G-code Parser     │   │ Hardware Layer  │
+│(motion_buffer.c)│    │(motion_gcode_      │   │    (app.c)      │
+│• 16-cmd buffer │    │ parser.c)          │   │• OCR interrupts │
+│• Look-ahead    │    │• G0/G1/G2/G3 parse │   │• Position feedback│
+│• Thread-safe   │    │• Machine state     │   │• Limit switches │
+└────────────────┘    └────────────────────┘   └─────────────────┘
+```
+
+#### **Module Responsibilities:**
+
+**1. Motion Buffer (`motion_buffer.c/.h`)**
+- 16-command circular buffer management
+- Thread-safe operations for real-time access
+- Buffer status monitoring and statistics
+- Encapsulated buffer storage (no global access)
+
+**2. Motion Planner (`motion_planner.c/.h`)**
+- Real-time trajectory calculations at 1kHz
+- OCR period calculations for step rate control
+- Acceleration/deceleration profile generation
+- Position feedback integration from OCR interrupts
+- Hardware abstraction for stepper control
+
+**3. G-code Parser (`motion_gcode_parser.c/.h`)**
+- G-code command parsing (G0/G1/G2/G3)
+- Machine state management (coordinates, feedrate, etc.)
+- Motion block generation and validation
+- Parameter extraction and validation
+
+**4. Application Layer (`app.c`)**
+- Hardware initialization and configuration
+- OCR interrupt service routines
+- Position feedback and limit switch monitoring
+- UART communication and user interface
+- System state management
+
+### Core Hardware Integration
+
+```
+Real-time Control Flow:
+Core Timer (1kHz) ──── MotionPlanner_UpdateTrajectory()
+     │                           │
+     │                           ▼
+     │                 Calculate Velocities
+     │                           │
+     │                           ▼
+     │                 CalculateOCRPeriod()
+     │                           │
+     │                           ▼
+     └────────────────► UpdateAxisOCRPeriods()
+                                 │
+                                 ▼
+                        OCMP1/4/5 Hardware
+                                 │
+                                 ▼
+                          Step Pulse Generation
+                                 │
+                                 ▼
+                        OCR Interrupt Callbacks
+                                 │
+                                 ▼
+                     MotionPlanner_UpdateAxisPosition()
+```
+
+### Legacy Components (Preserved)
 
 #### 1. **Interpolation Engine** (`interpolation_engine.c/.h`)
 The heart of the motion control system providing:
@@ -175,20 +264,77 @@ bool APP_AddLinearMove(float *target, float feedrate) {
 Pic32mzCNC_V2/
 ├── incs/                           # Header files
 │   ├── app.h                       # Main application interface
-│   ├── interpolation_engine.h      # Motion control API
+│   ├── motion_buffer.h             # 🆕 Motion buffer management API
+│   ├── motion_gcode_parser.h       # 🆕 G-code parsing API
+│   ├── motion_planner.h            # 🆕 Motion planning API
+│   ├── interpolation_engine.h      # Legacy motion control API
 │   ├── grbl_settings.h            # GRBL parameter definitions
 │   ├── motion_profile.h           # Motion profile types
+│   ├── speed_control.h            # Speed control algorithms
 │   └── config/default/            # Hardware abstraction layer
 │       └── peripheral/            # PIC32 peripheral drivers
 ├── srcs/                          # Source files
-│   ├── app.c                      # Main application & G-code handler
-│   ├── interpolation_engine.c     # Motion control implementation
+│   ├── app.c                      # Main application & hardware layer
+│   ├── motion_buffer.c            # 🆕 Motion buffer implementation
+│   ├── motion_gcode_parser.c      # 🆕 G-code parsing implementation
+│   ├── motion_planner.c           # 🆕 Motion planning implementation
+│   ├── interpolation_engine.c     # Legacy motion control implementation
 │   ├── grbl_settings.c           # GRBL settings management
 │   ├── motion_profile.c          # Motion profile calculations
+│   ├── speed_control.c           # Speed control implementation
 │   └── config/default/           # Generated HAL code
 ├── objs/                         # Compiled object files
 ├── bins/                         # Final executable and hex files
 └── other/                        # Linker maps and memory files
+```
+
+### 🆕 **New Modular API Functions**
+
+#### Motion Buffer API
+```c
+// Buffer management
+void MotionBuffer_Initialize(void);
+bool MotionBuffer_Add(motion_block_t *block);
+motion_block_t *MotionBuffer_GetNext(void);
+void MotionBuffer_Complete(void);
+bool MotionBuffer_HasSpace(void);
+bool MotionBuffer_IsEmpty(void);
+void MotionBuffer_Clear(void);
+motion_buffer_status_t MotionBuffer_GetStatus(void);
+```
+
+#### Motion Planner API
+```c
+// Real-time trajectory control
+void MotionPlanner_Initialize(void);
+void MotionPlanner_UpdateTrajectory(void);  // Called at 1kHz
+void MotionPlanner_ProcessBuffer(void);
+void MotionPlanner_UpdateAxisPosition(uint8_t axis, int32_t position);
+
+// Motion calculations
+void MotionPlanner_CalculateDistance(motion_block_t *block);
+void MotionPlanner_OptimizeVelocityProfile(motion_block_t *block);
+void MotionPlanner_ExecuteBlock(motion_block_t *block);
+
+// Control functions
+void MotionPlanner_EmergencyStop(void);
+void MotionPlanner_SetAcceleration(float acceleration);
+float MotionPlanner_GetAcceleration(void);
+```
+
+#### G-code Parser API
+```c
+// Parsing functions
+void MotionGCodeParser_Initialize(void);
+bool MotionGCodeParser_ParseMove(const char *command, motion_block_t *block);
+bool MotionGCodeParser_ParseArc(const char *command, motion_block_t *block);
+bool MotionGCodeParser_ParseDwell(const char *command, motion_block_t *block);
+
+// State management
+void MotionGCodeParser_UpdateSpindleState(const char *command);
+void MotionGCodeParser_UpdateCoolantState(const char *command);
+void MotionGCodeParser_SetPosition(float x, float y, float z);
+void MotionGCodeParser_GetPosition(float *x, float *y, float *z);
 ```
 
 ## Motion Control Flow

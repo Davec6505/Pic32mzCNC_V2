@@ -182,6 +182,8 @@ typedef struct
   float entry_velocity; // Calculated entry velocity
   float exit_velocity;  // Calculated exit velocity
   float max_velocity;   // Maximum velocity for this segment
+  float distance;       // Total move distance
+  float duration;       // Estimated move duration (seconds)
   uint8_t motion_type;  // Motion type (G0, G1, etc.)
   bool is_valid;        // Buffer entry is valid
 } motion_block_t;
@@ -232,7 +234,7 @@ typedef struct
 // *****************************************************************************
 
 #define MAX_AXES 3                   // X, Y, Z axes
-#define MOTION_BUFFER_SIZE 8         // Look-ahead buffer size
+#define MOTION_BUFFER_SIZE 16        // Look-ahead buffer size (16-command look-ahead)
 #define SWITCH_DEBOUNCE_MS 100       // Switch debounce time
 #define TRAJECTORY_TIMER_FREQ 1000   // 1kHz trajectory calculation
 #define DEFAULT_ACCELERATION 500.0f  // Default acceleration (steps/sec²)
@@ -571,11 +573,6 @@ extern APP_DATA appData;
 
 /* CNC Axis Data */
 extern cnc_axis_t cnc_axes[MAX_AXES];
-
-/* Motion Planning Buffer */
-extern motion_block_t motion_buffer[MOTION_BUFFER_SIZE];
-extern uint8_t motion_buffer_head;
-extern uint8_t motion_buffer_tail;
 
 // DOM-IGNORE-BEGIN
 #ifdef __cplusplus
