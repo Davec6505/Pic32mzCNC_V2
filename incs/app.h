@@ -456,6 +456,27 @@ void APP_ExecuteMotionCommand(const char *command);
 
 /*******************************************************************************
   Function:
+    bool APP_ExecuteMotionBlock(motion_block_t *block)
+
+  Summary:
+    Execute a motion block with actual OCR hardware
+
+  Description:
+    This function is called by the motion planner to execute a motion block
+    using the actual OCR hardware modules. It starts the step pulse generation
+    and position feedback for real motion execution.
+
+  Parameters:
+    block - Pointer to the motion block to execute
+
+  Returns:
+    true if motion block was successfully started, false otherwise
+*/
+
+bool APP_ExecuteMotionBlock(motion_block_t *block);
+
+/*******************************************************************************
+  Function:
     void APP_HandleEmergencyStop(void)
 
   Summary:
@@ -467,6 +488,167 @@ void APP_ExecuteMotionCommand(const char *command);
 */
 
 void APP_HandleEmergencyStop(void);
+
+// *****************************************************************************
+// *****************************************************************************
+// Section: Hardware Layer Getter/Setter Functions
+// *****************************************************************************
+// *****************************************************************************
+
+/*******************************************************************************
+  Function:
+    int32_t APP_GetAxisCurrentPosition(uint8_t axis)
+
+  Summary:
+    Gets the current position for specified axis from hardware layer.
+
+  Description:
+    Returns the current position in steps for the specified axis.
+    Provides clean interface to access hardware axis position data.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+
+  Returns:
+    Current position in steps, or 0 if axis invalid
+*******************************************************************************/
+int32_t APP_GetAxisCurrentPosition(uint8_t axis);
+
+/*******************************************************************************
+  Function:
+    void APP_SetAxisCurrentPosition(uint8_t axis, int32_t position)
+
+  Summary:
+    Sets the current position for specified axis in hardware layer.
+
+  Description:
+    Updates the current position in steps for the specified axis.
+    Used for coordinate system updates and homing operations.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+    position - Position in steps
+
+  Returns:
+    None
+*******************************************************************************/
+void APP_SetAxisCurrentPosition(uint8_t axis, int32_t position);
+
+/*******************************************************************************
+  Function:
+    bool APP_GetAxisActiveState(uint8_t axis)
+
+  Summary:
+    Gets the active state for specified axis.
+
+  Description:
+    Returns true if the specified axis is currently active in hardware.
+    Provides clean interface to check hardware motion state.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+
+  Returns:
+    true if axis is active, false otherwise
+*******************************************************************************/
+bool APP_GetAxisActiveState(uint8_t axis);
+
+/*******************************************************************************
+  Function:
+    void APP_SetAxisActiveState(uint8_t axis, bool active)
+
+  Summary:
+    Sets the active state for specified axis.
+
+  Description:
+    Updates the active state for the specified axis in hardware layer.
+    Controls OCR module activation and motion execution.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+    active - true to activate axis, false to deactivate
+
+  Returns:
+    None
+*******************************************************************************/
+void APP_SetAxisActiveState(uint8_t axis, bool active);
+
+/*******************************************************************************
+  Function:
+    float APP_GetAxisTargetVelocity(uint8_t axis)
+
+  Summary:
+    Gets the target velocity for specified axis.
+
+  Description:
+    Returns the target velocity in mm/min for the specified axis.
+    Used for motion monitoring and debugging.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+
+  Returns:
+    Target velocity in mm/min, or 0.0 if axis invalid
+*******************************************************************************/
+float APP_GetAxisTargetVelocity(uint8_t axis);
+
+/*******************************************************************************
+  Function:
+    void APP_SetAxisTargetVelocity(uint8_t axis, float velocity)
+
+  Summary:
+    Sets the target velocity for specified axis.
+
+  Description:
+    Updates the target velocity in mm/min for the specified axis.
+    Used by motion planning system to control axis speeds.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+    velocity - Target velocity in mm/min
+
+  Returns:
+    None
+*******************************************************************************/
+void APP_SetAxisTargetVelocity(uint8_t axis, float velocity);
+
+/*******************************************************************************
+  Function:
+    uint32_t APP_GetAxisStepCount(uint8_t axis)
+
+  Summary:
+    Gets the step count for specified axis.
+
+  Description:
+    Returns the current step count for the specified axis.
+    Used for motion progress monitoring and diagnostics.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+
+  Returns:
+    Current step count, or 0 if axis invalid
+*******************************************************************************/
+uint32_t APP_GetAxisStepCount(uint8_t axis);
+
+/*******************************************************************************
+  Function:
+    void APP_ResetAxisStepCount(uint8_t axis)
+
+  Summary:
+    Resets the step count for specified axis.
+
+  Description:
+    Clears the step count for the specified axis to zero.
+    Used when starting new motion blocks or homing operations.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+
+  Returns:
+    None
+*******************************************************************************/
+void APP_ResetAxisStepCount(uint8_t axis);
 
 /*******************************************************************************
   Function:

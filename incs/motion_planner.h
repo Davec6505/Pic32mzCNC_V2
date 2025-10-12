@@ -250,6 +250,187 @@ motion_planner_stats_t MotionPlanner_GetStatistics(void);
 
 /*******************************************************************************
   Function:
+    uint32_t MotionPlanner_CalculateOCRPeriod(float velocity_mm_min)
+
+  Summary:
+    Calculates OCR period for given velocity.
+
+  Description:
+    This function calculates the OCR compare period required to achieve
+    the specified velocity in mm/min. Used by hardware layer to configure
+    step pulse generation timing.
+
+  Parameters:
+    velocity_mm_min - Target velocity in millimeters per minute
+
+  Returns:
+    OCR period value (0xFFFFFFFF if velocity is too low)
+*******************************************************************************/
+uint32_t MotionPlanner_CalculateOCRPeriod(float velocity_mm_min);
+
+// *****************************************************************************
+// *****************************************************************************
+// Section: Motion System Getter/Setter Functions
+// *****************************************************************************
+// *****************************************************************************
+
+/*******************************************************************************
+  Function:
+    float MotionPlanner_GetCurrentVelocity(uint8_t axis)
+
+  Summary:
+    Gets the current velocity for specified axis.
+
+  Description:
+    Returns the current velocity in mm/min for the specified axis.
+    Provides clean interface to access axis velocity data.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+
+  Returns:
+    Current velocity in mm/min, or 0.0 if axis invalid
+*******************************************************************************/
+float MotionPlanner_GetCurrentVelocity(uint8_t axis);
+
+/*******************************************************************************
+  Function:
+    void MotionPlanner_SetCurrentVelocity(uint8_t axis, float velocity)
+
+  Summary:
+    Sets the current velocity for specified axis.
+
+  Description:
+    Updates the current velocity in mm/min for the specified axis.
+    Used by motion execution system to track real-time velocities.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+    velocity - Velocity in mm/min
+
+  Returns:
+    None
+*******************************************************************************/
+void MotionPlanner_SetCurrentVelocity(uint8_t axis, float velocity);
+
+/*******************************************************************************
+  Function:
+    int32_t MotionPlanner_GetAxisPosition(uint8_t axis)
+
+  Summary:
+    Gets the current position for specified axis.
+
+  Description:
+    Returns the current position in steps for the specified axis.
+    Provides clean interface to access real-time position data.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+
+  Returns:
+    Current position in steps, or 0 if axis invalid
+*******************************************************************************/
+int32_t MotionPlanner_GetAxisPosition(uint8_t axis);
+
+/*******************************************************************************
+  Function:
+    void MotionPlanner_SetAxisPosition(uint8_t axis, int32_t position)
+
+  Summary:
+    Sets the current position for specified axis.
+
+  Description:
+    Updates the current position in steps for the specified axis.
+    Used by hardware layer to provide position feedback.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+    position - Position in steps
+
+  Returns:
+    None
+*******************************************************************************/
+void MotionPlanner_SetAxisPosition(uint8_t axis, int32_t position);
+
+/*******************************************************************************
+  Function:
+    bool MotionPlanner_IsAxisActive(uint8_t axis)
+
+  Summary:
+    Checks if specified axis is currently active.
+
+  Description:
+    Returns true if the specified axis is currently executing motion.
+    Used for motion state monitoring and coordination.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+
+  Returns:
+    true if axis is active, false otherwise
+*******************************************************************************/
+bool MotionPlanner_IsAxisActive(uint8_t axis);
+
+/*******************************************************************************
+  Function:
+    void MotionPlanner_SetAxisActive(uint8_t axis, bool active)
+
+  Summary:
+    Sets the active state for specified axis.
+
+  Description:
+    Updates the active state for the specified axis.
+    Used by hardware layer to control motion execution.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+    active - true to activate axis, false to deactivate
+
+  Returns:
+    None
+*******************************************************************************/
+void MotionPlanner_SetAxisActive(uint8_t axis, bool active);
+
+/*******************************************************************************
+  Function:
+    uint32_t MotionPlanner_GetAxisStepCount(uint8_t axis)
+
+  Summary:
+    Gets the step count for specified axis.
+
+  Description:
+    Returns the current step count for the specified axis.
+    Used for motion progress monitoring and debugging.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+
+  Returns:
+    Current step count, or 0 if axis invalid
+*******************************************************************************/
+uint32_t MotionPlanner_GetAxisStepCount(uint8_t axis);
+
+/*******************************************************************************
+  Function:
+    void MotionPlanner_ResetAxisStepCount(uint8_t axis)
+
+  Summary:
+    Resets the step count for specified axis.
+
+  Description:
+    Clears the step count for the specified axis to zero.
+    Used when starting new motion blocks.
+
+  Parameters:
+    axis - Axis index (0=X, 1=Y, 2=Z)
+
+  Returns:
+    None
+*******************************************************************************/
+void MotionPlanner_ResetAxisStepCount(uint8_t axis);
+
+/*******************************************************************************
+  Function:
     void MotionPlanner_EmergencyStop(void)
 
   Summary:

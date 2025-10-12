@@ -70,7 +70,7 @@ static volatile int32_t axis_positions[MAX_AXES] = {0, 0, 0};
 
 /*******************************************************************************
   Function:
-    static uint32_t CalculateOCRPeriod(float velocity_mm_min)
+    uint32_t MotionPlanner_CalculateOCRPeriod(float velocity_mm_min)
 
   Summary:
     Converts velocity in mm/min to OCR period value.
@@ -84,7 +84,7 @@ static volatile int32_t axis_positions[MAX_AXES] = {0, 0, 0};
   Returns:
     OCR period value (0xFFFFFFFF if velocity is too low)
 *******************************************************************************/
-static uint32_t CalculateOCRPeriod(float velocity_mm_min)
+uint32_t MotionPlanner_CalculateOCRPeriod(float velocity_mm_min)
 {
     if (velocity_mm_min <= 0.0f)
     {
@@ -119,9 +119,9 @@ static uint32_t CalculateOCRPeriod(float velocity_mm_min)
 *******************************************************************************/
 static void UpdateAxisOCRPeriods(void)
 {
-    uint32_t y_period = CalculateOCRPeriod(current_axis_velocities[1]); // Y-axis = OCMP1
-    uint32_t x_period = CalculateOCRPeriod(current_axis_velocities[0]); // X-axis = OCMP4
-    uint32_t z_period = CalculateOCRPeriod(current_axis_velocities[2]); // Z-axis = OCMP5
+    uint32_t y_period = MotionPlanner_CalculateOCRPeriod(current_axis_velocities[1]); // Y-axis = OCMP1
+    uint32_t x_period = MotionPlanner_CalculateOCRPeriod(current_axis_velocities[0]); // X-axis = OCMP4
+    uint32_t z_period = MotionPlanner_CalculateOCRPeriod(current_axis_velocities[2]); // Z-axis = OCMP5
 
     // Update OCR compare values
     // Note: This sets the period for continuous pulse generation
@@ -298,13 +298,22 @@ void MotionPlanner_ExecuteBlock(motion_block_t *block)
                                   block->target_pos[1],
                                   block->target_pos[2]);
 
-    // For simulation, just mark block as ready for step generation
-    // In real implementation, this would configure step generation hardware
+    // Set current motion block for trajectory calculations
     current_motion_block = block;
     motion_execution_timer = (uint32_t)(block->duration * 1000.0f); // Convert to ms
 
-    // Update execution time statistics
-    statistics.execution_time_ms += motion_execution_timer;
+    // Call hardware interface to start actual motion
+    // This will activate OCR modules and start step pulse generation
+    if (APP_ExecuteMotionBlock(block))
+    {
+        // Successfully started hardware motion
+        statistics.execution_time_ms += motion_execution_timer;
+    }
+    else
+    {
+        // Hardware failed to start - mark as simulation only
+        execution_state = PLANNER_STATE_IDLE;
+    }
 }
 
 bool MotionPlanner_IsMotionComplete(void)
@@ -459,6 +468,98 @@ void MotionPlanner_UpdateAxisPosition(uint8_t axis, int32_t position)
         // TODO: Add position error checking here
         // Could compare with expected position from trajectory
         // and trigger alarms if position error exceeds threshold
+    }
+}
+
+// *****************************************************************************
+// *****************************************************************************
+// Section: Motion System Getter/Setter Function Implementations
+// *****************************************************************************
+// *****************************************************************************
+
+float MotionPlanner_GetCurrentVelocity(uint8_t axis)
+{
+    if (axis < MAX_AXES)
+    {
+        return current_axis_velocities[axis];
+    }
+    return 0.0f;
+}
+
+void MotionPlanner_SetCurrentVelocity(uint8_t axis, float velocity)
+{
+    if (axis < MAX_AXES)
+    {
+        current_axis_velocities[axis] = velocity;
+
+        // Update OCR periods when velocity changes
+        UpdateAxisOCRPeriods();
+    }
+}
+
+int32_t MotionPlanner_GetAxisPosition(uint8_t axis)
+{
+    if (axis < MAX_AXES)
+    {
+        return axis_positions[axis];
+    }
+    return 0;
+}
+
+void MotionPlanner_SetAxisPosition(uint8_t axis, int32_t position)
+{
+    if (axis < MAX_AXES)
+    {
+        axis_positions[axis] = position;
+    }
+}
+
+bool MotionPlanner_IsAxisActive(uint8_t axis)
+{
+    // This function would need access to hardware layer axis state
+    // For now, check if there's current velocity
+    if (axis < MAX_AXES)
+    {
+        return (current_axis_velocities[axis] > 0.0f);
+    }
+    return false;
+}
+
+void MotionPlanner_SetAxisActive(uint8_t axis, bool active)
+{
+    if (axis < MAX_AXES)
+    {
+        if (!active)
+        {
+            // Stop the axis by setting velocity to zero
+            current_axis_velocities[axis] = 0.0f;
+            UpdateAxisOCRPeriods();
+        }
+        // Note: Setting active=true would require starting motion
+        // which should be done through normal motion planning
+    }
+}
+
+uint32_t MotionPlanner_GetAxisStepCount(uint8_t axis)
+{
+    // This would need to interface with hardware layer
+    // For now, return a calculated value based on position
+    if (axis < MAX_AXES)
+    {
+        return (uint32_t)abs(axis_positions[axis]);
+    }
+    return 0;
+}
+
+void MotionPlanner_ResetAxisStepCount(uint8_t axis)
+{
+    // This would interface with hardware layer to reset step counters
+    // For now, we'll reset position (though this should be done carefully)
+    if (axis < MAX_AXES)
+    {
+        // Note: Resetting position should be done with caution
+        // Usually only during homing or coordinate system reset
+        // axis_positions[axis] = 0;  // Commented for safety
     }
 }
 

@@ -577,6 +577,70 @@ static void APP_ProcessLookAhead(void)
     /* entry/exit velocities for smooth cornering */
 }
 
+bool APP_ExecuteMotionBlock(motion_block_t *block)
+{
+    if (block == NULL)
+    {
+        return false;
+    }
+
+    /* Setup axes for movement with actual OCR hardware */
+    for (int i = 0; i < MAX_AXES; i++)
+    {
+        int32_t target_pos = (int32_t)block->target_pos[i];
+        int32_t current_pos = APP_GetAxisCurrentPosition(i);
+
+        /* Only move axis if target is different from current position */
+        if (target_pos != current_pos)
+        {
+            // Set axis parameters using getter/setter functions for clarity
+            cnc_axes[i].target_position = target_pos;
+            APP_SetAxisTargetVelocity(i, block->feedrate);
+            cnc_axes[i].max_velocity = block->max_velocity > 0 ? block->max_velocity : DEFAULT_MAX_VELOCITY;
+            cnc_axes[i].motion_state = AXIS_ACCEL;
+            APP_ResetAxisStepCount(i);
+
+            /* Set direction based on movement */
+            cnc_axes[i].direction_forward = (target_pos > current_pos);
+
+            /* Activate axis and enable OCR module */
+            APP_SetAxisActiveState(i, true);
+
+            /* Enable the appropriate OCR module for this axis */
+            switch (i)
+            {
+            case 0: // X-axis -> OCMP4 (as per existing main.c)
+                OCMP4_Enable();
+                break;
+            case 1: // Y-axis -> OCMP1
+                OCMP1_Enable();
+                break;
+            case 2: // Z-axis -> OCMP5
+                OCMP5_Enable();
+                break;
+            }
+
+            /* Calculate and set OCR period using motion planner function */
+            float target_velocity = APP_GetAxisTargetVelocity(i);
+            uint32_t ocr_period = MotionPlanner_CalculateOCRPeriod(target_velocity);
+
+            switch (i)
+            {
+            case 0: // X-axis -> OCMP4
+                OCMP4_CompareSecondaryValueSet(ocr_period);
+                break;
+            case 1: // Y-axis -> OCMP1
+                OCMP1_CompareSecondaryValueSet(ocr_period);
+                break;
+            case 2: // Z-axis -> OCMP5
+                OCMP5_CompareSecondaryValueSet(ocr_period);
+                break;
+            }
+        }
+    }
+
+    return true;
+}
 static bool APP_IsBufferEmpty(void)
 {
     return MotionBuffer_IsEmpty();
@@ -1019,13 +1083,17 @@ void APP_OCMP1_Callback(uintptr_t context)
     /* Y-axis step pulse */
     LED2_Toggle(); // Step activity indicator
 
-    if (cnc_axes[1].is_active && cnc_axes[1].motion_state != AXIS_IDLE)
+    if (APP_GetAxisActiveState(1) && cnc_axes[1].motion_state != AXIS_IDLE)
     {
-        cnc_axes[1].current_position += cnc_axes[1].direction_forward ? 1 : -1;
+        // Update position based on direction
+        int32_t current_pos = APP_GetAxisCurrentPosition(1);
+        int32_t new_pos = current_pos + (cnc_axes[1].direction_forward ? 1 : -1);
+        APP_SetAxisCurrentPosition(1, new_pos);
+
+        // Increment step count
         cnc_axes[1].step_count++;
 
-        // Provide position feedback to motion planner
-        MotionPlanner_UpdateAxisPosition(1, cnc_axes[1].current_position);
+        // Provide position feedback to motion planner is handled by setter
     }
 }
 
@@ -1034,13 +1102,17 @@ void APP_OCMP4_Callback(uintptr_t context)
     /* X-axis step pulse */
     LED2_Toggle(); // Step activity indicator
 
-    if (cnc_axes[0].is_active && cnc_axes[0].motion_state != AXIS_IDLE)
+    if (APP_GetAxisActiveState(0) && cnc_axes[0].motion_state != AXIS_IDLE)
     {
-        cnc_axes[0].current_position += cnc_axes[0].direction_forward ? 1 : -1;
+        // Update position based on direction
+        int32_t current_pos = APP_GetAxisCurrentPosition(0);
+        int32_t new_pos = current_pos + (cnc_axes[0].direction_forward ? 1 : -1);
+        APP_SetAxisCurrentPosition(0, new_pos);
+
+        // Increment step count
         cnc_axes[0].step_count++;
 
-        // Provide position feedback to motion planner
-        MotionPlanner_UpdateAxisPosition(0, cnc_axes[0].current_position);
+        // Provide position feedback to motion planner is handled by setter
     }
 }
 
@@ -1049,13 +1121,17 @@ void APP_OCMP5_Callback(uintptr_t context)
     /* Z-axis step pulse */
     LED2_Toggle(); // Step activity indicator
 
-    if (cnc_axes[2].is_active && cnc_axes[2].motion_state != AXIS_IDLE)
+    if (APP_GetAxisActiveState(2) && cnc_axes[2].motion_state != AXIS_IDLE)
     {
-        cnc_axes[2].current_position += cnc_axes[2].direction_forward ? 1 : -1;
+        // Update position based on direction
+        int32_t current_pos = APP_GetAxisCurrentPosition(2);
+        int32_t new_pos = current_pos + (cnc_axes[2].direction_forward ? 1 : -1);
+        APP_SetAxisCurrentPosition(2, new_pos);
+
+        // Increment step count
         cnc_axes[2].step_count++;
 
-        // Provide position feedback to motion planner
-        MotionPlanner_UpdateAxisPosition(2, cnc_axes[2].current_position);
+        // Provide position feedback to motion planner is handled by setter
     }
 }
 
@@ -1509,6 +1585,122 @@ void APP_SetPickAndPlaceMode(bool enable)
 bool APP_IsPickAndPlaceMode(void)
 {
     return INTERP_IsLimitMasked(AXIS_Z, false); // Check if Z min is masked
+}
+
+// *****************************************************************************
+// *****************************************************************************
+// Section: Hardware Layer Getter/Setter Function Implementations
+// *****************************************************************************
+// *****************************************************************************
+
+int32_t APP_GetAxisCurrentPosition(uint8_t axis)
+{
+    if (axis < MAX_AXES)
+    {
+        return cnc_axes[axis].current_position;
+    }
+    return 0;
+}
+
+void APP_SetAxisCurrentPosition(uint8_t axis, int32_t position)
+{
+    if (axis < MAX_AXES)
+    {
+        cnc_axes[axis].current_position = position;
+
+        // Update motion planner position tracking
+        MotionPlanner_SetAxisPosition(axis, position);
+    }
+}
+
+bool APP_GetAxisActiveState(uint8_t axis)
+{
+    if (axis < MAX_AXES)
+    {
+        return cnc_axes[axis].is_active;
+    }
+    return false;
+}
+
+void APP_SetAxisActiveState(uint8_t axis, bool active)
+{
+    if (axis < MAX_AXES)
+    {
+        cnc_axes[axis].is_active = active;
+
+        if (!active)
+        {
+            // Disable OCR module when axis becomes inactive
+            switch (axis)
+            {
+            case 0: // X-axis -> OCMP4
+                OCMP4_Disable();
+                break;
+            case 1: // Y-axis -> OCMP1
+                OCMP1_Disable();
+                break;
+            case 2: // Z-axis -> OCMP5
+                OCMP5_Disable();
+                break;
+            }
+
+            // Set motion state to idle
+            cnc_axes[axis].motion_state = AXIS_IDLE;
+        }
+    }
+}
+
+float APP_GetAxisTargetVelocity(uint8_t axis)
+{
+    if (axis < MAX_AXES)
+    {
+        return cnc_axes[axis].target_velocity;
+    }
+    return 0.0f;
+}
+
+void APP_SetAxisTargetVelocity(uint8_t axis, float velocity)
+{
+    if (axis < MAX_AXES)
+    {
+        cnc_axes[axis].target_velocity = velocity;
+
+        // Update OCR period when velocity changes
+        if (cnc_axes[axis].is_active)
+        {
+            uint32_t ocr_period = MotionPlanner_CalculateOCRPeriod(velocity);
+
+            switch (axis)
+            {
+            case 0: // X-axis -> OCMP4
+                OCMP4_CompareSecondaryValueSet(ocr_period);
+                break;
+            case 1: // Y-axis -> OCMP1
+                OCMP1_CompareSecondaryValueSet(ocr_period);
+                break;
+            case 2: // Z-axis -> OCMP5
+                OCMP5_CompareSecondaryValueSet(ocr_period);
+                break;
+            }
+        }
+    }
+}
+
+uint32_t APP_GetAxisStepCount(uint8_t axis)
+{
+    if (axis < MAX_AXES)
+    {
+        return cnc_axes[axis].step_count;
+    }
+    return 0;
+}
+
+void APP_ResetAxisStepCount(uint8_t axis)
+{
+    if (axis < MAX_AXES)
+    {
+        cnc_axes[axis].step_count = 0;
+    }
 }
 
 /*******************************************************************************
