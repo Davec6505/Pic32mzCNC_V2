@@ -10,6 +10,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+static int handshake_query_count = 0;
+
+// Buffer state helpers for GRBL status
+static inline int get_planner_buffer_state(void)
+{
+    // TODO: Replace with actual planner buffer state
+    return 15; // Example: 15 slots available
+}
+static inline int get_rx_buffer_state(void)
+{
+    // TODO: Replace with actual RX buffer state
+    return 128; // Example: 128 bytes available
+}
+
 // DMA Configuration Constants
 #define UART_RX_DMA_CHANNEL DMAC_CHANNEL_0
 #define UART_TX_DMA_CHANNEL DMAC_CHANNEL_1
@@ -70,7 +84,17 @@ static void (*emergency_callback)(void) = NULL;
 
 // HYBRID MODE SWITCHING FUNCTIONS
 static void switch_to_uart_polling_mode(void);
-static void switch_to_dma_line_mode(void);
+/*
+static void switch_to_dma_line_mode(void)
+{
+    // Stop any active DMA transfers
+    DMAC_ChannelDisable(UART_RX_DMA_CHANNEL);
+    // Clear buffers
+    memset(uart_rx_buffer, 0, sizeof(uart_rx_buffer));
+    memset(dma_rx_buffer, 0, sizeof(dma_rx_buffer));
+    // Additional DMA setup logic if needed
+}
+*/
 
 // Forward declarations
 static void UART_DMA_RxEventHandler(DMAC_TRANSFER_EVENT event, uintptr_t contextHandle);
@@ -180,65 +204,40 @@ static void UART_DMA_TxEventHandler(DMAC_TRANSFER_EVENT event, uintptr_t context
 // HYBRID Character Processing - UART polling mode for discovery, DMA for lines
 static void process_received_characters(void)
 {
-    // HYBRID MODE: Only use UART polling when in polling mode (UGS discovery)
-    if (uart_mode == UART_MODE_POLLING)
+    // Always poll UART RX for real-time characters and line buffering
+    while (UART2_ReceiverIsReady())
     {
-        // UART POLLING MODE - Immediate response for ? queries
-        while (UART2_ReceiverIsReady())
+        char received_char = UART2_ReadByte();
+        last_activity_time = CORETIMER_GetTickCounter();
+
+        // Immediate response for real-time characters
+        if (received_char == '?' || received_char == '!' || received_char == '~' || received_char == 0x18)
         {
-            char received_char = UART2_ReadByte();
+            handle_real_time_character(received_char);
+            continue; // Don't add to line buffer
+        }
 
-            // Update activity timestamp
-            last_activity_time = CORETIMER_GetTickCounter();
-
-            // UGS CONNECTION LOGIC: Handle initial single '?' without newline
-            if (received_char == '?' && (ugs_state == UGS_STATE_DISCONNECTED ||
-                                         ugs_state == UGS_STATE_INITIAL_QUERIES ||
-                                         ugs_state == UGS_STATE_BANNER_SENT))
+        // Buffer line-based commands
+        if (received_char == '\n' || received_char == '\r')
+        {
+            if (current_line_pos > 0)
             {
-                // This is the immediate UGS connection query - single ? without \n
-                handle_real_time_character(received_char);
-                continue; // Don't add to line buffer
+                current_line_buffer[current_line_pos] = '\0';
+                queue_complete_line(current_line_buffer);
+                current_line_pos = 0;
+                memset(current_line_buffer, 0, sizeof(current_line_buffer));
             }
+            continue;
+        }
 
-            // Handle other real-time characters
-            if (received_char == '!' || received_char == '~' || received_char == 0x18)
-            {
-                handle_real_time_character(received_char);
-                continue; // Don't add to line buffer
-            }
-
-            // Handle line completion - indicates UGS is sending line commands
-            if (received_char == '\n' || received_char == '\r')
-            {
-                if (current_line_pos > 0)
-                {
-                    // UGS State Transition: First \n terminated command means switch to DMA mode
-                    if (ugs_state == UGS_STATE_BANNER_SENT)
-                    {
-                        ugs_state = UGS_STATE_CONNECTED;
-                        // SWITCH TO DMA LINE MODE for efficient line processing
-                        switch_to_dma_line_mode();
-                    }
-
-                    // Process this line first
-                    current_line_buffer[current_line_pos] = '\0';
-                    queue_complete_line(current_line_buffer);
-                    current_line_pos = 0;
-                    memset(current_line_buffer, 0, sizeof(current_line_buffer));
-                }
-                continue;
-            }
-
-            // Add character to current line (if space available)
-            if (current_line_pos < (LINE_BUFFER_SIZE - 1))
-            {
-                current_line_buffer[current_line_pos] = received_char;
-                current_line_pos++;
-            }
+        // Add character to current line (if space available)
+        if (current_line_pos < (LINE_BUFFER_SIZE - 1))
+        {
+            current_line_buffer[current_line_pos] = received_char;
+            current_line_pos++;
         }
     }
-    // When in DMA_MODE_LINES, DMA handles everything via pattern matching
+    // DMA can be used for bulk line transfers, but should not interfere with real-time character handling
 }
 
 // Queue a complete line for processing
@@ -279,68 +278,52 @@ static bool get_next_line(char *line_buffer)
 static void handle_real_time_character(char c)
 {
     uint32_t current_time = CORETIMER_GetTickCounter();
-
     switch (c)
     {
     case '?':
-        // Status query - implement UGS connection pattern matching
         status_query_count++;
         last_status_time = current_time;
-
-        // UGS Connection Pattern Recognition for INITIAL single ? queries
-        switch (ugs_state)
+        handshake_query_count++;
+        if (handshake_query_count == 1)
         {
-        case UGS_STATE_DISCONNECTED:
-            // First ? query from UGS - Send banner so UGS knows we're GRBL firmware
-            // This is how UGS discovers and identifies the firmware type
+            // First '?' after connection: send status and version
+            char status_msg[128];
+            snprintf(status_msg, sizeof(status_msg),
+                     "<Idle|MPos:0.000,0.000,0.000|WPos:0.000,0.000,0.000|Bf:%d,%d|FS:0,0>\r\n",
+                     get_planner_buffer_state(), get_rx_buffer_state());
+            UART_DEBUG_SendString(status_msg);
+            UART_DEBUG_SendString("[VER:1.1f.20161014:]\r\n[OPT:VL,15,128]\r\nok\r\n");
+        }
+        else if (handshake_query_count == 2)
+        {
+            // Second '?': send firmware banner
             UART_DEBUG_SendString("Grbl 1.1f ['$' for help]\r\n");
-            ugs_state = UGS_STATE_BANNER_SENT;
-            status_query_count = 1;
-            break;
-
-        case UGS_STATE_INITIAL_QUERIES:
-        case UGS_STATE_BANNER_SENT:
-            // Additional single ? queries after banner - send status responses
-            // Only transition to CONNECTED when we receive \n terminated commands
-            UART_DEBUG_SendString("<Idle|MPos:0.000,0.000,0.000|WPos:0.000,0.000,0.000|Bf:15,128|FS:0,0>\r\n");
-            // Keep state as UGS_STATE_BANNER_SENT - wait for \n commands to transition to CONNECTED
-            break;
-
-        case UGS_STATE_CONNECTED:
-            // Should not normally reach here - connected ? queries come with \n as line commands
-            // But handle just in case
-            if (status_callback)
-            {
-                status_callback();
-            }
-            else
-            {
-                UART_DEBUG_SendString("<Idle|MPos:0.000,0.000,0.000|WPos:0.000,0.000,0.000|Bf:15,128|FS:0,0>\r\n");
-            }
-            break;
+        }
+        else
+        {
+            // Subsequent '?': send status
+            char status_msg[128];
+            snprintf(status_msg, sizeof(status_msg),
+                     "<Idle|MPos:0.000,0.000,0.000|WPos:0.000,0.000,0.000|Bf:%d,%d|FS:0,0>\r\n",
+                     get_planner_buffer_state(), get_rx_buffer_state());
+            UART_DEBUG_SendString(status_msg);
         }
         break;
     case '!':
-        // Feed hold
         if (emergency_callback)
         {
             emergency_callback();
         }
         break;
-
     case '~':
         // Cycle start / resume
-        // Could implement resume functionality here
         break;
-
     case 0x18:
-        // Ctrl-X - Emergency stop
         if (emergency_callback)
         {
             emergency_callback();
         }
         break;
-
     default:
         break;
     }
@@ -363,29 +346,6 @@ static void switch_to_uart_polling_mode(void)
 
     // UART polling will be handled in process_received_characters()
     // No DMA setup needed - direct UART register reading
-}
-
-// Switch to DMA line mode - for efficient line processing after UGS connection
-static void switch_to_dma_line_mode(void)
-{
-    // Set mode first
-    uart_mode = UART_MODE_DMA_LINES;
-
-    // Clear DMA buffer for line processing
-    memset(dma_rx_buffer, 0, RX_BUFFER_SIZE);
-
-    // Setup DMA pattern matching for newline characters
-    DMAC_ChannelPatternMatchSetup(UART_RX_DMA_CHANNEL,
-                                  DMAC_DATA_PATTERN_SIZE_1_BYTE,
-                                  0x0A); // Match newline character (\n)
-
-    // Start DMA transfer with pattern matching for complete lines
-    DMAC_ChannelTransfer(UART_RX_DMA_CHANNEL,
-                         (const void *)&U2RXREG,      // Source: UART2 RX register
-                         1,                           // Source size: 1 byte
-                         (const void *)dma_rx_buffer, // Destination: line buffer
-                         RX_BUFFER_SIZE,              // Destination size: full buffer
-                         1);                          // Cell size: 1 byte
 }
 
 void UART_GRBL_Initialize(void)
@@ -439,10 +399,7 @@ void UART_GRBL_Tasks(void)
         if (ms_since_activity > ugs_timeout_ms || ms_since_status > 3000)
         {
             // UGS connection lost - reset state machine completely for reconnection
-            ugs_state = UGS_STATE_DISCONNECTED;
-            status_query_count = 0;
-            last_status_time = 0;
-
+            UART_GRBL_ResetForNextConnection();
             // HYBRID: Switch back to UART polling mode for reconnection
             switch_to_uart_polling_mode();
             return;
@@ -473,14 +430,11 @@ void UART_GRBL_Tasks(void)
         if (command_line[0] == '?')
         {
             // UGS Status query command (after connection established - comes with \n)
-            if (status_callback)
-            {
-                status_callback();
-            }
-            else
-            {
-                UART_DEBUG_SendString("<Idle|MPos:0.000,0.000,0.000|WPos:0.000,0.000,0.000|Bf:15,128|FS:0,0>\r\n");
-            }
+            char status_msg[128];
+            snprintf(status_msg, sizeof(status_msg),
+                     "<Idle|MPos:0.000,0.000,0.000|WPos:0.000,0.000,0.000|Bf:%d,%d|FS:0,0>\r\n",
+                     get_planner_buffer_state(), get_rx_buffer_state());
+            UART_DEBUG_SendString(status_msg);
         }
         else if (command_line[0] == '$')
         {
@@ -489,14 +443,13 @@ void UART_GRBL_Tasks(void)
             {
                 ugs_state = UGS_STATE_CONNECTED;
             }
-
             if (GRBL_ProcessSystemCommand(command_line))
             {
                 // Command was handled successfully
+                UART_DEBUG_SendString("ok\r\n");
             }
             else
             {
-                // Unknown command, send error
                 UART_DEBUG_SendString("error:3\r\n");
             }
         }
@@ -507,16 +460,12 @@ void UART_GRBL_Tasks(void)
             {
                 ugs_state = UGS_STATE_CONNECTED;
             }
-
             if (motion_callback)
             {
                 motion_callback(command_line);
             }
-            else
-            {
-                // Fallback for basic acknowledgment
-                UART_DEBUG_SendString("ok\r\n");
-            }
+            // Always send ok/error only for G-code/system commands
+            UART_DEBUG_SendString("ok\r\n");
         }
     }
 }
@@ -524,10 +473,13 @@ void UART_GRBL_Tasks(void)
 // TRUE DMA ASYNC Reset for next UGS connection cycle
 void UART_GRBL_ResetForNextConnection(void)
 {
-    // Reset UGS connection state machine
     ugs_state = UGS_STATE_DISCONNECTED;
     status_query_count = 0;
     last_status_time = 0;
+    last_activity_time = CORETIMER_GetTickCounter();
+    handshake_query_count = 0;
+    // Send GRBL banner immediately on connection reset
+    UART_DEBUG_SendString("Grbl 1.1f ['$' for help]\r\n");
 
     // Clear DMA buffers and queues
     dma_rx_write_count = 0;
@@ -595,9 +547,4 @@ void GCODE_DMA_SendResponse(const char *response)
     char buffer[256];
     sprintf(buffer, "%s\r\n", response);
     UART_DEBUG_SendString(buffer);
-}
-
-int GCODE_DMA_GetCommandCount(void)
-{
-    return 0; // Your MikroC implementation didn't track command count
 }
