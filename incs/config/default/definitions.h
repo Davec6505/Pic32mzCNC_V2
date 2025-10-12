@@ -48,7 +48,6 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include "peripheral/coretimer/plib_coretimer.h"
 #include "peripheral/tmr/plib_tmr4.h"
 #include "peripheral/uart/plib_uart2.h"
@@ -58,7 +57,6 @@
 #include "peripheral/gpio/plib_gpio.h"
 #include "peripheral/cache/plib_cache.h"
 #include "peripheral/evic/plib_evic.h"
-#include "peripheral/dmac/plib_dmac.h"
 #include "peripheral/tmr1/plib_tmr1.h"
 #include "peripheral/ocmp/plib_ocmp1.h"
 #include "peripheral/ocmp/plib_ocmp4.h"

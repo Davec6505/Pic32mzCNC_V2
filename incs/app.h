@@ -32,10 +32,13 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include "definitions.h"
+
+// Public function prototypes
+void APP_UARTPrint(const char *str);
+
 // Temporarily commented out for UART debug
 // #include "speed_control.h"
 // #include "motion_profile.h"
-#include "gcode_parser_dma.h"
 
 // *****************************************************************************
 // *****************************************************************************
@@ -224,7 +227,7 @@ typedef struct
 // *****************************************************************************
 
 /* Timer callback prototypes */
-void APP_TrajectoryTimerCallback(uint32_t status, uintptr_t context);
+void APP_TrajectoryTimerCallback_CoreTimer(uint32_t status, uintptr_t context);
 void APP_CoreTimerCallback(uint32_t status, uintptr_t context);
 
 /* OCR callback prototypes */

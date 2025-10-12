@@ -152,7 +152,6 @@
 // *****************************************************************************
 // *****************************************************************************
 
-
 /* MISRAC 2012 deviation block end */
 
 /*******************************************************************************
@@ -174,7 +173,6 @@ void SYS_Initialize ( void* data )
     /* Start out with interrupts disabled before configuring any modules */
     (void)__builtin_disable_interrupts();
 
-
   
     CLK_Initialize();
     /* Configure Prefetch, Wait States and ECC */
@@ -194,8 +192,6 @@ void SYS_Initialize ( void* data )
     TMR2_Initialize();
 
     TMR3_Initialize();
-
-    DMAC_Initialize();
 
     TMR1_Initialize();
 

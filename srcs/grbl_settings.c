@@ -13,8 +13,9 @@
 *******************************************************************************/
 
 #include "grbl_settings.h"
-#include "gcode_parser_dma.h"
+#include "gcode_parser.h"
 #include "interpolation_engine.h"
+#include "app.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -437,7 +438,7 @@ void GRBL_PrintSettings(void)
     }
 
     // Send ok after all settings are printed (GRBL standard)
-    GCODE_DMA_SendOK();
+    GRBL_SendOK();
 }
 
 void GRBL_PrintSetting(grbl_setting_id_t setting_id)
@@ -450,7 +451,7 @@ void GRBL_PrintSetting(grbl_setting_id_t setting_id)
     char response[128];
     snprintf(response, sizeof(response), "$%d=%s", setting_id, value_buffer);
 
-    GCODE_DMA_SendResponse(response);
+    GRBL_SendResponse(response);
 }
 
 // *****************************************************************************
@@ -524,8 +525,8 @@ bool GRBL_ProcessSystemCommand(const char *command)
     if (strcmp(command, "$I") == 0)
     {
         // Send GRBL build info in exact v1.1f format as per official GRBL
-        GCODE_DMA_SendResponse("[VER:1.1f.20161014:]");
-        GCODE_DMA_SendResponse("[OPT:VL,15,128]"); // VL = Variable spindle + Laser mode, 15 blocks, 128 bytes
+        GRBL_SendResponse("[VER:1.1f.20161014:]");
+        GRBL_SendResponse("[OPT:VL,15,128]"); // VL = Variable spindle + Laser mode, 15 blocks, 128 bytes
         GRBL_SendOK();
         return true;
     }
@@ -534,7 +535,7 @@ bool GRBL_ProcessSystemCommand(const char *command)
     if (strcmp(command, "$G") == 0)
     {
         // Send GRBL parser state in standard format
-        GCODE_DMA_SendResponse("[GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0.0 S0]");
+        GRBL_SendResponse("[GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0.0 S0]");
         GRBL_SendOK();
         return true;
     }
@@ -543,17 +544,17 @@ bool GRBL_ProcessSystemCommand(const char *command)
     if (strcmp(command, "$#") == 0)
     {
         // Send coordinate system data in GRBL format
-        GCODE_DMA_SendResponse("[G54:0.000,0.000,0.000]");
-        GCODE_DMA_SendResponse("[G55:0.000,0.000,0.000]");
-        GCODE_DMA_SendResponse("[G56:0.000,0.000,0.000]");
-        GCODE_DMA_SendResponse("[G57:0.000,0.000,0.000]");
-        GCODE_DMA_SendResponse("[G58:0.000,0.000,0.000]");
-        GCODE_DMA_SendResponse("[G59:0.000,0.000,0.000]");
-        GCODE_DMA_SendResponse("[G28:0.000,0.000,0.000]");
-        GCODE_DMA_SendResponse("[G30:0.000,0.000,0.000]");
-        GCODE_DMA_SendResponse("[G92:0.000,0.000,0.000]");
-        GCODE_DMA_SendResponse("[TLO:0.000]");
-        GCODE_DMA_SendResponse("[PRB:0.000,0.000,0.000:0]");
+        GRBL_SendResponse("[G54:0.000,0.000,0.000]");
+        GRBL_SendResponse("[G55:0.000,0.000,0.000]");
+        GRBL_SendResponse("[G56:0.000,0.000,0.000]");
+        GRBL_SendResponse("[G57:0.000,0.000,0.000]");
+        GRBL_SendResponse("[G58:0.000,0.000,0.000]");
+        GRBL_SendResponse("[G59:0.000,0.000,0.000]");
+        GRBL_SendResponse("[G28:0.000,0.000,0.000]");
+        GRBL_SendResponse("[G30:0.000,0.000,0.000]");
+        GRBL_SendResponse("[G92:0.000,0.000,0.000]");
+        GRBL_SendResponse("[TLO:0.000]");
+        GRBL_SendResponse("[PRB:0.000,0.000,0.000:0]");
         GRBL_SendOK();
         return true;
     }
@@ -562,8 +563,8 @@ bool GRBL_ProcessSystemCommand(const char *command)
     if (strncmp(command, "$N", 2) == 0)
     {
         // Send empty startup line responses
-        GCODE_DMA_SendResponse("$N0=");
-        GCODE_DMA_SendResponse("$N1=");
+        GRBL_SendResponse("$N0=");
+        GRBL_SendResponse("$N1=");
         GRBL_SendOK();
         return true;
     }
@@ -572,23 +573,29 @@ bool GRBL_ProcessSystemCommand(const char *command)
     return false;
 }
 
+void GRBL_SendResponse(const char *response)
+{
+    APP_UARTPrint(response);
+    APP_UARTPrint("\r\n");
+}
+
 void GRBL_SendOK(void)
 {
-    GCODE_DMA_SendResponse("ok");
+    GRBL_SendResponse("ok");
 }
 
 void GRBL_SendError(uint8_t error_code)
 {
     char error_msg[32];
     snprintf(error_msg, sizeof(error_msg), "error:%d", error_code);
-    GCODE_DMA_SendResponse(error_msg);
+    GRBL_SendResponse(error_msg);
 }
 
 void GRBL_SendAlarm(grbl_alarm_t alarm)
 {
     char alarm_msg[32];
     snprintf(alarm_msg, sizeof(alarm_msg), "ALARM:%d", alarm);
-    GCODE_DMA_SendResponse(alarm_msg);
+    GRBL_SendResponse(alarm_msg);
 
     grbl_context.alarm = alarm;
     GRBL_SetState(GRBL_STATE_ALARM);
@@ -654,7 +661,7 @@ void GRBL_SendStatusReport(void)
              grbl_context.current_feed_rate,
              grbl_context.current_spindle_speed);
 
-    GCODE_DMA_SendResponse(status_buffer);
+    GRBL_SendResponse(status_buffer);
 }
 
 // *****************************************************************************

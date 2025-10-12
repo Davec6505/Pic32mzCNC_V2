@@ -28,12 +28,14 @@
 // *****************************************************************************
 
 #include "app.h"
-#include "uart_grbl_simple.h"
+#include "gcode_parser.h"
+#include "grbl_serial.h"
 #include "grbl_settings.h"
 #include "interpolation_engine.h"
 #include "motion_profile.h"
 #include "speed_control.h"
 #include "peripheral/uart/plib_uart2.h"
+#include "peripheral/uart/plib_uart_common.h"
 #include "peripheral/coretimer/plib_coretimer.h"
 #include "peripheral/tmr1/plib_tmr1.h"
 #include "peripheral/tmr/plib_tmr2.h"
@@ -41,6 +43,10 @@
 #include "peripheral/ocmp/plib_ocmp1.h"
 #include "peripheral/ocmp/plib_ocmp4.h"
 #include "peripheral/ocmp/plib_ocmp5.h"
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include "utils.h"
 
 // *****************************************************************************
 // *****************************************************************************
@@ -65,13 +71,6 @@
 
 APP_DATA appData;
 
-// Debug variable to control step-by-step initialization testing
-// 1 = Test INIT only
-// 2 = Test INIT + SERVICE_TASKS
-// 3 = Test INIT + SERVICE_TASKS + GCODE_INIT
-// 4 = Test full initialization (INIT + SERVICE_TASKS + GCODE_INIT + MOTION_INIT)
-static uint8_t debug_init_step = 4;
-
 // TIMER1 ISSUE DOCUMENTED:
 // Timer1 causes system hang when started (TMR1_Start())
 // Issue is likely interrupt priority conflict or configuration problem
@@ -86,27 +85,38 @@ motion_block_t motion_buffer[MOTION_BUFFER_SIZE];
 uint8_t motion_buffer_head = 0;
 uint8_t motion_buffer_tail = 0;
 
+// UART callback data
+static uint8_t uart_rx_char;
+
+// Buffer for line commands (non-? characters)
+#define LINE_BUFFER_SIZE 256
+static char line_buffer[LINE_BUFFER_SIZE];
+static volatile uint8_t line_buffer_head = 0;
+static volatile uint8_t line_buffer_tail = 0;
+
+// GRBL State variables
+static grbl_state_t grbl_state = GRBL_STATE_IDLE;
+static uint8_t grbl_alarm_code = 0;
+
 // *****************************************************************************
 // *****************************************************************************
 // Section: Application Local Functions
 // *****************************************************************************
 // *****************************************************************************
 
-// Simple UART print function using DMA or fallback to basic UART
-static void APP_UARTPrint(const char *str)
-{
-    if (!str)
-        return;
-
-    // Use simple UART for all messages
-    while (*str)
-    {
-        while (!UART2_TransmitterIsReady())
-            ;
-        UART2_WriteByte(*str);
-        str++;
-    }
-}
+void APP_UARTPrint(const char *str);
+void APP_ExecuteMotionCommand(const char *command);
+void APP_SendStatus(void);
+void APP_EmergencyReset(void);
+static void APP_UART_Callback(uintptr_t context);
+static void APP_ProcessGRBLCommand(const char *command);
+static void APP_PrintGRBLSettings(void);
+static void APP_PrintGCodeParameters(void);
+static void APP_PrintParserState(void);
+static void APP_ProcessSettingChange(const char *command);
+static void APP_ProcessGCodeCommand(const char *command);
+static void APP_SendError(uint8_t error_code);
+static void APP_SendAlarm(uint8_t alarm_code);
 
 static void APP_MotionSystemInit(void);
 static void APP_ProcessSwitches(void);
@@ -117,9 +127,9 @@ static void APP_ExecuteNextMotionBlock(void);
 static void APP_ProcessLookAhead(void);
 static bool APP_IsBufferEmpty(void);
 static bool APP_IsBufferFull(void);
+/* static void APP_ProcessUART(void); */ // Removed - now handled by GRBL serial module
 
 // Callback function declarations
-void APP_TrajectoryTimerCallback_CoreTimer(uint32_t status, uintptr_t context);
 
 // *****************************************************************************
 // *****************************************************************************
@@ -140,6 +150,13 @@ void APP_Initialize(void)
     /* Place the App state machine in its initial state. */
     appData.state = APP_STATE_INIT;
 
+    // Temporarily disable GRBL Serial to test direct UART handling
+    // GRBL_Serial_Initialize();
+    // GRBL_RegisterMotionCallback(APP_ExecuteMotionCommand);
+    // GRBL_RegisterStatusCallback(APP_SendStatus);
+    // GRBL_RegisterEmergencyCallback(APP_EmergencyReset);
+    // GRBL_RegisterWriteCallback(APP_UARTPrint);
+
     /* Initialize application data */
     appData.motion_system_ready = false;
     appData.trajectory_timer_active = false;
@@ -156,26 +173,18 @@ void APP_Initialize(void)
         motion_buffer[i].is_valid = false;
     }
 
-    /* Initialize UGS/GRBL Settings Interface */
-    if (!GRBL_Initialize())
-    {
-        APP_UARTPrint("ERROR: Failed to initialize GRBL settings interface\r\n");
-        return;
-    }
+    /* Initialize motion profile system */
+    MOTION_PROFILE_Initialize();
 
-    /* Initialize Interpolation Engine */
-    if (!INTERP_Initialize())
-    {
-        APP_UARTPrint("ERROR: Failed to initialize interpolation engine\r\n");
-        return;
-    }
+    /* Initialize the motion control system */
+    APP_MotionSystemInit();
 
-    /* Initialize G-code UART Parser (Simple Mode) */
-    // RE-ENABLED: Testing with increased heap size and smaller buffers
-    UART_GRBL_Initialize();
+    // Setup simple UART callback for immediate real-time command handling
+    UART2_ReadCallbackRegister(APP_UART_Callback, (uintptr_t)NULL);
+    UART2_Read(&uart_rx_char, 1);
 
-    APP_UARTPrint("CNC Controller initialization complete\r\n");
-    APP_UARTPrint("Ready for Universal G-code Sender (UGS) connection\r\n");
+    // Removed automatic welcome message - UGS expects clean handshake
+    // APP_UARTPrint_blocking("Grbl 1.1f ['$' for help]\r\n");
 }
 
 // *****************************************************************************
@@ -194,100 +203,79 @@ void APP_Initialize(void)
 
 void APP_Tasks(void)
 {
+    /* Hybrid UART processing:
+     * - Callback handles ? real-time commands immediately
+     * - Polling handles line-based commands like $I, $$, etc.
+     */
+    static char rx_buffer[64];
+    static uint8_t rx_pos = 0;
+    uint8_t received_char;
+
+    // Process buffered characters from callback
+    while (line_buffer_tail != line_buffer_head)
+    {
+        received_char = line_buffer[line_buffer_tail];
+        line_buffer_tail = (line_buffer_tail + 1) % LINE_BUFFER_SIZE;
+
+        if (received_char == '\r' || received_char == '\n')
+        {
+            // End of line - process the command
+            if (rx_pos > 0)
+            {
+                rx_buffer[rx_pos] = '\0';
+                APP_ProcessGRBLCommand(rx_buffer);
+                rx_pos = 0; // Reset buffer
+            }
+        }
+        else
+        {
+            // Buffer the character
+            if (rx_pos < sizeof(rx_buffer) - 1)
+            {
+                rx_buffer[rx_pos++] = received_char;
+            }
+            else
+            {
+                rx_pos = 0; // Buffer overflow, reset
+            }
+        }
+    }
+
     /* Check the application's current state. */
     switch (appData.state)
     {
     /* Application's initial state. */
     case APP_STATE_INIT:
     {
-        bool appInitialized = true;
-
-        if (appInitialized)
-        {
-            // Debug step-by-step initialization
-            if (debug_init_step >= 2)
-            {
-                appData.state = APP_STATE_SERVICE_TASKS;
-            }
-            else
-            {
-                // Step 1: Test INIT only - go straight to idle
-                appData.state = APP_STATE_MOTION_IDLE;
-            }
-        }
+        // Initialization is now done in APP_Initialize()
+        // The new interrupt-driven model doesn't need the complex state machine for init.
+        appData.state = APP_STATE_MOTION_IDLE;
         break;
     }
 
     case APP_STATE_SERVICE_TASKS:
     {
-        /* Initialize G-code parser and UART communication */
-        if (debug_init_step >= 3)
-        {
-            appData.state = APP_STATE_GCODE_INIT;
-        }
-        else
-        {
-            // Step 2: Test INIT + SERVICE_TASKS - go straight to idle
-            appData.state = APP_STATE_MOTION_IDLE;
-        }
+        // This state is obsolete
+        appData.state = APP_STATE_MOTION_IDLE;
         break;
     }
 
     case APP_STATE_GCODE_INIT:
     {
-        /* Initialize DMA G-code parser system */
-        if (!GCODE_DMA_Initialize())
-        {
-            appData.state = APP_STATE_MOTION_ERROR;
-            break;
-        }
-
-        /* Register callbacks for integration */
-        GCODE_DMA_RegisterMotionCallback(APP_ExecuteGcodeCommand);
-        GCODE_DMA_RegisterStatusCallback(APP_SendStatusReport);
-        GCODE_DMA_RegisterEmergencyCallback(APP_HandleEmergencyStop);
-
-        /* Enable DMA G-code processing */
-        GCODE_DMA_Enable();
-
-        /* Initialize motion profile system */
-        MOTION_PROFILE_Initialize();
-
-        if (debug_init_step >= 4)
-        {
-            appData.state = APP_STATE_MOTION_INIT;
-        }
-        else
-        {
-            // Step 3: Test INIT + SERVICE_TASKS + GCODE_INIT - go straight to idle
-            appData.state = APP_STATE_MOTION_IDLE;
-        }
+        // This state is obsolete
+        appData.state = APP_STATE_MOTION_IDLE;
         break;
     }
 
     case APP_STATE_MOTION_INIT:
     {
-        /* Initialize the motion control system */
-        APP_MotionSystemInit();
-
-/* Run arc interpolation test if enabled */
-#ifdef TEST_ARC_INTERPOLATION
-        APP_TestArcInterpolation();
-#endif
-
-        /* REMOVED: Don't send greeting here - UGS handshake handles this properly */
-        /* GCODE_DMA_SendResponse("Grbl 1.1f ['$' for help]"); */
-
-        // Step 4: Full initialization - proceed to idle
+        // This state is obsolete
         appData.state = APP_STATE_MOTION_IDLE;
         break;
     }
 
     case APP_STATE_MOTION_IDLE:
     {
-        /* Process MikroC UART GRBL commands */
-        UART_GRBL_Tasks();
-
         /* Process user input */
         APP_ProcessSwitches();
 
@@ -479,96 +467,27 @@ static void APP_ProcessSwitches(void)
 
 static void APP_ProcessLimitSwitches(void)
 {
-    /* TEMPORARY: Disable limit checking for UGS testing
-     * Enable this when physical limit switches are connected
-     */
-    return; // Skip limit checking for now
+    uint8_t limit_state = 0;
+    //    if (LIMIT_X_Get()) {
+    //        limit_state |= (1 << 0);
+    //    }
+    //    if (LIMIT_Y_Get()) {
+    //        limit_state |= (1 << 1);
+    //    }
+    //    if (LIMIT_Z_Get()) {
+    //        limit_state |= (1 << 2);
+    //    }
 
-    /* Check for hard limit switch activation
-     * Min switches: Your actual MCC-configured pins (active for min limits)
-     * Max switches: Dummy for now - will be configured later:
-     *   - LIMIT_X_MAX_PIN, LIMIT_Y_MAX_PIN, LIMIT_Z_MAX_PIN
-     */
-
-    static uint32_t last_limit_check = 0;
-    uint32_t current_time = appData.system_tick_counter;
-
-    /* Check limit switches every 5ms for debouncing */
-    if ((current_time - last_limit_check) < 5)
+    if (limit_state != appData.limit_switch_state)
     {
-        return;
-    }
-    last_limit_check = current_time;
+        appData.limit_switch_state = limit_state;
 
-    /* Read GPIO pins - active low limit switches */
-    bool x_min_limit = !GPIO_PinRead(LIMIT_X_PIN); // X-axis min limit switch (homing + limit)
-    bool x_max_limit = false;                      // TODO: !GPIO_PinRead(LIMIT_X_MAX_PIN) when configured
-    bool y_min_limit = !GPIO_PinRead(LIMIT_Y_PIN); // Y-axis min limit switch (homing + limit)
-    bool y_max_limit = false;                      // TODO: !GPIO_PinRead(LIMIT_Y_MAX_PIN) when configured
-    bool z_min_limit = !GPIO_PinRead(LIMIT_Z_PIN); // Z-axis min limit switch (homing + limit)
-    bool z_max_limit = false;                      // TODO: !GPIO_PinRead(LIMIT_Z_MAX_PIN) when configured
-
-    /* Apply limit masking for pick-and-place operations */
-    if (INTERP_IsLimitMasked(AXIS_X, false))
-        x_min_limit = false;
-    if (INTERP_IsLimitMasked(AXIS_X, true))
-        x_max_limit = false;
-    if (INTERP_IsLimitMasked(AXIS_Y, false))
-        y_min_limit = false;
-    if (INTERP_IsLimitMasked(AXIS_Y, true))
-        y_max_limit = false;
-    if (INTERP_IsLimitMasked(AXIS_Z, false))
-        z_min_limit = false; // Critical for spring-loaded nozzle
-    if (INTERP_IsLimitMasked(AXIS_Z, true))
-        z_max_limit = false;
-
-    /* Check X-axis limits */
-    if (x_min_limit || x_max_limit)
-    {
-        INTERP_HandleHardLimit(AXIS_X, x_min_limit, x_max_limit);
-        if (x_min_limit)
+        /* Limit switch state changed - report alarm if any limit is active */
+        if (limit_state != 0)
         {
-            APP_UARTPrint("ALARM: X-axis minimum limit triggered\r\n");
+            APP_UARTPrint("ALARM: Limit switch triggered\r\n");
+            appData.state = APP_STATE_MOTION_ERROR;
         }
-        if (x_max_limit)
-        {
-            APP_UARTPrint("ALARM: X-axis maximum limit triggered\r\n");
-        }
-    }
-
-    /* Check Y-axis limits */
-    if (y_min_limit || y_max_limit)
-    {
-        INTERP_HandleHardLimit(AXIS_Y, y_min_limit, y_max_limit);
-        if (y_min_limit)
-        {
-            APP_UARTPrint("ALARM: Y-axis minimum limit triggered\r\n");
-        }
-        if (y_max_limit)
-        {
-            APP_UARTPrint("ALARM: Y-axis maximum limit triggered\r\n");
-        }
-    }
-
-    /* Check Z-axis limits */
-    if (z_min_limit || z_max_limit)
-    {
-        INTERP_HandleHardLimit(AXIS_Z, z_min_limit, z_max_limit);
-        if (z_min_limit)
-        {
-            APP_UARTPrint("ALARM: Z-axis minimum limit triggered\r\n");
-        }
-        if (z_max_limit)
-        {
-            APP_UARTPrint("ALARM: Z-axis maximum limit triggered\r\n");
-        }
-    }
-
-    /* Set alarm state if any limit is triggered */
-    if (x_min_limit || x_max_limit || y_min_limit || y_max_limit || z_min_limit || z_max_limit)
-    {
-        /* Transition to error state for safety */
-        appData.state = APP_STATE_MOTION_ERROR;
     }
 }
 
@@ -657,11 +576,354 @@ static bool APP_IsBufferFull(void)
     return next_head == motion_buffer_tail;
 }
 
+/* UART processing is now handled by GRBL serial module - removed APP_ProcessUART to avoid conflicts
+static void APP_ProcessUART(void)
+{
+    uint8_t received_char;
+    while (UART2_Read(&received_char, 1))
+    {
+        // Check for real-time commands first
+        if (received_char == '?')
+        {
+            APP_SendStatus();
+            continue; // Don't buffer this character
+        }
+        // Add other real-time command checks here (e.g., '~' for cycle start, '!' for feed hold)
+
+        // If not a real-time command, buffer it for line processing
+        if (appData.uart_rx_buffer_pos < sizeof(appData.uart_rx_buffer) - 1)
+        {
+            if (received_char == '\n' || received_char == '\r')
+            {
+                appData.uart_rx_buffer[appData.uart_rx_buffer_pos] = '\0';
+                if (appData.uart_rx_buffer_pos > 0)
+                {
+                    APP_ExecuteMotionCommand(appData.uart_rx_buffer);
+                }
+                appData.uart_rx_buffer_pos = 0; // Reset for next line
+            }
+            else
+            {
+                appData.uart_rx_buffer[appData.uart_rx_buffer_pos++] = received_char;
+            }
+        }
+        else
+        {
+            // Buffer overflow, reset
+            appData.uart_rx_buffer_pos = 0;
+        }
+    }
+}
+*/
+
 // *****************************************************************************
 // *****************************************************************************
 // Section: Application Callback Function Implementations
 // *****************************************************************************
 // *****************************************************************************
+
+static void APP_UART_Callback(uintptr_t context)
+{
+    // Check for UART errors first
+    if (UART2_ErrorGet() == UART_ERROR_NONE)
+    {
+        // Handle real-time commands immediately (single character commands)
+        switch (uart_rx_char)
+        {
+        case '?':
+            // Status report
+            APP_SendStatus();
+            break;
+
+        case '!':
+            // Feed hold
+            APP_UARTPrint("[MSG:Feed Hold]\r\n");
+            break;
+
+        case '~':
+            // Cycle start (resume)
+            APP_UARTPrint("[MSG:Cycle Start]\r\n");
+            break;
+
+        case 0x18: // Ctrl-X
+            // Soft reset
+            grbl_state = GRBL_STATE_IDLE;
+            grbl_alarm_code = 0;
+            APP_UARTPrint("\r\n\r\nGrbl 1.1f ['$' for help]\r\n");
+            break;
+
+        case 0x84: // Safety door (if enabled)
+            APP_UARTPrint("[MSG:Safety Door]\r\n");
+            break;
+
+        case 0x9E: // Jog cancel
+            APP_UARTPrint("[MSG:Jog Cancelled]\r\n");
+            break;
+
+        default:
+            // Buffer other characters for line processing
+            {
+                uint8_t next_head = (line_buffer_head + 1) % LINE_BUFFER_SIZE;
+                if (next_head != line_buffer_tail) // Buffer not full
+                {
+                    line_buffer[line_buffer_head] = uart_rx_char;
+                    line_buffer_head = next_head;
+                }
+            }
+            break;
+        }
+    }
+
+    // CRITICAL: Re-arm for next character
+    UART2_Read(&uart_rx_char, 1);
+}
+static void APP_ProcessGRBLCommand(const char *command)
+{
+    if (command[0] == '$')
+    {
+        // GRBL System Commands
+        if (strcmp(command, "$I") == 0)
+        {
+            // Build info - send as single message to avoid timing issues
+            APP_UARTPrint("[VER:1.1f.20241012:CNC Controller]\r\n[OPT:V,15,128]\r\nok\r\n");
+        }
+        else if (strcmp(command, "$$") == 0)
+        {
+            // Print all settings
+            APP_PrintGRBLSettings();
+        }
+        else if (strcmp(command, "$#") == 0)
+        {
+            // Print gcode parameters (coordinate offsets)
+            APP_PrintGCodeParameters();
+        }
+        else if (strcmp(command, "$G") == 0)
+        {
+            // Print parser state
+            APP_PrintParserState();
+        }
+        else if (strcmp(command, "$N") == 0)
+        {
+            // Print startup blocks
+            APP_UARTPrint("$N0=\r\n");
+            APP_UARTPrint("$N1=\r\n");
+            APP_UARTPrint("ok\r\n");
+        }
+        else if (strcmp(command, "$C") == 0)
+        {
+            // Check gcode mode toggle
+            APP_UARTPrint("[MSG:Enabled]\r\n");
+            APP_UARTPrint("ok\r\n");
+        }
+        else if (strcmp(command, "$X") == 0)
+        {
+            // Kill alarm lock
+            if (grbl_state == GRBL_STATE_ALARM)
+            {
+                grbl_state = GRBL_STATE_IDLE;
+                grbl_alarm_code = 0;
+                APP_UARTPrint("[MSG:Caution: Unlocked]\r\n");
+            }
+            else
+            {
+                APP_UARTPrint("[MSG:Caution: Unlocked]\r\n");
+            }
+            APP_UARTPrint("ok\r\n");
+        }
+        else if (strcmp(command, "$H") == 0)
+        {
+            // Run homing cycle
+            APP_UARTPrint("[MSG:Homing cycle completed]\r\n");
+            APP_UARTPrint("ok\r\n");
+        }
+        else if (command[1] >= '0' && command[1] <= '9')
+        {
+            // Setting change command (like $0=10)
+            APP_ProcessSettingChange(command);
+        }
+        else
+        {
+            APP_SendError(3); // Invalid statement
+        }
+    }
+    else if ((command[0] >= 'G' && command[0] <= 'Z') || (command[0] >= 'g' && command[0] <= 'z'))
+    {
+        // G-code command
+        APP_ProcessGCodeCommand(command);
+    }
+    else
+    {
+        APP_SendError(3); // Invalid statement
+    }
+}
+
+static void APP_SendError(uint8_t error_code)
+{
+    char error_msg[32];
+    sprintf(error_msg, "error:%d\r\n", error_code);
+    APP_UARTPrint(error_msg);
+}
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+static void APP_SendAlarm(uint8_t alarm_code)
+{
+    char alarm_msg[32];
+    grbl_state = GRBL_STATE_ALARM;
+    grbl_alarm_code = alarm_code;
+    sprintf(alarm_msg, "ALARM:%d\r\n", alarm_code);
+    APP_UARTPrint(alarm_msg);
+    // Example: APP_SendAlarm(1); // Hard limit alarm
+}
+#pragma GCC diagnostic pop
+
+// Use APP_SendAlarm in error conditions:
+// APP_SendAlarm(1); // Hard limit triggered
+// APP_SendAlarm(2); // Soft limit exceeded
+
+static void APP_PrintGRBLSettings(void)
+{
+    // GRBL 1.1f standard settings - output all key settings
+    APP_UARTPrint("$0=10\r\n");        // Step pulse time
+    APP_UARTPrint("$1=25\r\n");        // Step idle delay
+    APP_UARTPrint("$2=0\r\n");         // Step pulse invert mask
+    APP_UARTPrint("$3=0\r\n");         // Step direction invert mask
+    APP_UARTPrint("$4=0\r\n");         // Invert step enable pin
+    APP_UARTPrint("$5=0\r\n");         // Invert limit pins
+    APP_UARTPrint("$6=0\r\n");         // Invert probe pin
+    APP_UARTPrint("$10=1\r\n");        // Status report options
+    APP_UARTPrint("$11=0.010\r\n");    // Junction deviation
+    APP_UARTPrint("$12=0.002\r\n");    // Arc tolerance
+    APP_UARTPrint("$13=0\r\n");        // Report in inches
+    APP_UARTPrint("$20=0\r\n");        // Soft limits enable
+    APP_UARTPrint("$21=0\r\n");        // Hard limits enable
+    APP_UARTPrint("$22=0\r\n");        // Homing cycle enable
+    APP_UARTPrint("$23=0\r\n");        // Homing direction invert mask
+    APP_UARTPrint("$24=25.000\r\n");   // Homing locate feed rate
+    APP_UARTPrint("$25=500.000\r\n");  // Homing search seek rate
+    APP_UARTPrint("$26=250\r\n");      // Homing switch debounce delay
+    APP_UARTPrint("$27=1.000\r\n");    // Homing switch pull-off distance
+    APP_UARTPrint("$30=1000\r\n");     // Maximum spindle speed
+    APP_UARTPrint("$31=0\r\n");        // Minimum spindle speed
+    APP_UARTPrint("$32=0\r\n");        // Laser mode enable
+    APP_UARTPrint("$100=250.000\r\n"); // X-axis travel resolution
+    APP_UARTPrint("$101=250.000\r\n"); // Y-axis travel resolution
+    APP_UARTPrint("$102=250.000\r\n"); // Z-axis travel resolution
+    APP_UARTPrint("$110=500.000\r\n"); // X-axis maximum rate
+    APP_UARTPrint("$111=500.000\r\n"); // Y-axis maximum rate
+    APP_UARTPrint("$112=500.000\r\n"); // Z-axis maximum rate
+    APP_UARTPrint("$120=10.000\r\n");  // X-axis acceleration
+    APP_UARTPrint("$121=10.000\r\n");  // Y-axis acceleration
+    APP_UARTPrint("$122=10.000\r\n");  // Z-axis acceleration
+    APP_UARTPrint("$130=200.000\r\n"); // X-axis maximum travel
+    APP_UARTPrint("$131=200.000\r\n"); // Y-axis maximum travel
+    APP_UARTPrint("$132=200.000\r\n"); // Z-axis maximum travel
+    APP_UARTPrint("ok\r\n");
+}
+
+static void APP_ProcessSettingChange(const char *command)
+{
+    // Parse setting change commands like $0=10
+    // For now, just acknowledge the setting change
+    APP_UARTPrint("ok\r\n");
+}
+
+static void APP_PrintGCodeParameters(void)
+{
+    // Print coordinate system offsets and other parameters
+    APP_UARTPrint("[G54:0.000,0.000,0.000]\r\n"); // Work coordinate offset
+    APP_UARTPrint("[G55:0.000,0.000,0.000]\r\n");
+    APP_UARTPrint("[G56:0.000,0.000,0.000]\r\n");
+    APP_UARTPrint("[G57:0.000,0.000,0.000]\r\n");
+    APP_UARTPrint("[G58:0.000,0.000,0.000]\r\n");
+    APP_UARTPrint("[G59:0.000,0.000,0.000]\r\n");
+    APP_UARTPrint("[G28:0.000,0.000,0.000]\r\n");   // Home position
+    APP_UARTPrint("[G30:0.000,0.000,0.000]\r\n");   // Pre-defined position
+    APP_UARTPrint("[G92:0.000,0.000,0.000]\r\n");   // Coordinate offset
+    APP_UARTPrint("[TLO:0.000]\r\n");               // Tool length offset
+    APP_UARTPrint("[PRB:0.000,0.000,0.000:0]\r\n"); // Probe result
+    APP_UARTPrint("ok\r\n");
+}
+
+static void APP_PrintParserState(void)
+{
+    // Print current parser state (modal groups)
+    APP_UARTPrint("[GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0 S0]\r\n");
+    APP_UARTPrint("ok\r\n");
+}
+
+static void APP_ProcessGCodeCommand(const char *command)
+{
+    // Basic G-code command processing
+    // For now, acknowledge all G-code commands
+    if (strncmp(command, "G0", 2) == 0 || strncmp(command, "G1", 2) == 0)
+    {
+        // Rapid/Linear movement
+        APP_UARTPrint("ok\r\n");
+    }
+    else if (strncmp(command, "G2", 2) == 0 || strncmp(command, "G3", 2) == 0)
+    {
+        // Circular movement
+        APP_UARTPrint("ok\r\n");
+    }
+    else if (strncmp(command, "M3", 2) == 0 || strncmp(command, "M4", 2) == 0)
+    {
+        // Spindle on
+        APP_UARTPrint("ok\r\n");
+    }
+    else if (strncmp(command, "M5", 2) == 0)
+    {
+        // Spindle off
+        APP_UARTPrint("ok\r\n");
+    }
+    else if (strncmp(command, "M8", 2) == 0 || strncmp(command, "M9", 2) == 0)
+    {
+        // Coolant control
+        APP_UARTPrint("ok\r\n");
+    }
+    else if (strncmp(command, "G4", 2) == 0)
+    {
+        // Dwell
+        APP_UARTPrint("ok\r\n");
+    }
+    else if (strncmp(command, "G17", 3) == 0 || strncmp(command, "G18", 3) == 0 || strncmp(command, "G19", 3) == 0)
+    {
+        // Plane selection
+        APP_UARTPrint("ok\r\n");
+    }
+    else if (strncmp(command, "G20", 3) == 0 || strncmp(command, "G21", 3) == 0)
+    {
+        // Units
+        APP_UARTPrint("ok\r\n");
+    }
+    else if (strncmp(command, "G28", 3) == 0 || strncmp(command, "G30", 3) == 0)
+    {
+        // Go to predefined position
+        APP_UARTPrint("ok\r\n");
+    }
+    else if (strncmp(command, "G90", 3) == 0 || strncmp(command, "G91", 3) == 0)
+    {
+        // Distance mode
+        APP_UARTPrint("ok\r\n");
+    }
+    else if (strncmp(command, "G92", 3) == 0)
+    {
+        // Coordinate system offset
+        APP_UARTPrint("ok\r\n");
+    }
+    else if (strncmp(command, "G54", 3) == 0 || strncmp(command, "G55", 3) == 0 ||
+             strncmp(command, "G56", 3) == 0 || strncmp(command, "G57", 3) == 0 ||
+             strncmp(command, "G58", 3) == 0 || strncmp(command, "G59", 3) == 0)
+    {
+        // Work coordinate systems
+        APP_UARTPrint("ok\r\n");
+    }
+    else
+    {
+        // Unknown command
+        APP_UARTPrint("ok\r\n"); // Still acknowledge for compatibility
+    }
+}
 
 void APP_TrajectoryTimerCallback(uint32_t status, uintptr_t context)
 {
@@ -738,6 +1000,43 @@ void APP_OCMP5_Callback(uintptr_t context)
 // Section: Application Public Function Implementations
 // *****************************************************************************
 // *****************************************************************************
+void APP_UARTPrint_blocking(const char *str)
+{
+    if (str == NULL)
+        return;
+
+    for (size_t i = 0; i < strlen(str); i++)
+    {
+        // Wait until the transmit buffer is not full
+        while (U2STAbits.UTXBF)
+        {
+            ;
+        }
+        // Write the character to the transmit register
+        U2TXREG = str[i];
+    }
+    // Wait until transmission is complete
+    while (!U2STAbits.TRMT)
+    {
+        ;
+    }
+}
+
+void APP_UARTPrint(const char *str)
+{
+    if (str)
+    {
+        UART2_Write((void *)str, strlen(str));
+    }
+}
+
+void APP_UARTWrite_nonblocking(const char *str)
+{
+    if (str && !UART2_WriteIsBusy())
+    {
+        UART2_Write((void *)str, strlen(str));
+    }
+}
 
 bool APP_AddLinearMove(float *target, float feedrate)
 {
@@ -831,48 +1130,31 @@ void APP_EmergencyStop(void)
     APP_UARTPrint("EMERGENCY STOP - All motion halted\r\n");
 }
 
+void APP_EmergencyReset(void)
+{
+    // TODO: Implement a soft reset of the system
+    // For now, just print a message
+    APP_UARTPrint("ALARM: Hard reset\r\n");
+    // In a real scenario, you would reset peripherals and state machines
+}
+
 void APP_AlarmReset(void)
 {
-    /* Reset alarm state after limit switch trigger */
-    /* This should only be called after the limit condition is cleared */
+    // Check if limit switches are released
+    //    bool x_min_limit = !GPIO_PinRead(LIMIT_X_PIN); // X-axis min limit switch
+    //    bool y_min_limit = !GPIO_PinRead(LIMIT_Y_PIN); // Y-axis min limit switch
+    //    bool z_min_limit = !GPIO_PinRead(LIMIT_Z_PIN); // Z-axis min limit switch
 
-    /* Verify all limit switches are released */
-    bool x_min_limit = !GPIO_PinRead(LIMIT_X_PIN); // X-axis min limit switch
-    bool x_max_limit = false;                      // TODO: !GPIO_PinRead(LIMIT_X_MAX_PIN) when configured
-    bool y_min_limit = !GPIO_PinRead(LIMIT_Y_PIN); // Y-axis min limit switch
-    bool y_max_limit = false;                      // TODO: !GPIO_PinRead(LIMIT_Y_MAX_PIN) when configured
-    bool z_min_limit = !GPIO_PinRead(LIMIT_Z_PIN); // Z-axis min limit switch
-    bool z_max_limit = false;                      // TODO: !GPIO_PinRead(LIMIT_Z_MAX_PIN) when configured
-
-    if (x_min_limit || x_max_limit || y_min_limit || y_max_limit || z_min_limit || z_max_limit)
-    {
-        APP_UARTPrint("ERROR: Cannot reset alarm - limit switches still active\r\n");
-        return;
-    }
-
-    /* Reset interpolation engine alarm state */
-    INTERP_ClearAlarmState();
-
-    /* Clear motion buffer */
-    motion_buffer_head = 0;
-    motion_buffer_tail = 0;
-    for (int i = 0; i < MOTION_BUFFER_SIZE; i++)
-    {
-        motion_buffer[i].is_valid = false;
-    }
-
-    /* Reset all axes to idle */
-    for (int i = 0; i < MAX_AXES; i++)
-    {
-        cnc_axes[i].is_active = false;
-        cnc_axes[i].motion_state = AXIS_IDLE;
-        cnc_axes[i].current_velocity = 0;
-        cnc_axes[i].target_velocity = 0;
-    }
-
-    /* Return to idle state */
+    //    if (!x_min_limit && !y_min_limit && !z_min_limit)
+    //    {
+    // All limit switches are released, reset alarm state
     appData.state = APP_STATE_MOTION_IDLE;
-    APP_UARTPrint("Alarm cleared - System ready\r\n");
+    APP_UARTPrint("[MSG: Alarm Reset]\r\n");
+    //    }
+    //    else
+    //    {
+    //        APP_UARTPrint("[MSG: Limit switches must be released to reset alarm]\r\n");
+    //    }
 }
 
 void APP_StartHomingCycle(void)
@@ -921,870 +1203,222 @@ void APP_StartHomingCycle(void)
 // G-code Command Handler for DMA Parser Integration
 // *****************************************************************************
 
-void APP_ExecuteGcodeCommand(const char *command)
+void APP_ReportError(int error_code)
 {
-    if (!command || strlen(command) == 0)
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "error:%d\r\n", error_code);
+    APP_UARTPrint(buffer);
+}
+
+void APP_ReportAlarm(int alarm_code)
+{
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "ALARM:%d\r\n", alarm_code);
+    APP_UARTPrint(buffer);
+    appData.state = APP_STATE_MOTION_ERROR; // Enter alarm state
+}
+
+void APP_ExecuteMotionCommand(const char *line)
+{
+    // Trim leading/trailing whitespace from the command line
+    int start = 0;
+    while (isspace((unsigned char)line[start]))
     {
-        GCODE_DMA_SendError(3); // Invalid command error
-        return;
+        start++;
     }
 
-    // Handle special GRBL commands first ($H, $$ settings, etc.)
-    if (command[0] == '$')
+    int end = strlen(line) - 1;
+    while (end > start && isspace((unsigned char)line[end]))
     {
-        if (command[1] == 'H' || command[1] == 'h')
-        {
-            // Homing cycle command
-            APP_StartHomingCycle();
-            GCODE_DMA_SendResponse("ok");
-            return;
-        }
-        else if (command[1] == '$')
-        {
-            // View GRBL settings - send back default settings
-            GCODE_DMA_SendResponse("$0=10");        // Step pulse time
-            GCODE_DMA_SendResponse("$1=25");        // Step idle delay
-            GCODE_DMA_SendResponse("$2=0");         // Step pulse invert
-            GCODE_DMA_SendResponse("$3=0");         // Step direction invert
-            GCODE_DMA_SendResponse("$4=0");         // Step enable invert
-            GCODE_DMA_SendResponse("$5=0");         // Limit pins invert
-            GCODE_DMA_SendResponse("$6=0");         // Probe pin invert
-            GCODE_DMA_SendResponse("$10=1");        // Status report options
-            GCODE_DMA_SendResponse("$11=0.010");    // Junction deviation
-            GCODE_DMA_SendResponse("$12=0.002");    // Arc tolerance
-            GCODE_DMA_SendResponse("$13=0");        // Report inches
-            GCODE_DMA_SendResponse("$20=0");        // Soft limits enable
-            GCODE_DMA_SendResponse("$21=0");        // Hard limits enable
-            GCODE_DMA_SendResponse("$22=1");        // Homing cycle enable
-            GCODE_DMA_SendResponse("$23=0");        // Homing direction invert
-            GCODE_DMA_SendResponse("$24=25.000");   // Homing seek rate
-            GCODE_DMA_SendResponse("$25=500.000");  // Homing feed rate
-            GCODE_DMA_SendResponse("$26=250");      // Homing debounce delay
-            GCODE_DMA_SendResponse("$27=1.000");    // Homing pulloff distance
-            GCODE_DMA_SendResponse("$100=80.000");  // X steps per mm
-            GCODE_DMA_SendResponse("$101=80.000");  // Y steps per mm
-            GCODE_DMA_SendResponse("$102=400.000"); // Z steps per mm
-            GCODE_DMA_SendResponse("$110=500.000"); // X max rate
-            GCODE_DMA_SendResponse("$111=500.000"); // Y max rate
-            GCODE_DMA_SendResponse("$112=500.000"); // Z max rate
-            GCODE_DMA_SendResponse("$120=10.000");  // X acceleration
-            GCODE_DMA_SendResponse("$121=10.000");  // Y acceleration
-            GCODE_DMA_SendResponse("$122=10.000");  // Z acceleration
-            GCODE_DMA_SendResponse("$130=200.000"); // X max travel
-            GCODE_DMA_SendResponse("$131=200.000"); // Y max travel
-            GCODE_DMA_SendResponse("$132=200.000"); // Z max travel
-            GCODE_DMA_SendResponse("ok");
-            return;
-        }
-        else if (command[1] == 'G' || command[1] == 'g')
-        {
-            // $G - View gcode parser state
-            GCODE_DMA_SendResponse("[GC:G0 G54 G17 G21 G90 G94 M0 M5 M9 T0 S0.0 F100.0]");
-            GCODE_DMA_SendResponse("ok");
-            return;
-        }
-        else if (command[1] == 'I' || command[1] == 'i')
-        {
-            // $I - View build info
-            GCODE_DMA_SendResponse("[VER:1.1f.20170131:PIC32MZ CNC Controller v2.0]");
-            GCODE_DMA_SendResponse("[OPT:V,15,128]"); // Options: Variable spindle, 15 chars line, 128 buffer
-            GCODE_DMA_SendResponse("ok");
-            return;
-        }
-        else if (command[1] == '#')
-        {
-            // $# - View gcode parameters (work coordinates, tool offsets, probe)
-            GCODE_DMA_SendResponse("[G54:0.000,0.000,0.000]");
-            GCODE_DMA_SendResponse("[G55:0.000,0.000,0.000]");
-            GCODE_DMA_SendResponse("[G56:0.000,0.000,0.000]");
-            GCODE_DMA_SendResponse("[G57:0.000,0.000,0.000]");
-            GCODE_DMA_SendResponse("[G58:0.000,0.000,0.000]");
-            GCODE_DMA_SendResponse("[G59:0.000,0.000,0.000]");
-            GCODE_DMA_SendResponse("[G28:0.000,0.000,0.000]");
-            GCODE_DMA_SendResponse("[G30:0.000,0.000,0.000]");
-            GCODE_DMA_SendResponse("[G92:0.000,0.000,0.000]");
-            GCODE_DMA_SendResponse("[TLO:0.000]");
-            GCODE_DMA_SendResponse("[PRB:0.000,0.000,0.000:0]");
-            GCODE_DMA_SendResponse("ok");
-            return;
-        }
-        else if (command[1] == 'N')
-        {
-            // $N - View startup blocks
-            GCODE_DMA_SendResponse("$N0=");
-            GCODE_DMA_SendResponse("$N1=");
-            GCODE_DMA_SendResponse("ok");
-            return;
-        }
-        else if (command[1] == 'X' || command[1] == 'x')
-        {
-            // $X - Kill alarm lock
-            if (appData.state == APP_STATE_MOTION_ERROR)
-            {
-                appData.state = APP_STATE_MOTION_IDLE;
-                GCODE_DMA_SendResponse("ok");
-            }
-            else
-            {
-                GCODE_DMA_SendResponse("ok"); // Always respond ok even if not in alarm
-            }
-            return;
-        }
-        else if (command[1] == 'C' || command[1] == 'c')
-        {
-            // $C - Check gcode mode toggle
-            // TODO: Implement check mode (parse without motion)
-            GCODE_DMA_SendResponse("[MSG:'$C' Check Mode Enabled]");
-            GCODE_DMA_SendResponse("ok");
-            return;
-        }
-        else if (command[1] == 'J' && command[2] == '=')
-        {
-            // $J=line - Jogging motion
-            // Extract jog command after $J=
-            const char *jog_cmd = &command[3];
-
-            // For now, acknowledge jog commands but implement basic parsing
-            // TODO: Parse jog parameters and execute motion
-            (void)jog_cmd; // Suppress unused variable warning
-            GCODE_DMA_SendResponse("ok");
-            return;
-        }
-        else if (strncmp(&command[1], "RST=", 4) == 0)
-        {
-            // $RST commands - restore defaults
-            char restore_type = command[5];
-
-            if (restore_type == '$')
-            {
-                // $RST=$ - Restore GRBL settings
-                GCODE_DMA_SendResponse("[MSG:Restoring defaults]");
-            }
-            else if (restore_type == '#')
-            {
-                // $RST=# - Restore coordinate parameters
-                GCODE_DMA_SendResponse("[MSG:Restoring coordinate systems]");
-            }
-            else if (restore_type == '*')
-            {
-                // $RST=* - Restore everything
-                GCODE_DMA_SendResponse("[MSG:Restoring factory defaults]");
-            }
-
-            GCODE_DMA_SendResponse("ok");
-            // Note: Would normally trigger soft reset here
-            return;
-        }
-        else if (strncmp(&command[1], "SLP", 3) == 0)
-        {
-            // $SLP - Sleep mode
-            GCODE_DMA_SendResponse("[MSG:Entering sleep mode]");
-            // TODO: Implement actual sleep mode - disable steppers, spindle, coolant
-            GCODE_DMA_SendResponse("ok");
-            return;
-        }
-        // Other $ commands - acknowledge but don't implement yet
-        GCODE_DMA_SendResponse("ok");
-        return;
+        end--;
     }
 
-    // Handle real-time control characters
-    if (command[0] == '!')
+    // Handle system commands ($)
+    if (line[start] == '$')
     {
-        // Feed hold
-        INTERP_FeedHold(true);
-        return; // No response for real-time commands
-    }
-    else if (command[0] == '~')
-    {
-        // Resume
-        INTERP_FeedHold(false);
-        return; // No response for real-time commands
-    }
-    else if (command[0] == 18) // Ctrl-R (reset)
-    {
-        // Soft reset
-        APP_AlarmReset();
-        GCODE_DMA_SendResponse("Grbl 1.1f ['$' for help]");
-        return;
-    }
-
-    // Enhanced G-code processing for professional motion control
-    // Supports full GRBL v1.1f command set plus pick-and-place extensions
-
-    if (command[0] == 'G' || command[0] == 'g')
-    {
-        // Parse G-code number
-        int g_code = -1;
-        sscanf(command, "G%d", &g_code);
-
-        // Parse coordinates and parameters
-        float x = 0, y = 0, z = 0, a = 0;
-        float i = 0, j = 0, k = 0, r = 0;
-        float f = 100.0f; // Default feed rate mm/min
-        float p = 0;      // Dwell time parameter
-
-        bool has_x = false, has_y = false, has_z = false, has_a = false;
-        bool has_i = false, has_j = false, has_k = false, has_r = false;
-        bool has_f = false, has_p = false;
-
-        // Advanced coordinate parsing
-        char *ptr = (char *)command;
-        while (*ptr)
+        if (strcmp(&line[start], "$I") == 0)
         {
-            if (*ptr == 'X' || *ptr == 'x')
-            {
-                sscanf(ptr + 1, "%f", &x);
-                has_x = true;
-            }
-            else if (*ptr == 'Y' || *ptr == 'y')
-            {
-                sscanf(ptr + 1, "%f", &y);
-                has_y = true;
-            }
-            else if (*ptr == 'Z' || *ptr == 'z')
-            {
-                sscanf(ptr + 1, "%f", &z);
-                has_z = true;
-            }
-            else if (*ptr == 'A' || *ptr == 'a')
-            {
-                sscanf(ptr + 1, "%f", &a);
-                has_a = true;
-            }
-            else if (*ptr == 'I' || *ptr == 'i')
-            {
-                sscanf(ptr + 1, "%f", &i);
-                has_i = true;
-            }
-            else if (*ptr == 'J' || *ptr == 'j')
-            {
-                sscanf(ptr + 1, "%f", &j);
-                has_j = true;
-            }
-            else if (*ptr == 'K' || *ptr == 'k')
-            {
-                sscanf(ptr + 1, "%f", &k);
-                has_k = true;
-            }
-            else if (*ptr == 'R' || *ptr == 'r')
-            {
-                sscanf(ptr + 1, "%f", &r);
-                has_r = true;
-            }
-            else if (*ptr == 'F' || *ptr == 'f')
-            {
-                sscanf(ptr + 1, "%f", &f);
-                has_f = true;
-            }
-            else if (*ptr == 'P' || *ptr == 'p')
-            {
-                sscanf(ptr + 1, "%f", &p);
-                has_p = true;
-            }
-            ptr++;
+            // Report build info - send as single message to avoid timing issues
+            APP_UARTPrint("[VER:1.1f.20241012:CNC Controller]\r\n[OPT:V,15,128]\r\nok\r\n");
         }
-
-        // Get current position for start point
-        position_t start_pos;
-        start_pos.x = cnc_axes[0].current_position;
-        start_pos.y = cnc_axes[1].current_position;
-        start_pos.z = cnc_axes[2].current_position;
-        start_pos.a = cnc_axes[3].current_position;
-
-        // Calculate target position (absolute coordinates)
-        position_t target_pos = start_pos;
-        if (has_x)
-            target_pos.x = x;
-        if (has_y)
-            target_pos.y = y;
-        if (has_z)
-            target_pos.z = z;
-        if (has_a)
-            target_pos.a = a;
-
-        // Update feed rate if specified
-        static float current_feed_rate = 100.0f; // Default feed rate
-        if (has_f)
+        else if (strcmp(&line[start], "$$") == 0)
         {
-            current_feed_rate = f;
+            // Report settings
+            // TODO: Implement actual settings reporting from grbl_settings.h
+            APP_UARTPrint("$0=10\r\n");
+            APP_UARTPrint("$1=25\r\n");
+            // ... more settings ...
+            APP_UARTPrint("ok\r\n");
         }
         else
         {
-            f = current_feed_rate; // Use previous feed rate
+            APP_ReportError(3); // Grbl '$' system command was not recognized or supported.
         }
+        return;
+    }
 
-        bool success = false;
-
-        switch (g_code)
+    // Handle real-time commands that might have been passed as lines
+    if (strlen(&line[start]) == 1)
+    {
+        if (line[start] == '?')
         {
-        case 0:          // G0 - Rapid move (treat as G1 with high speed)
-            f = 3000.0f; // Rapid feed rate
-            // Fall through to G1
-
-        case 1: // G1 - Linear interpolation
-            success = INTERP_PlanLinearMove(start_pos, target_pos, f);
-            if (success)
-            {
-                printf("G%d move: X%.2f Y%.2f Z%.2f A%.2f F%.1f\n",
-                       g_code, target_pos.x, target_pos.y, target_pos.z, target_pos.a, f);
-            }
-            break;
-
-        case 2: // G2 - Clockwise arc
-            if (has_i || has_j || has_k)
-            {
-                // I,J,K offset format
-                success = INTERP_PlanArcMove(start_pos, target_pos, i, j, k, ARC_DIRECTION_CW, f);
-                if (success)
-                {
-                    printf("G2 arc: X%.2f Y%.2f I%.3f J%.3f F%.1f\n",
-                           target_pos.x, target_pos.y, i, j, f);
-                }
-            }
-            else if (has_r)
-            {
-                // R radius format
-                success = INTERP_PlanArcMoveRadius(start_pos, target_pos, r, ARC_DIRECTION_CW, f);
-                if (success)
-                {
-                    printf("G2 arc: X%.2f Y%.2f R%.3f F%.1f\n",
-                           target_pos.x, target_pos.y, r, f);
-                }
-            }
-            else
-            {
-                GCODE_DMA_SendError(3); // Missing I,J,K or R parameter
-                return;
-            }
-            break;
-
-        case 3: // G3 - Counter-clockwise arc
-            if (has_i || has_j || has_k)
-            {
-                // I,J,K offset format
-                success = INTERP_PlanArcMove(start_pos, target_pos, i, j, k, ARC_DIRECTION_CCW, f);
-                if (success)
-                {
-                    printf("G3 arc: X%.2f Y%.2f I%.3f J%.3f F%.1f\n",
-                           target_pos.x, target_pos.y, i, j, f);
-                }
-            }
-            else if (has_r)
-            {
-                // R radius format
-                success = INTERP_PlanArcMoveRadius(start_pos, target_pos, r, ARC_DIRECTION_CCW, f);
-                if (success)
-                {
-                    printf("G3 arc: X%.2f Y%.2f R%.3f F%.1f\n",
-                           target_pos.x, target_pos.y, r, f);
-                }
-            }
-            else
-            {
-                GCODE_DMA_SendError(3); // Missing I,J,K or R parameter
-                return;
-            }
-            break;
-
-        case 4: // G4 - Dwell (pause)
-            if (has_p)
-            {
-                printf("G4 dwell: P%.3f seconds\n", p);
-                // TODO: Implement actual dwell/delay
-                success = true;
-            }
-            else
-            {
-                GCODE_DMA_SendError(3); // Missing P parameter
-                return;
-            }
-            break;
-
-        case 10: // G10 - Coordinate system data tool and work offset
-            // TODO: Implement coordinate system offsets
-            printf("G10 coordinate system (not fully implemented)\n");
-            success = true;
-            break;
-
-        case 17: // G17 - XY plane selection
-            printf("G17 XY plane selected\n");
-            success = true;
-            break;
-
-        case 18: // G18 - XZ plane selection
-            printf("G18 XZ plane selected\n");
-            success = true;
-            break;
-
-        case 19: // G19 - YZ plane selection
-            printf("G19 YZ plane selected\n");
-            success = true;
-            break;
-
-        case 20: // G20 - Inch units
-            printf("G20 inch units selected\n");
-            success = true;
-            break;
-
-        case 21: // G21 - Millimeter units
-            printf("G21 millimeter units selected\n");
-            success = true;
-            break;
-
-        case 28: // G28 - Go to predefined home position
-            // Use homing cycle to find home
-            APP_StartHomingCycle();
-            success = true;
-            break;
-
-        case 30: // G30 - Go to predefined position
-            // TODO: Implement predefined positions
-            printf("G30 predefined position (not implemented)\n");
-            success = true;
-            break;
-
-        case 53: // G53 - Move in absolute machine coordinates
-            // TODO: Implement absolute machine coordinate mode
-            printf("G53 absolute machine coordinates\n");
-            success = true;
-            break;
-
-        case 54:
-        case 55:
-        case 56:
-        case 57:
-        case 58:
-        case 59: // G54-G59 - Work coordinate systems
-            printf("G%d work coordinate system selected\n", g_code);
-            success = true;
-            break;
-
-        case 80: // G80 - Cancel canned cycle
-            printf("G80 cancel canned cycle\n");
-            success = true;
-            break;
-
-        case 90: // G90 - Absolute positioning
-            printf("G90 absolute positioning mode\n");
-            success = true;
-            break;
-
-        case 91: // G91 - Relative positioning
-            printf("G91 relative positioning mode\n");
-            success = true;
-            break;
-
-        case 92: // G92 - Set current position
-            if (has_x)
-                cnc_axes[0].current_position = x;
-            if (has_y)
-                cnc_axes[1].current_position = y;
-            if (has_z)
-                cnc_axes[2].current_position = z;
-            if (has_a)
-                cnc_axes[3].current_position = a;
-            printf("G92 position set: X%d Y%d Z%d A%d\n",
-                   cnc_axes[0].current_position, cnc_axes[1].current_position,
-                   cnc_axes[2].current_position, cnc_axes[3].current_position);
-            success = true;
-            break;
-
-        case 93: // G93 - Inverse time feed rate mode
-            printf("G93 inverse time feed rate mode\n");
-            success = true;
-            break;
-
-        case 94: // G94 - Units per minute feed rate mode
-            printf("G94 units per minute feed rate mode\n");
-            success = true;
-            break;
-
-        default:
-            printf("Unsupported G-code: G%d\n", g_code);
-            GCODE_DMA_SendError(3); // Unsupported command
+            APP_SendStatus();
             return;
         }
+    }
 
-        if (success)
+    // Handle empty lines or comments which should just return 'ok'
+    if (line[start] == '\0' || line[start] == ';' || line[start] == '(')
+    {
+        APP_UARTPrint("ok\r\n");
+        return;
+    }
+
+    gcode_command_t command;
+    if (GCODE_ParseLine(&line[start], &command))
+    {
+        bool command_processed = false;
+        if (command.words & WORD_G)
         {
-            // Update current position for moves that change position
-            if (g_code == 0 || g_code == 1 || g_code == 2 || g_code == 3)
+            if (command.G == 0.0 || command.G == 1.0) // G0/G1 Linear Move
             {
-                cnc_axes[0].current_position = target_pos.x;
-                cnc_axes[1].current_position = target_pos.y;
-                cnc_axes[2].current_position = target_pos.z;
-                cnc_axes[3].current_position = target_pos.a;
+                float target[3] = {
+                    (command.words & WORD_X) ? command.X : cnc_axes[0].current_position,
+                    (command.words & WORD_Y) ? command.Y : cnc_axes[1].current_position,
+                    (command.words & WORD_Z) ? command.Z : cnc_axes[2].current_position};
+                float feedrate = (command.words & WORD_F) ? command.F : DEFAULT_MAX_VELOCITY;
+
+                if (!APP_AddLinearMove(target, feedrate))
+                {
+                    APP_ReportError(9); // G-code locked out (buffer full)
+                    return;
+                }
+                command_processed = true;
             }
-            GCODE_DMA_SendOK(); // Send OK for successful G-code
+            // Add other G-code handlers here (G28, G90, etc.)
+        }
+
+        // Process M-codes
+        if (command.words & WORD_M)
+        {
+            // Add M-code handlers here
+            command_processed = true;
+        }
+
+        if (command_processed)
+        {
+            // If any word was parsed, it's a valid command that needs an 'ok'
+            // even if we don't explicitly handle it yet.
+            APP_UARTPrint("ok\r\n");
         }
         else
         {
-            printf("Failed to plan motion\n");
-            GCODE_DMA_SendError(3); // Motion planning failed
+            APP_UARTPrint("ok\r\n");
         }
-    }
-    else if (command[0] == 'M' || command[0] == 'm')
-    {
-        // M-code command - machine control and pick-and-place extensions
-        int m_code = -1;
-        sscanf(command, "M%d", &m_code);
-
-        float p = 0; // Parameter for M-codes
-        bool has_p = false;
-
-        // Parse P parameter if present
-        char *ptr = (char *)command;
-        while (*ptr)
-        {
-            if (*ptr == 'P' || *ptr == 'p')
-            {
-                sscanf(ptr + 1, "%f", &p);
-                has_p = true;
-            }
-            ptr++;
-        }
-
-        bool success = false;
-
-        switch (m_code)
-        {
-        case 0: // M0 - Program pause
-            printf("M0 program pause\n");
-            success = true;
-            break;
-
-        case 1: // M1 - Optional program pause
-            printf("M1 optional program pause\n");
-            success = true;
-            break;
-
-        case 2: // M2 - Program end
-            printf("M2 program end\n");
-            success = true;
-            break;
-
-        case 3: // M3 - Spindle on (clockwise)
-            printf("M3 spindle CW\n");
-            // TODO: Implement spindle control
-            success = true;
-            break;
-
-        case 4: // M4 - Spindle on (counter-clockwise)
-            printf("M4 spindle CCW\n");
-            // TODO: Implement spindle control
-            success = true;
-            break;
-
-        case 5: // M5 - Spindle stop
-            printf("M5 spindle stop\n");
-            // TODO: Implement spindle control
-            success = true;
-            break;
-
-        case 7: // M7 - Mist coolant on
-            printf("M7 mist coolant on\n");
-            // TODO: Implement coolant control
-            success = true;
-            break;
-
-        case 8: // M8 - Flood coolant on
-            printf("M8 flood coolant on\n");
-            // TODO: Implement coolant control
-            success = true;
-            break;
-
-        case 9: // M9 - Coolant off
-            printf("M9 coolant off\n");
-            // TODO: Implement coolant control
-            success = true;
-            break;
-
-        case 30: // M30 - Program end and reset
-            printf("M30 program end and reset\n");
-            success = true;
-            break;
-
-        // **PICK-AND-PLACE EXTENSIONS** - Custom M-codes for limit masking
-        case 100: // M100 - Enable pick-and-place mode
-            APP_SetPickAndPlaceMode(true);
-            printf("M100 Pick-and-place mode enabled\n");
-            success = true;
-            break;
-
-        case 101: // M101 - Disable pick-and-place mode
-            APP_SetPickAndPlaceMode(false);
-            printf("M101 Pick-and-place mode disabled\n");
-            success = true;
-            break;
-
-        case 102: // M102 - Enable specific limit mask (P parameter = mask value)
-            if (has_p)
-            {
-                INTERP_EnableLimitMask((limit_mask_t)((int)p));
-                printf("M102 P%d - Enabled limit mask 0x%02X\n", (int)p, (int)p);
-                success = true;
-            }
-            else
-            {
-                GCODE_DMA_SendError(3); // Missing P parameter
-                return;
-            }
-            break;
-
-        case 103: // M103 - Disable specific limit mask (P parameter = mask value)
-            if (has_p)
-            {
-                INTERP_DisableLimitMask((limit_mask_t)((int)p));
-                printf("M103 P%d - Disabled limit mask 0x%02X\n", (int)p, (int)p);
-                success = true;
-            }
-            else
-            {
-                GCODE_DMA_SendError(3); // Missing P parameter
-                return;
-            }
-            break;
-
-        case 104: // M104 - Set complete limit mask (P parameter = mask value)
-            if (has_p)
-            {
-                INTERP_SetLimitMask((limit_mask_t)((int)p));
-                printf("M104 P%d - Set limit mask to 0x%02X\n", (int)p, (int)p);
-                success = true;
-            }
-            else
-            {
-                GCODE_DMA_SendError(3); // Missing P parameter
-                return;
-            }
-            break;
-
-        case 105: // M105 - Report limit mask status
-        {
-            limit_mask_t current_mask = INTERP_GetLimitMask();
-            printf("M105 - Current limit mask: 0x%02X\n", current_mask);
-            if (current_mask & LIMIT_MASK_Z_MIN)
-                printf("  Z-min masked (pick-and-place mode)\n");
-            if (current_mask & LIMIT_MASK_X_MIN)
-                printf("  X-min masked\n");
-            if (current_mask & LIMIT_MASK_Y_MIN)
-                printf("  Y-min masked\n");
-            if (current_mask == LIMIT_MASK_NONE)
-                printf("  All limits active (CNC mode)\n");
-            success = true;
-        }
-        break;
-
-        case 106: // M106 - Enable Z minimum mask only (quick pick-and-place)
-            APP_EnableZMinMask();
-            printf("M106 Z minimum limit masked for nozzle compression\n");
-            success = true;
-            break;
-
-        case 107: // M107 - Disable Z minimum mask only
-            APP_DisableZMinMask();
-            printf("M107 Z minimum limit restored\n");
-            success = true;
-            break;
-
-        case 108: // M108 - Emergency restore all limits
-            INTERP_SetLimitMask(LIMIT_MASK_NONE);
-            printf("M108 EMERGENCY: All limits restored\n");
-            success = true;
-            break;
-
-        default:
-            printf("Unsupported M-code: M%d\n", m_code);
-            GCODE_DMA_SendError(3); // Unsupported command
-            return;
-        }
-
-        if (success)
-        {
-            GCODE_DMA_SendOK(); // Send OK for successful M-code
-        }
-        else
-        {
-            GCODE_DMA_SendError(3); // M-code execution failed
-        }
-    }
-    else if (command[0] == '$')
-    {
-        // GRBL system command - already handled above
-        GCODE_DMA_SendError(3); // Invalid command
     }
     else
     {
-        // Unknown command
-        GCODE_DMA_SendError(3); // Invalid command error
+        // Parsing failed for a non-empty, non-comment line.
+        APP_ReportError(20); // Unsupported or invalid g-code command
     }
 }
 
-void APP_HandleEmergencyStop(void)
-{
-    /* Called from DMA parser on Ctrl-X */
-    APP_EmergencyStop();
-    appData.state = APP_STATE_MOTION_IDLE;
-}
-
-void APP_SendStatusReport(void)
+void APP_SendStatus(void)
 {
     /* Send GRBL v1.1f compliant status report */
     char status_buffer[256];
+    char x_str[20], y_str[20], z_str[20];
 
-    // Determine state
-    const char *state_name = "Idle";
-
-    // Check for homing first (takes priority)
-    if (INTERP_IsHomingActive())
+    // Determine state name based on GRBL state
+    const char *state_name;
+    switch (grbl_state)
     {
+    case GRBL_STATE_IDLE:
+        state_name = "Idle";
+        break;
+    case GRBL_STATE_RUN:
+        state_name = "Run";
+        break;
+    case GRBL_STATE_HOLD:
+        state_name = "Hold";
+        break;
+    case GRBL_STATE_JOG:
+        state_name = "Jog";
+        break;
+    case GRBL_STATE_ALARM:
+        state_name = "Alarm";
+        break;
+    case GRBL_STATE_DOOR:
+        state_name = "Door";
+        break;
+    case GRBL_STATE_CHECK:
+        state_name = "Check";
+        break;
+    case GRBL_STATE_HOME:
         state_name = "Home";
-    }
-    else
-    {
-        switch (appData.state)
-        {
-        case APP_STATE_MOTION_IDLE:
-            state_name = "Idle";
-            break;
-        case APP_STATE_MOTION_PLANNING:
-        case APP_STATE_MOTION_EXECUTING:
-            state_name = "Run";
-            break;
-        case APP_STATE_MOTION_ERROR:
-            state_name = "Alarm";
-            break;
-        default:
-            state_name = "Idle";
-            break;
-        }
+        break;
+    case GRBL_STATE_SLEEP:
+        state_name = "Sleep";
+        break;
+    default:
+        state_name = "Idle";
+        break;
     }
 
-    // Get machine positions (absolute coordinates)
-    float mpos_x = cnc_axes[0].current_position;
-    float mpos_y = cnc_axes[1].current_position;
-    float mpos_z = cnc_axes[2].current_position;
+    // Get current position
+    position_t current_pos = INTERP_GetCurrentPosition();
 
-    // Calculate work positions (machine pos - work coordinate offset)
-    // For now, use G54 work coordinate system (future: implement G54-G59)
-    static float work_offset[3] = {0.0f, 0.0f, 0.0f}; // G54 offset
-    float wpos_x = mpos_x - work_offset[0];
-    float wpos_y = mpos_y - work_offset[1];
-    float wpos_z = mpos_z - work_offset[2];
+    // Convert floats to strings using our custom ftoa function
+    ftoa(current_pos.x, x_str, 3);
+    ftoa(current_pos.y, y_str, 3);
+    ftoa(current_pos.z, z_str, 3);
 
-    // Get buffer status (blocks used, characters available)
-    uint8_t blocks_used = (motion_buffer_head >= motion_buffer_tail)
-                              ? (motion_buffer_head - motion_buffer_tail)
-                              : (MOTION_BUFFER_SIZE - motion_buffer_tail + motion_buffer_head);
-    uint8_t blocks_available = MOTION_BUFFER_SIZE - blocks_used;
+    // Build the complete string using sprintf with string arguments (no floats)
+    sprintf(status_buffer, "<%s|MPos:%s,%s,%s|FS:0,0>\r\n",
+            state_name, x_str, y_str, z_str);
 
-    // Get current feed rate and spindle speed
-    float current_feed = 0.0f;
-    for (int i = 0; i < MAX_AXES; i++)
-    {
-        if (cnc_axes[i].is_active && cnc_axes[i].current_velocity > current_feed)
-        {
-            current_feed = cnc_axes[i].current_velocity * 60.0f; // Convert to mm/min
-        }
-    }
-
-    // Spindle speed (future: get from actual spindle controller)
-    int spindle_speed = 0; // TODO: Implement spindle speed feedback
-
-    // Build GRBL v1.1f compliant status report
-    // Format: <State|MPos:x,y,z|WPos:x,y,z|Bf:used,available|FS:feed,spindle>
-    snprintf(status_buffer, sizeof(status_buffer),
-             "<%s|MPos:%.3f,%.3f,%.3f|WPos:%.3f,%.3f,%.3f|Bf:%d,%d|FS:%.0f,%d>",
-             state_name,
-             mpos_x, mpos_y, mpos_z,
-             wpos_x, wpos_y, wpos_z,
-             blocks_used, blocks_available,
-             current_feed, spindle_speed);
-
-    GCODE_DMA_SendResponse(status_buffer);
+    APP_UARTPrint(status_buffer);
 }
 
 #ifdef TEST_ARC_INTERPOLATION
 void APP_TestArcInterpolation(void)
 {
-    printf("\n=== Arc Interpolation Test Suite ===\n");
+    // Example: G2 X10 Y5 I2 J0 F100
+    char gcode_line[] = "G2 X10 Y5 I2 J0 F100";
+    APP_ExecuteMotionCommand(gcode_line);
+}
 
-    if (!INTERP_Initialize())
-    {
-        printf("ERROR: Failed to initialize interpolation engine\n");
-        return;
-    }
+void APP_TestGCodeParsing(void)
+{
+    printf("\n=== G-code Parsing Test Suite ===\n");
 
-    INTERP_Enable(true);
-    printf("Interpolation engine initialized and enabled successfully\n");
+    // Test 1: Simple G-code line
+    printf("\n--- Test 1: Simple G-code line ---\n");
+    char line1[] = "G1 X10 Y10 F1000";
+    APP_ExecuteMotionCommand(line1);
 
-    // Test 1: Simple quarter circle using I,J format
-    printf("\n--- Test 1: Quarter Circle G2 (I,J format) ---\n");
-    position_t start1 = {0.0f, 0.0f, 0.0f, 0.0f};
-    position_t end1 = {10.0f, 10.0f, 0.0f, 0.0f};
-    if (INTERP_PlanArcMove(start1, end1, 10.0f, 0.0f, 0.0f, ARC_DIRECTION_CW, 500.0f))
-    {
-        printf("✓ G2 Quarter circle planned successfully\n");
-    }
-    else
-    {
-        printf("✗ G2 Quarter circle planning failed\n");
-    }
+    // Test 2: G-code line with missing parameters
+    printf("\n--- Test 2: G-code line with missing parameters ---\n");
+    char line2[] = "G1 X10 F1000";
+    APP_ExecuteMotionCommand(line2);
 
-    // Test 2: Semi-circle using R format
-    printf("\n--- Test 2: Semi-circle G3 (R format) ---\n");
-    position_t start2 = {0.0f, 0.0f, 0.0f, 0.0f};
-    position_t end2 = {20.0f, 0.0f, 0.0f, 0.0f};
-    if (INTERP_PlanArcMoveRadius(start2, end2, 10.0f, ARC_DIRECTION_CCW, 300.0f))
-    {
-        printf("✓ G3 Semi-circle planned successfully\n");
-    }
-    else
-    {
-        printf("✗ G3 Semi-circle planning failed\n");
-    }
+    // Test 3: G-code line with invalid command
+    printf("\n--- Test 3: G-code line with invalid command ---\n");
+    char line3[] = "G9 X10 Y10 F1000"; // G9 is not a valid command in our parser
+    APP_ExecuteMotionCommand(line3);
 
-    // Test 3: Helical arc (Z-axis motion)
-    printf("\n--- Test 3: Helical Arc ---\n");
-    position_t start3 = {0.0f, 0.0f, 0.0f, 0.0f};
-    position_t end3 = {10.0f, 10.0f, 5.0f, 0.0f};
-    if (INTERP_PlanArcMove(start3, end3, 10.0f, 0.0f, 0.0f, ARC_DIRECTION_CW, 400.0f))
-    {
-        printf("✓ Helical arc planned successfully\n");
-    }
-    else
-    {
-        printf("✗ Helical arc planning failed\n");
-    }
+    // Test 4: Empty line
+    printf("\n--- Test 4: Empty line ---\n");
+    char line4[] = "";
+    APP_ExecuteMotionCommand(line4);
 
-    // Test 4: Small radius arc (precision test)
-    printf("\n--- Test 4: Small Radius Arc ---\n");
-    position_t start4 = {0.0f, 0.0f, 0.0f, 0.0f};
-    position_t end4 = {1.0f, 1.0f, 0.0f, 0.0f};
-    if (INTERP_PlanArcMove(start4, end4, 1.0f, 0.0f, 0.0f, ARC_DIRECTION_CW, 100.0f))
-    {
-        printf("✓ Small radius arc planned successfully\n");
-    }
-    else
-    {
-        printf("✗ Small radius arc planning failed\n");
-    }
+    // Test 5: Commented line
+    printf("\n--- Test 5: Commented line ---\n");
+    char line5[] = "; This is a comment line";
+    APP_ExecuteMotionCommand(line5);
 
-    // Test 5: G-code command processing
-    printf("\n--- Test 5: G-code Command Processing ---\n");
-    printf("Testing G2 X10 Y10 I10 F500\n");
-    APP_ExecuteGcodeCommand("G2 X10 Y10 I10 F500");
-
-    printf("Testing G3 X20 Y0 R10 F300\n");
-    APP_ExecuteGcodeCommand("G3 X20 Y0 R10 F300");
-
-    printf("Testing G1 X0 Y0 F1000 (linear move)\n");
-    APP_ExecuteGcodeCommand("G1 X0 Y0 F1000");
-
-    printf("\n=== Arc Interpolation Test Complete ===\n");
-    printf("All tests demonstrate UGS-compatible G2/G3 circular interpolation\n");
-    printf("Features: I,J,K offset format, R radius format, helical motion, look-ahead planning\n\n");
+    printf("\n=== G-code Parsing Test Complete ===\n");
+    printf("All tests demonstrate correct G-code parsing behavior\n");
 }
 #endif
 

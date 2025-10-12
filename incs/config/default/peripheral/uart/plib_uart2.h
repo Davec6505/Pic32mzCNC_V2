@@ -79,14 +79,19 @@ bool UART2_Read( void *buffer, const size_t size );
 
 UART_ERROR UART2_ErrorGet( void );
 
-int UART2_ReadByte( void );
+bool UART2_ReadIsBusy( void );
 
-bool UART2_ReceiverIsReady( void );
+size_t UART2_ReadCountGet( void );
 
-void UART2_WriteByte( int data );
+bool UART2_ReadAbort(void);
 
-bool UART2_TransmitterIsReady( void );
+bool UART2_WriteIsBusy( void );
 
+size_t UART2_WriteCountGet( void );
+
+void UART2_WriteCallbackRegister( UART_CALLBACK callback, uintptr_t context );
+
+void UART2_ReadCallbackRegister( UART_CALLBACK callback, uintptr_t context );
 
 bool UART2_TransmitComplete( void );
 

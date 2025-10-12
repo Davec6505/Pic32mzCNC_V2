@@ -62,8 +62,9 @@ void TIMER_1_InterruptHandler( void );
 void OUTPUT_COMPARE_1_InterruptHandler( void );
 void OUTPUT_COMPARE_4_InterruptHandler( void );
 void OUTPUT_COMPARE_5_InterruptHandler( void );
-void DMA0_InterruptHandler( void );
-void DMA1_InterruptHandler( void );
+void UART2_FAULT_InterruptHandler( void );
+void UART2_RX_InterruptHandler( void );
+void UART2_TX_InterruptHandler( void );
 
 
 

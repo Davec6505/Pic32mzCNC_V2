@@ -122,15 +122,15 @@
 #define DirZ_GetLatch()          ((LATG >> 9) & 0x1U)
 #define DirZ_PIN                  GPIO_PIN_RG9
 
-/*** Macros for LIMIT_X pin ***/
-#define LIMIT_X_Set()               (LATBSET = (1U<<1))
-#define LIMIT_X_Clear()             (LATBCLR = (1U<<1))
-#define LIMIT_X_Toggle()            (LATBINV= (1U<<1))
-#define LIMIT_X_OutputEnable()      (TRISBCLR = (1U<<1))
-#define LIMIT_X_InputEnable()       (TRISBSET = (1U<<1))
-#define LIMIT_X_Get()               ((PORTB >> 1) & 0x1U)
-#define LIMIT_X_GetLatch()          ((LATB >> 1) & 0x1U)
-#define LIMIT_X_PIN                  GPIO_PIN_RB1
+/*** Macros for LIMIT_A_PIN pin ***/
+#define LIMIT_A_PIN_Set()               (LATBSET = (1U<<1))
+#define LIMIT_A_PIN_Clear()             (LATBCLR = (1U<<1))
+#define LIMIT_A_PIN_Toggle()            (LATBINV= (1U<<1))
+#define LIMIT_A_PIN_OutputEnable()      (TRISBCLR = (1U<<1))
+#define LIMIT_A_PIN_InputEnable()       (TRISBSET = (1U<<1))
+#define LIMIT_A_PIN_Get()               ((PORTB >> 1) & 0x1U)
+#define LIMIT_A_PIN_GetLatch()          ((LATB >> 1) & 0x1U)
+#define LIMIT_A_PIN_PIN                  GPIO_PIN_RB1
 
 /*** Macros for SW2 pin ***/
 #define SW2_Set()               (LATBSET = (1U<<0))
@@ -152,43 +152,50 @@
 #define LED2_GetLatch()          ((LATA >> 9) & 0x1U)
 #define LED2_PIN                  GPIO_PIN_RA9
 
-/*** Macros for LIMIT_Y pin ***/
-#define LIMIT_Y_Set()               (LATBSET = (1U<<15))
-#define LIMIT_Y_Clear()             (LATBCLR = (1U<<15))
-#define LIMIT_Y_Toggle()            (LATBINV= (1U<<15))
-#define LIMIT_Y_OutputEnable()      (TRISBCLR = (1U<<15))
-#define LIMIT_Y_InputEnable()       (TRISBSET = (1U<<15))
-#define LIMIT_Y_Get()               ((PORTB >> 15) & 0x1U)
-#define LIMIT_Y_GetLatch()          ((LATB >> 15) & 0x1U)
-#define LIMIT_Y_PIN                  GPIO_PIN_RB15
+/*** Macros for LIMIT_Y_PIN pin ***/
+#define LIMIT_Y_PIN_Set()               (LATBSET = (1U<<15))
+#define LIMIT_Y_PIN_Clear()             (LATBCLR = (1U<<15))
+#define LIMIT_Y_PIN_Toggle()            (LATBINV= (1U<<15))
+#define LIMIT_Y_PIN_OutputEnable()      (TRISBCLR = (1U<<15))
+#define LIMIT_Y_PIN_InputEnable()       (TRISBSET = (1U<<15))
+#define LIMIT_Y_PIN_Get()               ((PORTB >> 15) & 0x1U)
+#define LIMIT_Y_PIN_GetLatch()          ((LATB >> 15) & 0x1U)
+#define LIMIT_Y_PIN_PIN                  GPIO_PIN_RB15
 
-/*** Macros for LIMIT_Z pin ***/
-#define LIMIT_Z_Set()               (LATFSET = (1U<<4))
-#define LIMIT_Z_Clear()             (LATFCLR = (1U<<4))
-#define LIMIT_Z_Toggle()            (LATFINV= (1U<<4))
-#define LIMIT_Z_OutputEnable()      (TRISFCLR = (1U<<4))
-#define LIMIT_Z_InputEnable()       (TRISFSET = (1U<<4))
-#define LIMIT_Z_Get()               ((PORTF >> 4) & 0x1U)
-#define LIMIT_Z_GetLatch()          ((LATF >> 4) & 0x1U)
-#define LIMIT_Z_PIN                  GPIO_PIN_RF4
+/*** Macros for LIMIT_X_PIN pin ***/
+#define LIMIT_X_PIN_Set()               (LATFSET = (1U<<3))
+#define LIMIT_X_PIN_Clear()             (LATFCLR = (1U<<3))
+#define LIMIT_X_PIN_Toggle()            (LATFINV= (1U<<3))
+#define LIMIT_X_PIN_OutputEnable()      (TRISFCLR = (1U<<3))
+#define LIMIT_X_PIN_InputEnable()       (TRISFSET = (1U<<3))
+#define LIMIT_X_PIN_Get()               ((PORTF >> 3) & 0x1U)
+#define LIMIT_X_PIN_GetLatch()          ((LATF >> 3) & 0x1U)
+#define LIMIT_X_PIN_PIN                  GPIO_PIN_RF3
 
-/*** Macros for PulseX pin (OCR1 controlled) ***/
+/*** Macros for LIMIT_Z_PIN pin ***/
+#define LIMIT_Z_PIN_Set()               (LATFSET = (1U<<4))
+#define LIMIT_Z_PIN_Clear()             (LATFCLR = (1U<<4))
+#define LIMIT_Z_PIN_Toggle()            (LATFINV= (1U<<4))
+#define LIMIT_Z_PIN_OutputEnable()      (TRISFCLR = (1U<<4))
+#define LIMIT_Z_PIN_InputEnable()       (TRISFSET = (1U<<4))
+#define LIMIT_Z_PIN_Get()               ((PORTF >> 4) & 0x1U)
+#define LIMIT_Z_PIN_GetLatch()          ((LATF >> 4) & 0x1U)
+#define LIMIT_Z_PIN_PIN                  GPIO_PIN_RF4
+
+/*** Macros for PulseX pin ***/
 #define PulseX_Get()               ((PORTD >> 4) & 0x1U)
 #define PulseX_GetLatch()          ((LATD >> 4) & 0x1U)
 #define PulseX_PIN                  GPIO_PIN_RD4
-// Note: PulseX is controlled by OCMP1, not regular GPIO
 
-/*** Macros for PulseY pin (OCR4 controlled) ***/
+/*** Macros for PulseY pin ***/
 #define PulseY_Get()               ((PORTD >> 5) & 0x1U)
 #define PulseY_GetLatch()          ((LATD >> 5) & 0x1U)
 #define PulseY_PIN                  GPIO_PIN_RD5
-// Note: PulseY is controlled by OCMP4, not regular GPIO
 
-/*** Macros for PulseZ pin (OCR5 controlled) ***/
+/*** Macros for PulseZ pin ***/
 #define PulseZ_Get()               ((PORTF >> 0) & 0x1U)
 #define PulseZ_GetLatch()          ((LATF >> 0) & 0x1U)
 #define PulseZ_PIN                  GPIO_PIN_RF0
-// Note: PulseZ is controlled by OCMP5, not regular GPIO
 
 /*** Macros for DirY pin ***/
 #define DirY_Set()               (LATESET = (1U<<2))
