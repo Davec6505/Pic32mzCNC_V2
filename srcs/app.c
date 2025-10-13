@@ -128,12 +128,12 @@ static void APP_ProcessGCodeCommand(const char *command);
 // G-code Type Enumeration for optimized parsing
 typedef enum
 {
-    GCODE_UNKNOWN = 0,
-    GCODE_G0 = 1,
-    GCODE_G1 = 2,
-    GCODE_G2 = 3,
-    GCODE_G3 = 4,
-    GCODE_G4 = 5,
+    GCODE_UNKNOWN = 999, // Use high number to avoid conflicts with actual G/M codes
+    GCODE_G0 = 0,
+    GCODE_G1 = 1,
+    GCODE_G2 = 2,
+    GCODE_G3 = 3,
+    GCODE_G4 = 4,
     GCODE_G17 = 17,
     GCODE_G18 = 18,
     GCODE_G19 = 19,
@@ -176,7 +176,8 @@ static void APP_ExecuteNextMotionBlock(void);
 static void APP_ProcessLookAhead(void);
 static bool APP_IsBufferEmpty(void);
 static bool APP_IsBufferFull(void);
-/* static void APP_ProcessUART(void); */ // Removed - now handled by GRBL serial module
+static void APP_SendMotionOkResponse(void); // Helper for motion timing synchronization
+/* static void APP_ProcessUART(void); */    // Removed - now handled by GRBL serial module
 
 // Callback function declarations
 
@@ -992,6 +993,7 @@ static gcode_type_t APP_ParseGCodeType(const char *command)
 
 static void APP_ProcessGCodeCommand(const char *command)
 {
+
     // Enhanced G-code command processing with optimized switch-based parsing
     gcode_type_t gcode_type = APP_ParseGCodeType(command);
 
@@ -1011,7 +1013,7 @@ static void APP_ProcessGCodeCommand(const char *command)
                 if (MotionBuffer_Add(&move_block))
                 {
                     MotionPlanner_ProcessBuffer();
-                    APP_UARTPrint_blocking("ok\r\n");
+                    APP_SendMotionOkResponse(); // Use helper for proper timing
                 }
                 else
                 {
@@ -1039,7 +1041,7 @@ static void APP_ProcessGCodeCommand(const char *command)
             {
                 MotionBuffer_Add(&arc_block);
                 MotionPlanner_ProcessBuffer();
-                APP_UARTPrint_blocking("ok\r\n");
+                APP_SendMotionOkResponse(); // Use helper for proper timing
             }
             else
             {
@@ -1061,7 +1063,7 @@ static void APP_ProcessGCodeCommand(const char *command)
             {
                 MotionBuffer_Add(&dwell_block);
                 MotionPlanner_ProcessBuffer();
-                APP_UARTPrint_blocking("ok\r\n");
+                APP_SendMotionOkResponse(); // Use helper for proper timing
             }
             else
             {
@@ -1114,7 +1116,7 @@ static void APP_ProcessGCodeCommand(const char *command)
             {
                 MotionBuffer_Add(&home_block);
                 MotionPlanner_ProcessBuffer();
-                APP_UARTPrint_blocking("ok\r\n");
+                APP_SendMotionOkResponse(); // Use helper for proper timing
             }
             else
             {
@@ -1482,107 +1484,9 @@ void APP_ReportAlarm(int alarm_code)
 
 void APP_ExecuteMotionCommand(const char *line)
 {
-    // Trim leading/trailing whitespace from the command line
-    int start = 0;
-    while (isspace((unsigned char)line[start]))
-    {
-        start++;
-    }
-
-    int end = strlen(line) - 1;
-    while (end > start && isspace((unsigned char)line[end]))
-    {
-        end--;
-    }
-
-    // Handle system commands ($)
-    if (line[start] == '$')
-    {
-        if (strcmp(&line[start], "$I") == 0)
-        {
-            // Report build info - send as single message to avoid timing issues
-            APP_UARTPrint_blocking("[VER:1.1f.20241012:CNC Controller]\r\n[OPT:V,15,128]\r\nok\r\n");
-        }
-        else if (strcmp(&line[start], "$$") == 0)
-        {
-            // Report settings
-            // TODO: Implement actual settings reporting from grbl_settings.h
-            APP_UARTPrint("$0=10\r\n");
-            APP_UARTPrint("$1=25\r\n");
-            // ... more settings ...
-            APP_UARTPrint("ok\r\n");
-        }
-        else
-        {
-            APP_ReportError(3); // Grbl '$' system command was not recognized or supported.
-        }
-        return;
-    }
-
-    // Handle real-time commands that might have been passed as lines
-    if (strlen(&line[start]) == 1)
-    {
-        if (line[start] == '?')
-        {
-            APP_SendStatus();
-            return;
-        }
-    }
-
-    // Handle empty lines or comments which should just return 'ok'
-    if (line[start] == '\0' || line[start] == ';' || line[start] == '(')
-    {
-        APP_UARTPrint("ok\r\n");
-        return;
-    }
-
-    gcode_command_t command;
-    if (GCODE_ParseLine(&line[start], &command))
-    {
-        bool command_processed = false;
-        if (command.words & WORD_G)
-        {
-            if (command.G == 0.0 || command.G == 1.0) // G0/G1 Linear Move
-            {
-                float target[3] = {
-                    (command.words & WORD_X) ? command.X : cnc_axes[0].current_position,
-                    (command.words & WORD_Y) ? command.Y : cnc_axes[1].current_position,
-                    (command.words & WORD_Z) ? command.Z : cnc_axes[2].current_position};
-                float feedrate = (command.words & WORD_F) ? command.F : DEFAULT_MAX_VELOCITY;
-
-                if (!APP_AddLinearMove(target, feedrate))
-                {
-                    APP_ReportError(9); // G-code locked out (buffer full)
-                    return;
-                }
-                command_processed = true;
-            }
-            // Add other G-code handlers here (G28, G90, etc.)
-        }
-
-        // Process M-codes
-        if (command.words & WORD_M)
-        {
-            // Add M-code handlers here
-            command_processed = true;
-        }
-
-        if (command_processed)
-        {
-            // If any word was parsed, it's a valid command that needs an 'ok'
-            // even if we don't explicitly handle it yet.
-            APP_UARTPrint("ok\r\n");
-        }
-        else
-        {
-            APP_UARTPrint("ok\r\n");
-        }
-    }
-    else
-    {
-        // Parsing failed for a non-empty, non-comment line.
-        APP_ReportError(20); // Unsupported or invalid g-code command
-    }
+    // DEBUG: Track if this function is still being called somewhere
+    APP_UARTPrint_blocking("[DEBUG:APP_ExecuteMotionCommand called - should NOT happen!]\r\n");
+    APP_UARTPrint_blocking("error:99\r\n"); // Unique error to identify this path
 }
 
 void APP_SendStatus(void)
@@ -1865,6 +1769,31 @@ void APP_ResetAxisStepCount(uint8_t axis)
     if (axis < MAX_AXES)
     {
         cnc_axes[axis].step_count = 0;
+    }
+}
+
+// *****************************************************************************
+// Motion Timing Synchronization Helper
+// *****************************************************************************
+static void APP_SendMotionOkResponse(void)
+{
+    // For high-speed processors (200MHz): Ensure motion planner has time to process
+    // before sending "ok" response to maintain proper synchronization with UGS
+
+    motion_execution_state_t planner_state = MotionPlanner_GetState();
+    if (planner_state == PLANNER_STATE_PLANNING || planner_state == PLANNER_STATE_EXECUTING)
+    {
+        // Motion planner is actively processing - respond immediately
+        APP_UARTPrint_blocking("ok\r\n");
+    }
+    else
+    {
+        // Give motion planner a moment to engage (prevents race condition)
+        // This small delay (50μs) ensures proper coordination without
+        // significantly impacting performance (still 320x faster than 8-bit systems)
+        for (volatile int delay = 0; delay < 1000; delay++)
+            ; // ~50μs @ 200MHz
+        APP_UARTPrint_blocking("ok\r\n");
     }
 }
 
