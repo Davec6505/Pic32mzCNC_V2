@@ -23,6 +23,7 @@
 // *****************************************************************************
 
 #include "motion_buffer.h"
+#include <stdio.h>
 #include <string.h>
 
 // *****************************************************************************
@@ -82,6 +83,14 @@ bool MotionBuffer_Add(motion_block_t *block)
 
     // Advance head pointer
     motion_buffer_head = (motion_buffer_head + 1) % MOTION_BUFFER_SIZE;
+
+    // Simple debug: show buffer state after add (disabled for UGS)
+    /*
+    extern void APP_UARTPrint_blocking(const char *message);
+    char debug_msg[64];
+    sprintf(debug_msg, "[BUF_ADD] head=%d tail=%d\r\n", motion_buffer_head, motion_buffer_tail);
+    APP_UARTPrint_blocking(debug_msg);
+    */
 
     return true;
 }

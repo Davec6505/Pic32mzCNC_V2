@@ -66,11 +66,10 @@ int main(void)
     /* GRBL_Tasks(); */ // Temporarily disabled to test direct UART handling
 
     /* Maintain the application's state machine. */
-    APP_Tasks();
+     APP_Tasks();  // Temporarily disabled - causing system hang
   }
 
-  /* Execution should not come here during normal operation */
-  return (EXIT_FAILURE);
+  return EXIT_FAILURE;
 }
 
 /*******************************************************************************

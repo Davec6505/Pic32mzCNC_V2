@@ -27,6 +27,7 @@
 
 #include "motion_planner.h"
 #include "motion_gcode_parser.h"
+#include "interpolation_engine.h"
 #include "peripheral/ocmp/plib_ocmp1.h"
 #include "peripheral/ocmp/plib_ocmp4.h"
 #include "peripheral/ocmp/plib_ocmp5.h"
@@ -36,6 +37,7 @@
 #include "peripheral/coretimer/plib_coretimer.h"
 #include <math.h>
 #include <string.h>
+#include <stdio.h>
 
 // *****************************************************************************
 // *****************************************************************************
@@ -46,6 +48,25 @@
 // Motion planner state
 static motion_execution_state_t execution_state = PLANNER_STATE_IDLE;
 static float default_acceleration = ACCELERATION_DEFAULT;
+
+// Simple position tracking (replacing faulty interpolation engine)
+static position_t current_position = {0.0f, 0.0f, 0.0f, 0.0f};
+static position_t target_position = {0.0f, 0.0f, 0.0f, 0.0f};
+
+// Simple position interpolation function
+static void UpdatePosition(float progress)
+{
+    // Linear interpolation from current to target position
+    current_position.x = current_position.x + (target_position.x - current_position.x) * progress;
+    current_position.y = current_position.y + (target_position.y - current_position.y) * progress;
+    current_position.z = current_position.z + (target_position.z - current_position.z) * progress;
+}
+
+// External interface for status reporting
+position_t MotionPlanner_GetCurrentPosition(void)
+{
+    return current_position;
+}
 static motion_planner_stats_t statistics;
 
 // Current motion execution variables
@@ -120,7 +141,7 @@ uint32_t MotionPlanner_CalculateOCRPeriod(float velocity_mm_min)
   Summary:
     Updates OCR periods for all axes based on current velocities.
 *******************************************************************************/
-static void UpdateAxisOCRPeriods(void)
+static void __attribute__((unused)) UpdateAxisOCRPeriods(void)
 {
     uint32_t y_period = MotionPlanner_CalculateOCRPeriod(current_axis_velocities[1]); // Y-axis = OCMP1
     uint32_t x_period = MotionPlanner_CalculateOCRPeriod(current_axis_velocities[0]); // X-axis = OCMP4
@@ -159,6 +180,9 @@ static void UpdateAxisOCRPeriods(void)
         TMR3_PeriodSet(x_period);
         OCMP4_CompareValueSet(100);               // Short pulse width for step signals
         OCMP4_CompareSecondaryValueSet(x_period); // Period
+
+        // Enable output compare for X-axis
+        OCMP4_Enable();
     }
 
     // Z-axis (OCMP5 + TMR4)
@@ -185,34 +209,30 @@ void MotionPlanner_Initialize(void)
 
     // Clear statistics
     memset(&statistics, 0, sizeof(motion_planner_stats_t));
+
+    // Initialize interpolation engine for position tracking
+    extern bool INTERP_Initialize(void);
+    extern void INTERP_Enable(bool enable);
+    INTERP_Initialize();
+    INTERP_Enable(true);
 }
 
 void MotionPlanner_ProcessBuffer(void)
 {
-    motion_block_t *current_block = MotionBuffer_GetNext();
-    if (current_block == NULL)
+    // This function is called when new blocks are added to trigger planning
+    // But it should NOT consume blocks - that's done by MotionPlanner_UpdateTrajectory()
+
+    // Just check if we have blocks to process and set state
+    if (!MotionBuffer_IsEmpty())
+    {
+        execution_state = PLANNER_STATE_PLANNING;
+        // The actual block consumption and execution happens in MotionPlanner_UpdateTrajectory()
+    }
+    else
     {
         execution_state = PLANNER_STATE_IDLE;
-        return; // No blocks to process
-    }
-
-    execution_state = PLANNER_STATE_PLANNING;
-
-    // Calculate motion parameters
-    MotionPlanner_CalculateDistance(current_block);
-    MotionPlanner_OptimizeVelocityProfile(current_block);
-
-    // Start motion execution
-    MotionPlanner_ExecuteBlock(current_block);
-
-    // Update statistics
-    statistics.blocks_processed++;
-    if (current_block->max_velocity > statistics.peak_velocity)
-    {
-        statistics.peak_velocity = current_block->max_velocity;
     }
 }
-
 void MotionPlanner_CalculateDistance(motion_block_t *block)
 {
     if (block == NULL)
@@ -411,114 +431,13 @@ float MotionPlanner_GetAcceleration(void)
     return default_acceleration;
 }
 
-void MotionPlanner_UpdateTrajectory(void)
-{
-    // Real-time trajectory calculations called at 1kHz from Core Timer
-
-    // Get the current motion block if we don't have one
-    if (current_motion_block == NULL)
-    {
-        current_motion_block = MotionBuffer_GetNext();
-        if (current_motion_block == NULL)
-        {
-            // No motion blocks available - stop all axes
-            for (int i = 0; i < MAX_AXES; i++)
-            {
-                current_axis_velocities[i] = 0.0f;
-            }
-            UpdateAxisOCRPeriods();
-            return;
-        }
-    }
-
-    // Calculate current velocities for each axis based on acceleration profile
-    motion_execution_timer++;
-
-    if (motion_execution_timer < current_motion_block->duration * 1000.0f)
-    {
-        // Still executing current block
-        float progress = motion_execution_timer / (current_motion_block->duration * 1000.0f);
-
-        // Calculate velocity profile with basic acceleration/deceleration
-        float current_velocity;
-        float accel_time = 0.5f; // 50% of time for acceleration/deceleration
-
-        if (progress < accel_time)
-        {
-            // Acceleration phase
-            current_velocity = current_motion_block->max_velocity * (progress / accel_time);
-        }
-        else if (progress > (1.0f - accel_time))
-        {
-            // Deceleration phase
-            float decel_progress = (progress - (1.0f - accel_time)) / accel_time;
-            current_velocity = current_motion_block->max_velocity * (1.0f - decel_progress);
-        }
-        else
-        {
-            // Constant velocity phase
-            current_velocity = current_motion_block->max_velocity;
-        }
-
-        // Calculate individual axis velocities based on motion direction
-        motion_parser_state_t parser_state = MotionGCodeParser_GetState();
-
-        for (int i = 0; i < MAX_AXES; i++)
-        {
-            // Calculate the distance this axis needs to move
-            float axis_distance = current_motion_block->target_pos[i] - parser_state.current_position[i];
-
-            if (fabsf(axis_distance) > 0.001f) // Axis is moving (with small tolerance)
-            {
-                current_axis_velocities[i] = current_velocity;
-            }
-            else
-            {
-                current_axis_velocities[i] = 0.0f; // Axis not moving
-            }
-        }
-
-        // Update OCR periods for all axes
-        UpdateAxisOCRPeriods();
-
-        // Update statistics
-        statistics.average_velocity = current_velocity;
-    }
-    else
-    {
-        // Block completed, move to next
-        MotionBuffer_Complete();
-        current_motion_block = NULL;
-        motion_execution_timer = 0;
-        statistics.blocks_processed++;
-
-        // Stop all axes momentarily between blocks
-        for (int i = 0; i < MAX_AXES; i++)
-        {
-            current_axis_velocities[i] = 0.0f;
-        }
-        UpdateAxisOCRPeriods();
-    }
-}
-
 void MotionPlanner_UpdateAxisPosition(uint8_t axis, int32_t position)
 {
-    // Position feedback from OCR interrupts
     if (axis < MAX_AXES)
     {
         axis_positions[axis] = position;
-
-        // TODO: Add position error checking here
-        // Could compare with expected position from trajectory
-        // and trigger alarms if position error exceeds threshold
     }
 }
-
-// *****************************************************************************
-// *****************************************************************************
-// Section: Motion System Getter/Setter Function Implementations
-// *****************************************************************************
-// *****************************************************************************
 
 float MotionPlanner_GetCurrentVelocity(uint8_t axis)
 {
@@ -529,80 +448,122 @@ float MotionPlanner_GetCurrentVelocity(uint8_t axis)
     return 0.0f;
 }
 
-void MotionPlanner_SetCurrentVelocity(uint8_t axis, float velocity)
+void MotionPlanner_UpdateTrajectory(void)
 {
-    if (axis < MAX_AXES)
-    {
-        current_axis_velocities[axis] = velocity;
+    // Call interpolation engine tasks - this processes motion and updates positions
+    extern void INTERP_Tasks(void);
+    INTERP_Tasks();
 
-        // Update OCR periods when velocity changes
-        UpdateAxisOCRPeriods();
+    // Debug: Check position after INTERP_Tasks (reduced frequency for UGS compatibility)
+    static uint16_t position_check_counter = 0;
+    position_check_counter++;
+    // Position check disabled for UGS clean protocol
+    /*
+    if (position_check_counter % 1000 == 0) // Check every 1000ms (1 second) instead of 100ms
+    {
+        position_t current_pos = GetCurrentPosition(); // Use our simple position tracking
+        char pos_debug[128];
+        sprintf(pos_debug, "[MP_POS_CHECK] X=%.3f Y=%.3f Z=%.3f\r\n",
+                current_pos.x, current_pos.y, current_pos.z);
+        APP_UARTPrint(pos_debug);
     }
-}
+    */
 
-int32_t MotionPlanner_GetAxisPosition(uint8_t axis)
-{
-    if (axis < MAX_AXES)
+    // Try to get a new motion block if idle
+    if (current_motion_block == NULL)
     {
-        return axis_positions[axis];
-    }
-    return 0;
-}
+        // Add counter to reduce debug spam
+        static uint16_t debug_counter = 0;
+        debug_counter++;
 
-void MotionPlanner_SetAxisPosition(uint8_t axis, int32_t position)
-{
-    if (axis < MAX_AXES)
-    {
-        axis_positions[axis] = position;
-    }
-}
+        current_motion_block = MotionBuffer_GetNext();
 
-bool MotionPlanner_IsAxisActive(uint8_t axis)
-{
-    // This function would need access to hardware layer axis state
-    // For now, check if there's current velocity
-    if (axis < MAX_AXES)
-    {
-        return (current_axis_velocities[axis] > 0.0f);
-    }
-    return false;
-}
-
-void MotionPlanner_SetAxisActive(uint8_t axis, bool active)
-{
-    if (axis < MAX_AXES)
-    {
-        if (!active)
+        if (current_motion_block != NULL)
         {
-            // Stop the axis by setting velocity to zero
-            current_axis_velocities[axis] = 0.0f;
-            UpdateAxisOCRPeriods();
+            // New block received! (debug disabled for UGS)
+            /*
+            char debug_msg[128];
+            sprintf(debug_msg, "[MP_NEW_BLOCK] X=%.1f Y=%.1f Z=%.1f dur=%.3fs\r\n",
+                    current_motion_block->target_pos[0],
+                    current_motion_block->target_pos[1],
+                    current_motion_block->target_pos[2],
+                    current_motion_block->duration);
+            APP_UARTPrint(debug_msg);
+            */
+
+            // Set up simple position tracking (replacing faulty interpolation engine)
+            target_position.x = current_motion_block->target_pos[0];
+            target_position.y = current_motion_block->target_pos[1];
+            target_position.z = current_motion_block->target_pos[2];
+
+            // Debug output disabled for UGS compatibility
+            /*
+            position_t start_pos = GetCurrentPosition();
+            char pos_debug[128];
+            sprintf(pos_debug, "[MP_SIMPLE] Start: X=%.3f Y=%.3f Z=%.3f -> Target: X=%.3f Y=%.3f Z=%.3f\r\n",
+                    start_pos.x, start_pos.y, start_pos.z,
+                    target_position.x, target_position.y, target_position.z);
+            APP_UARTPrint(pos_debug);
+            */
+
+            motion_execution_timer = 0; // Reset timer for the new block
         }
-        // Note: Setting active=true would require starting motion
-        // which should be done through normal motion planning
+        else
+        {
+            // DEBUG: Disabled for UGS compatibility - too much output
+            // APP_UARTPrint("[MP_DEBUG] No blocks available\r\n");
+        }
     }
-}
 
-uint32_t MotionPlanner_GetAxisStepCount(uint8_t axis)
-{
-    // This would need to interface with hardware layer
-    // For now, return a calculated value based on position
-    if (axis < MAX_AXES)
+    // If we have a block, process its trajectory
+    if (current_motion_block != NULL)
     {
-        return (uint32_t)abs(axis_positions[axis]);
-    }
-    return 0;
-}
+        motion_execution_timer++;
+        float total_duration_ms = current_motion_block->duration * 1000.0f;
 
-void MotionPlanner_ResetAxisStepCount(uint8_t axis)
-{
-    // This would interface with hardware layer to reset step counters
-    // For now, we'll reset position (though this should be done carefully)
-    if (axis < MAX_AXES)
-    {
-        // Note: Resetting position should be done with caution
-        // Usually only during homing or coordinate system reset
-        // axis_positions[axis] = 0;  // Commented for safety
+        if (motion_execution_timer < total_duration_ms)
+        {
+            // Still executing current block - update position
+            float progress = (float)motion_execution_timer / total_duration_ms;
+            UpdatePosition(progress);
+
+            // Debug position update every 20ms (DISABLED for UGS compatibility)
+            /*
+            static uint16_t pos_update_counter = 0;
+            pos_update_counter++;
+            if (pos_update_counter % 20 == 0)
+            {
+                char prog_debug[128];
+                sprintf(prog_debug, "[MP_PROGRESS] %.1f%% X=%.3f Y=%.3f Z=%.3f\r\n",
+                        progress * 100.0f, current_position.x, current_position.y, current_position.z);
+                APP_UARTPrint(prog_debug);
+            }
+            */
+        }
+        else
+        {
+            // Motion for this block is complete (debug disabled for UGS)
+            /*
+            char debug_msg[128];
+            sprintf(debug_msg, "[MP_BLOCK_DONE] timer=%d duration_ms=%.1f\r\n",
+                    motion_execution_timer, total_duration_ms);
+            APP_UARTPrint(debug_msg);
+            */
+
+            // Ensure we reach the exact target position
+            current_position = target_position;
+            /*
+            sprintf(debug_msg, "[MP_FINAL_POS] X=%.3f Y=%.3f Z=%.3f\r\n",
+                    current_position.x, current_position.y, current_position.z);
+            APP_UARTPrint(debug_msg);
+            */
+
+            // Mark the block as complete in the buffer
+            MotionBuffer_Complete();
+
+            // Set planner to idle, ready for the next block
+            current_motion_block = NULL;
+        }
     }
 }
 

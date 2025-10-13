@@ -48,6 +48,10 @@
 // Public function prototypes
 void APP_UARTPrint_blocking(const char *str);
 void APP_UARTPrint(const char *str);
+
+// Debug counters (accessible from motion_planner.c)
+extern uint32_t app_init_counter;
+extern uint32_t uart_callback_counter;
 void APP_UARTWrite_nonblocking(const char *str); // New non-blocking write
 bool APP_AddLinearMove(float *target, float feedrate);
 bool APP_AddRapidMove(float *target);

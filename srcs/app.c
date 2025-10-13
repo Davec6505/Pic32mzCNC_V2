@@ -74,6 +74,10 @@
     Application strings and buffers are be defined outside this structure.
 */
 
+// Global counter to verify APP_Initialize was called
+uint32_t app_init_counter = 0;
+uint32_t uart_callback_counter = 0;
+
 APP_DATA appData;
 
 // TIMER1 ISSUE DOCUMENTED:
@@ -87,6 +91,7 @@ cnc_axis_t cnc_axes[MAX_AXES];
 
 // UART callback data
 static uint8_t uart_rx_char;
+volatile uint32_t uart_callback_count = 0;
 
 // Buffer for line commands (non-? characters)
 #define LINE_BUFFER_SIZE 256
@@ -153,6 +158,9 @@ static bool APP_IsBufferFull(void);
 
 void APP_Initialize(void)
 {
+    // Increment counter to prove this function ran
+    app_init_counter = 42; // Distinctive value
+
     /* Place the App state machine in its initial state. */
     appData.state = APP_STATE_INIT;
 
@@ -188,9 +196,26 @@ void APP_Initialize(void)
 
     // Setup simple UART callback for immediate real-time command handling
     UART2_ReadCallbackRegister(APP_UART_Callback, (uintptr_t)NULL);
-    UART2_Read(&uart_rx_char, 1);
 
-    // Removed automatic welcome message - UGS expects clean handshake
+    // CRITICAL: Enable UART2 RX interrupt - disabled by UART2_Initialize()
+    IEC4SET = _IEC4_U2RXIE_MASK;
+
+    // Start the first read - this should now work with interrupt enabled
+    // Debug: Check if initial read was successful (disabled for UGS)
+    /*
+    bool read_success = UART2_Read(&uart_rx_char, 1);
+    if (read_success)
+    {
+        APP_UARTPrint("UART2_Read() started successfully\r\n");
+    }
+    else
+    {
+        APP_UARTPrint("ERROR: UART2_Read() failed to start\r\n");
+    }
+    */
+
+    // Start UART read without debug output
+    UART2_Read(&uart_rx_char, 1); // Removed automatic welcome message - UGS expects clean handshake
     // APP_UARTPrint_blocking("Grbl 1.1f ['$' for help]\r\n");
 }
 
@@ -524,12 +549,6 @@ static void APP_ExecuteNextMotionBlock(void)
         return;
     }
 
-    // DEBUG: Print motion block details
-    char debug_msg[256];
-    sprintf(debug_msg, "[MOTION_BLOCK] Target: %.3f,%.3f,%.3f Feed:%.1f\r\n",
-            block->target_pos[0], block->target_pos[1], block->target_pos[2], block->feedrate);
-    APP_UARTPrint(debug_msg);
-
     /* Setup axes for movement */
     for (int i = 0; i < MAX_AXES; i++)
     {
@@ -544,11 +563,6 @@ static void APP_ExecuteNextMotionBlock(void)
             cnc_axes[i].motion_state = AXIS_ACCEL;
             cnc_axes[i].is_active = true;
             cnc_axes[i].step_count = 0;
-
-            // DEBUG: Print axis activation
-            sprintf(debug_msg, "[AXIS_ACTIVE] Axis %d: target=%d current=%d\r\n",
-                    i, target_pos, cnc_axes[i].current_position);
-            APP_UARTPrint(debug_msg);
 
             /* Set direction */
             cnc_axes[i].direction_forward = (target_pos > cnc_axes[i].current_position);
@@ -717,6 +731,9 @@ static void APP_ProcessUART(void)
 
 static void APP_UART_Callback(uintptr_t context)
 {
+    // Count callbacks to verify this function is being called
+    uart_callback_counter++;
+
     // Check for UART errors first
     if (UART2_ErrorGet() == UART_ERROR_NONE)
     {
@@ -917,16 +934,39 @@ static void APP_PrintParserState(void)
 static void APP_ProcessGCodeCommand(const char *command)
 {
     // Enhanced G-code command processing with motion planning buffer integration
+    // Debug output disabled for UGS clean protocol
+    /*
+    APP_UARTPrint_blocking("[DEBUG: Processing G-code: ");
+    APP_UARTPrint_blocking(command);
+    APP_UARTPrint_blocking("]\r\n");
+    */
+
     if (strncmp(command, "G0", 2) == 0 || strncmp(command, "G1", 2) == 0)
     {
+        // APP_UARTPrint_blocking("[DEBUG: G0/G1 detected]\r\n");
         // Check if motion buffer has space before adding new move
         if (MotionBuffer_HasSpace())
         {
+            // APP_UARTPrint_blocking("[DEBUG: Motion buffer has space]\r\n");
             motion_block_t move_block;
             if (MotionGCodeParser_ParseMove(command, &move_block))
             {
+                // APP_UARTPrint_blocking("[DEBUG: Parse successful, adding to buffer]\r\n");
+
+                // Calculate distance and duration for the motion block
+                MotionPlanner_CalculateDistance(&move_block);
+
                 // Successfully parsed, add to motion buffer
-                MotionBuffer_Add(&move_block);
+                // APP_UARTPrint_blocking("[DEBUG: About to call MotionBuffer_Add]\r\n");
+                bool add_result = MotionBuffer_Add(&move_block);
+                if (add_result)
+                {
+                    // APP_UARTPrint_blocking("[DEBUG: MotionBuffer_Add succeeded]\r\n");
+                }
+                else
+                {
+                    // APP_UARTPrint_blocking("[DEBUG: MotionBuffer_Add FAILED]\r\n");
+                }
                 // Start motion processing
                 MotionPlanner_ProcessBuffer();
                 APP_UARTPrint_blocking("ok\r\n");
@@ -934,12 +974,14 @@ static void APP_ProcessGCodeCommand(const char *command)
             else
             {
                 // Parse error
+                // APP_UARTPrint_blocking("[DEBUG: Parse failed]\r\n");
                 APP_UARTPrint_blocking("error:33\r\n"); // Invalid gcode ID:33
             }
         }
         else
         {
             // Buffer full - UGS/GRBL will wait for space
+            // APP_UARTPrint_blocking("[DEBUG: Motion buffer full]\r\n");
             APP_UARTPrint_blocking("error:14\r\n"); // Motion buffer overflow
         }
     }
@@ -1490,8 +1532,6 @@ void APP_SendStatus(void)
 {
     /* Send GRBL v1.1f compliant status report with enhanced feedback */
     char status_buffer[512];
-    char x_str[20], y_str[20], z_str[20];
-    char vel_str[20], feed_str[20];
 
     // Determine state name based on GRBL state
     const char *state_name;
@@ -1529,28 +1569,22 @@ void APP_SendStatus(void)
         break;
     }
 
-    // Get current position from interpolation engine
-    position_t current_pos = INTERP_GetCurrentPosition();
+    // Get current position from motion planner (replacing faulty interpolation engine)
+    extern position_t MotionPlanner_GetCurrentPosition(void);
+    position_t current_pos = MotionPlanner_GetCurrentPosition();
 
     // Get motion planner statistics for enhanced feedback
     float current_velocity = MotionPlanner_GetCurrentVelocity(0); // Use X-axis velocity as representative
     float feed_rate = 100.0f;                                     // Default feed rate - could be retrieved from settings
-
-    // Convert floats to strings using our custom ftoa function
-    ftoa(current_pos.x, x_str, 3);
-    ftoa(current_pos.y, y_str, 3);
-    ftoa(current_pos.z, z_str, 3);
-    ftoa(current_velocity, vel_str, 1);
-    ftoa(feed_rate, feed_str, 0);
 
     // Get step counts for detailed feedback
     uint32_t x_steps = APP_GetAxisStepCount(0);
     uint32_t y_steps = APP_GetAxisStepCount(1);
     uint32_t z_steps = APP_GetAxisStepCount(2);
 
-    // Build enhanced status string with position, velocity, and step counts
-    sprintf(status_buffer, "<%s|MPos:%s,%s,%s|FS:%s,%s|Steps:%u,%u,%u>\r\n",
-            state_name, x_str, y_str, z_str, vel_str, feed_str, x_steps, y_steps, z_steps);
+    // Build enhanced status string with position, velocity, and step counts using sprintf directly
+    sprintf(status_buffer, "<%s|MPos:%.3f,%.3f,%.3f|FS:%.1f,%.0f|Steps:%u,%u,%u>\r\n",
+            state_name, current_pos.x, current_pos.y, current_pos.z, current_velocity, feed_rate, x_steps, y_steps, z_steps);
     APP_UARTPrint_blocking(status_buffer);
 }
 

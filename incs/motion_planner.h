@@ -53,20 +53,20 @@
 // Motion execution state (using unique names to avoid conflicts)
 typedef enum
 {
-    PLANNER_STATE_IDLE,
-    PLANNER_STATE_PLANNING,
-    PLANNER_STATE_EXECUTING,
-    PLANNER_STATE_ERROR
+  PLANNER_STATE_IDLE,
+  PLANNER_STATE_PLANNING,
+  PLANNER_STATE_EXECUTING,
+  PLANNER_STATE_ERROR
 } motion_execution_state_t;
 
 // Motion planner statistics
 typedef struct
 {
-    uint32_t blocks_processed;
-    uint32_t blocks_optimized;
-    float average_velocity;
-    float peak_velocity;
-    uint32_t execution_time_ms;
+  uint32_t blocks_processed;
+  uint32_t blocks_optimized;
+  float average_velocity;
+  float peak_velocity;
+  uint32_t execution_time_ms;
 } motion_planner_stats_t;
 
 // *****************************************************************************
@@ -533,5 +533,10 @@ void MotionPlanner_UpdateTrajectory(void);
     - Can be used for position error detection
 *******************************************************************************/
 void MotionPlanner_UpdateAxisPosition(uint8_t axis, int32_t position);
+float MotionPlanner_GetCurrentVelocity(uint8_t axis);
 
 #endif /* MOTION_PLANNER_H */
+
+/*******************************************************************************
+ End of File
+ */
