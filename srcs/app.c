@@ -1093,6 +1093,14 @@ static void APP_ProcessGCodeCommand(const char *command)
         MotionGCodeParser_UpdateCoordinateOffset(command);
         APP_UARTPrint_blocking("ok\r\n");
     }
+    else if (strncmp(command, "G93", 3) == 0 || strncmp(command, "G94", 3) == 0)
+    {
+        // Feed rate mode - G93: Inverse time mode, G94: Units per minute mode
+        // For now, just acknowledge - most systems default to G94 mode
+        // G94 is units per minute (default), G93 is inverse time mode
+        MotionGCodeParser_UpdateFeedRateMode(command);
+        APP_UARTPrint_blocking("ok\r\n");
+    }
     else if (strncmp(command, "G54", 3) == 0 || strncmp(command, "G55", 3) == 0 ||
              strncmp(command, "G56", 3) == 0 || strncmp(command, "G57", 3) == 0 ||
              strncmp(command, "G58", 3) == 0 || strncmp(command, "G59", 3) == 0)

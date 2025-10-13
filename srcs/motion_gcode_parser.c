@@ -55,6 +55,7 @@ void MotionGCodeParser_Initialize(void)
     parser_state.current_plane = 17;             // XY plane
     parser_state.current_units = 21;             // Millimeters
     parser_state.current_distance_mode = 90;     // Absolute
+    parser_state.current_feed_rate_mode = 94;    // Units per minute (default)
     parser_state.current_coordinate_system = 54; // G54
 }
 
@@ -377,6 +378,30 @@ void MotionGCodeParser_UpdateWorkCoordinateSystem(const char *command)
 motion_parser_state_t MotionGCodeParser_GetState(void)
 {
     return parser_state;
+}
+
+void MotionGCodeParser_UpdateFeedRateMode(const char *command)
+{
+    if (command == NULL)
+        return;
+
+    gcode_command_t parsed_command;
+    if (!GCODE_ParseLine(command, &parsed_command))
+    {
+        return;
+    }
+
+    if (parsed_command.words & WORD_G)
+    {
+        if (parsed_command.G == 93.0f)
+        {
+            parser_state.current_feed_rate_mode = 93; // Inverse time mode
+        }
+        else if (parsed_command.G == 94.0f)
+        {
+            parser_state.current_feed_rate_mode = 94; // Units per minute mode (default)
+        }
+    }
 }
 
 void MotionGCodeParser_SetPosition(float x, float y, float z)

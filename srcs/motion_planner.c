@@ -53,13 +53,180 @@ static float default_acceleration = ACCELERATION_DEFAULT;
 static position_t current_position = {0.0f, 0.0f, 0.0f, 0.0f};
 static position_t target_position = {0.0f, 0.0f, 0.0f, 0.0f};
 
-// Simple position interpolation function
+// *****************************************************************************
+// S-Curve Motion Profile Implementation
+// *****************************************************************************
+
+// S-curve motion constants
+#define SCURVE_MAX_VELOCITY 500.0f      // mm/min - conservative for stability
+#define SCURVE_MAX_ACCELERATION 3000.0f // mm/min² - realistic CNC acceleration
+#define SCURVE_JERK_LIMIT 10000.0f      // mm/min³ - comfortable jerk limit
+#define SCURVE_ENABLE true              // Enable S-curve motion profiles
+
+// Current motion block with S-curve profile
+typedef struct
+{
+    float total_time;     // Total move time (seconds)
+    float accel_time;     // Acceleration phase time
+    float const_time;     // Constant velocity phase time
+    float decel_time;     // Deceleration phase time
+    float peak_velocity;  // Maximum velocity achieved (mm/min)
+    float acceleration;   // Peak acceleration (mm/min²)
+    float distance;       // Total distance (mm)
+    bool use_scurve;      // Enable S-curve (false = linear fallback)
+    position_t start_pos; // Starting position
+    position_t end_pos;   // Target position
+} scurve_motion_profile_t;
+
+static scurve_motion_profile_t current_motion_profile;
+
+// *****************************************************************************
+// S-Curve Profile Calculation Functions
+// *****************************************************************************
+
+static bool CalculateSCurveProfile(float distance, float target_velocity, scurve_motion_profile_t *profile)
+{
+    if (!profile || distance <= 0.001f)
+    {
+        return false;
+    }
+
+    // Initialize profile
+    memset(profile, 0, sizeof(scurve_motion_profile_t));
+    profile->distance = distance;
+    profile->use_scurve = SCURVE_ENABLE;
+
+    // Limit target velocity to maximum
+    float limited_velocity = fminf(target_velocity, SCURVE_MAX_VELOCITY);
+
+    // Convert mm/min to mm/sec for calculations
+    float velocity_mm_sec = limited_velocity / 60.0f;
+    float accel_mm_sec2 = SCURVE_MAX_ACCELERATION / 3600.0f;
+    float accel_distance = (velocity_mm_sec * velocity_mm_sec) / (2.0f * accel_mm_sec2);
+
+    // Debug calculations (temporary)
+    /*
+    char debug_calc[256];
+    sprintf(debug_calc, "[DEBUG] dist=%.3f, vel_min=%.1f, vel_sec=%.3f, accel_sec2=%.6f, accel_dist=%.3f\r\n",
+            distance, limited_velocity, velocity_mm_sec, accel_mm_sec2, accel_distance);
+    extern void APP_UARTPrint(const char *message);
+    APP_UARTPrint(debug_calc);
+    */
+
+    if (accel_distance * 2.0f > distance)
+    {
+        // Cannot reach target velocity - triangular profile
+        profile->peak_velocity = sqrtf(distance * accel_mm_sec2) * 60.0f; // Convert back to mm/min
+        profile->const_time = 0.0f;
+    }
+    else
+    {
+        // Trapezoidal profile with constant velocity section
+        profile->peak_velocity = limited_velocity;
+        float const_distance = distance - 2.0f * accel_distance;
+        profile->const_time = const_distance / velocity_mm_sec; // seconds
+    }
+
+    // Calculate timing (using corrected units)
+    float peak_vel_per_sec = profile->peak_velocity / 60.0f;
+
+    profile->accel_time = peak_vel_per_sec / accel_mm_sec2;
+    profile->decel_time = profile->accel_time; // Symmetric for simplicity
+    profile->acceleration = SCURVE_MAX_ACCELERATION;
+    profile->total_time = profile->accel_time + profile->const_time + profile->decel_time;
+
+    return true;
+}
+
+static float GetSCurvePosition(float elapsed_time, const scurve_motion_profile_t *profile)
+{
+    if (!profile || elapsed_time <= 0.0f)
+    {
+        return 0.0f;
+    }
+
+    if (elapsed_time >= profile->total_time)
+    {
+        return profile->distance; // Motion complete
+    }
+
+    if (!profile->use_scurve)
+    {
+        // Linear fallback
+        return (elapsed_time / profile->total_time) * profile->distance;
+    }
+
+    float position = 0.0f;
+    float peak_vel_per_sec = profile->peak_velocity / 60.0f;
+    float accel_mm_sec2 = profile->acceleration / 3600.0f; // Convert mm/min² to mm/sec²
+
+    if (elapsed_time <= profile->accel_time)
+    {
+        // Acceleration phase - S-curve start (quadratic)
+        float t = elapsed_time;
+        position = 0.5f * accel_mm_sec2 * t * t;
+    }
+    else if (elapsed_time <= profile->accel_time + profile->const_time)
+    {
+        // Constant velocity phase
+        float accel_distance = 0.5f * accel_mm_sec2 * profile->accel_time * profile->accel_time;
+        float const_elapsed = elapsed_time - profile->accel_time;
+        position = accel_distance + peak_vel_per_sec * const_elapsed;
+    }
+    else
+    {
+        // Deceleration phase - S-curve end (quadratic)
+        float accel_distance = 0.5f * accel_mm_sec2 * profile->accel_time * profile->accel_time;
+        float const_distance = peak_vel_per_sec * profile->const_time;
+        float decel_elapsed = elapsed_time - profile->accel_time - profile->const_time;
+        float decel_distance = peak_vel_per_sec * decel_elapsed - 0.5f * accel_mm_sec2 * decel_elapsed * decel_elapsed;
+        position = accel_distance + const_distance + decel_distance;
+    }
+
+    return fminf(position, profile->distance); // Clamp to total distance
+}
+
+// Enhanced position interpolation with S-curve motion profiles
 static void UpdatePosition(float progress)
 {
-    // Linear interpolation from current to target position
-    current_position.x = current_position.x + (target_position.x - current_position.x) * progress;
-    current_position.y = current_position.y + (target_position.y - current_position.y) * progress;
-    current_position.z = current_position.z + (target_position.z - current_position.z) * progress;
+    if (!current_motion_profile.use_scurve)
+    {
+        // Linear interpolation fallback (original method)
+        current_position.x = current_motion_profile.start_pos.x +
+                             (current_motion_profile.end_pos.x - current_motion_profile.start_pos.x) * progress;
+        current_position.y = current_motion_profile.start_pos.y +
+                             (current_motion_profile.end_pos.y - current_motion_profile.start_pos.y) * progress;
+        current_position.z = current_motion_profile.start_pos.z +
+                             (current_motion_profile.end_pos.z - current_motion_profile.start_pos.z) * progress;
+
+        // CRITICAL: Update cnc_axes position during linear motion for real-time status reporting
+        extern cnc_axis_t cnc_axes[MAX_AXES];
+        cnc_axes[0].current_position = (int32_t)(current_position.x * 400.0f); // X-axis (400 steps/mm)
+        cnc_axes[1].current_position = (int32_t)(current_position.y * 400.0f); // Y-axis
+        cnc_axes[2].current_position = (int32_t)(current_position.z * 400.0f); // Z-axis
+        return;
+    }
+
+    // S-curve interpolation
+    float elapsed_time = progress * current_motion_profile.total_time;
+    float scurve_progress = GetSCurvePosition(elapsed_time, &current_motion_profile) / current_motion_profile.distance;
+
+    // Clamp progress to [0, 1]
+    scurve_progress = fmaxf(0.0f, fminf(1.0f, scurve_progress));
+
+    // Apply S-curve progress to position interpolation
+    current_position.x = current_motion_profile.start_pos.x +
+                         (current_motion_profile.end_pos.x - current_motion_profile.start_pos.x) * scurve_progress;
+    current_position.y = current_motion_profile.start_pos.y +
+                         (current_motion_profile.end_pos.y - current_motion_profile.start_pos.y) * scurve_progress;
+    current_position.z = current_motion_profile.start_pos.z +
+                         (current_motion_profile.end_pos.z - current_motion_profile.start_pos.z) * scurve_progress;
+
+    // CRITICAL: Update cnc_axes position during motion for real-time status reporting
+    extern cnc_axis_t cnc_axes[MAX_AXES];
+    cnc_axes[0].current_position = (int32_t)(current_position.x * 400.0f); // X-axis (400 steps/mm)
+    cnc_axes[1].current_position = (int32_t)(current_position.y * 400.0f); // Y-axis
+    cnc_axes[2].current_position = (int32_t)(current_position.z * 400.0f); // Z-axis
 }
 
 // External interface for status reporting
@@ -483,26 +650,61 @@ void MotionPlanner_UpdateTrajectory(void)
             // New block received! (debug disabled for UGS)
             /*
             char debug_msg[128];
-            sprintf(debug_msg, "[MP_NEW_BLOCK] X=%.1f Y=%.1f Z=%.1f dur=%.3fs\r\n",
+            sprintf(debug_msg, "[MP_NEW_BLOCK] X=%.1f Y=%.1f Z=%.1f\r\n",
                     current_motion_block->target_pos[0],
                     current_motion_block->target_pos[1],
-                    current_motion_block->target_pos[2],
-                    current_motion_block->duration);
+                    current_motion_block->target_pos[2]);
             APP_UARTPrint(debug_msg);
             */
-
-            // Set up simple position tracking (replacing faulty interpolation engine)
+            // Set up S-curve motion profile for the new block
             target_position.x = current_motion_block->target_pos[0];
             target_position.y = current_motion_block->target_pos[1];
             target_position.z = current_motion_block->target_pos[2];
 
+            // Debug disabled for UGS compatibility
+            /*
+            char debug_target[128];
+            sprintf(debug_target, "[MP_TARGET_SET] target_pos[0]=%.3f target_pos[1]=%.3f target_pos[2]=%.3f\r\n",
+                    current_motion_block->target_pos[0], current_motion_block->target_pos[1], current_motion_block->target_pos[2]);
+            APP_UARTPrint(debug_target);
+
+            sprintf(debug_target, "[MP_TARGET_ASSIGNED] X=%.3f Y=%.3f Z=%.3f\r\n",
+                    target_position.x, target_position.y, target_position.z);
+            APP_UARTPrint(debug_target);
+            */
+
+            // Calculate move distance
+            float dx = target_position.x - current_position.x;
+            float dy = target_position.y - current_position.y;
+            float dz = target_position.z - current_position.z;
+            float move_distance = sqrtf(dx * dx + dy * dy + dz * dz);
+
+            // Set up S-curve motion profile
+            current_motion_profile.start_pos = current_position;
+            current_motion_profile.end_pos = target_position;
+
+            // Use the motion block's feedrate, default to reasonable speed if not set
+            float target_feedrate = (current_motion_block->max_velocity > 0) ? current_motion_block->max_velocity : SCURVE_MAX_VELOCITY;
+
+            // Calculate S-curve profile
+            bool profile_success = CalculateSCurveProfile(move_distance, target_feedrate, &current_motion_profile);
+
+            if (!profile_success)
+            {
+                // Fallback to linear motion if S-curve calculation fails
+                current_motion_profile.use_scurve = false;
+                current_motion_profile.total_time = current_motion_block->duration;
+                current_motion_profile.start_pos = current_position;
+                current_motion_profile.end_pos = target_position;
+            }
+
             // Debug output disabled for UGS compatibility
             /*
-            position_t start_pos = GetCurrentPosition();
             char pos_debug[128];
-            sprintf(pos_debug, "[MP_SIMPLE] Start: X=%.3f Y=%.3f Z=%.3f -> Target: X=%.3f Y=%.3f Z=%.3f\r\n",
-                    start_pos.x, start_pos.y, start_pos.z,
-                    target_position.x, target_position.y, target_position.z);
+            sprintf(pos_debug, "[MP_MOTION_START] X=%.3f->%.3f Time=%.3fs Mode=%s\r\n",
+                    current_position.x, target_position.x,
+                    current_motion_profile.total_time,
+                    current_motion_profile.use_scurve ? "S-CURVE" : "LINEAR");
             APP_UARTPrint(pos_debug);
             */
 
@@ -515,15 +717,17 @@ void MotionPlanner_UpdateTrajectory(void)
         }
     }
 
-    // If we have a block, process its trajectory
+    // If we have a block, process its trajectory with S-curve profile
     if (current_motion_block != NULL)
     {
         motion_execution_timer++;
-        float total_duration_ms = current_motion_block->duration * 1000.0f;
+
+        // Use S-curve profile timing instead of motion block duration
+        float total_duration_ms = current_motion_profile.total_time * 1000.0f;
 
         if (motion_execution_timer < total_duration_ms)
         {
-            // Still executing current block - update position
+            // Still executing current block - update position with S-curve interpolation
             float progress = (float)motion_execution_timer / total_duration_ms;
             UpdatePosition(progress);
 
@@ -534,8 +738,9 @@ void MotionPlanner_UpdateTrajectory(void)
             if (pos_update_counter % 20 == 0)
             {
                 char prog_debug[128];
-                sprintf(prog_debug, "[MP_PROGRESS] %.1f%% X=%.3f Y=%.3f Z=%.3f\r\n",
-                        progress * 100.0f, current_position.x, current_position.y, current_position.z);
+                sprintf(prog_debug, "[MP_PROGRESS] %.1f%% X=%.3f Y=%.3f Z=%.3f %s\r\n",
+                        progress * 100.0f, current_position.x, current_position.y, current_position.z,
+                        current_motion_profile.use_scurve ? "SCURVE" : "LINEAR");
                 APP_UARTPrint(prog_debug);
             }
             */
@@ -549,7 +754,6 @@ void MotionPlanner_UpdateTrajectory(void)
                     motion_execution_timer, total_duration_ms);
             APP_UARTPrint(debug_msg);
             */
-
             // Ensure we reach the exact target position
             current_position = target_position;
             /*
@@ -558,6 +762,18 @@ void MotionPlanner_UpdateTrajectory(void)
             APP_UARTPrint(debug_msg);
             */
 
+            // CRITICAL FIX: Update cnc_axes position tracking for status reporting
+            // Convert from mm (float) to steps (int32_t) for cnc_axes system
+            extern cnc_axis_t cnc_axes[MAX_AXES];
+            cnc_axes[0].current_position = (int32_t)(current_position.x * 400.0f); // X-axis (400 steps/mm)
+            cnc_axes[1].current_position = (int32_t)(current_position.y * 400.0f); // Y-axis
+            cnc_axes[2].current_position = (int32_t)(current_position.z * 400.0f); // Z-axis
+
+            /*
+            sprintf(debug_msg, "[MP_CNC_AXES_UPDATE] X=%d Y=%d Z=%d steps\r\n",
+                    cnc_axes[0].current_position, cnc_axes[1].current_position, cnc_axes[2].current_position);
+            APP_UARTPrint(debug_msg);
+            */
             // Mark the block as complete in the buffer
             MotionBuffer_Complete();
 

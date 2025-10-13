@@ -9,11 +9,14 @@
 #define RX_BUFFER_SIZE 128
 
 // --- Static function prototypes ---
+/* Function prototypes disabled - using app.c UART handling instead
 static void handle_real_time_character(uint8_t c);
 static void process_line(void);
+*/
 static void serial_write(const char *s);
 
 // --- Private variables ---
+/* Disabled - using app.c UART handling instead
 static uint8_t rx_buffer[RX_BUFFER_SIZE];
 static volatile uint16_t rx_buffer_head;
 static volatile uint16_t rx_buffer_tail;
@@ -23,9 +26,10 @@ static volatile uint8_t rt_command; // Real-time command character
 static char line_buffer[RX_BUFFER_SIZE];
 static uint8_t line_char_count;
 static bool line_ready;
+*/
 
-// Persistent buffer for UART read
-static uint8_t rx_data;
+// Persistent buffer for UART read - disabled
+// static uint8_t rx_data;
 
 // --- Callback function pointers ---
 static grbl_write_callback_t write_callback = NULL;
@@ -33,6 +37,7 @@ static grbl_motion_callback_t motion_callback = NULL;
 static grbl_status_callback_t status_callback = NULL;
 static grbl_emergency_callback_t emergency_callback = NULL;
 
+/* Callback function disabled - using app.c UART handling instead
 static void UART2_Read_Callback(uintptr_t context)
 {
     // The data is now in rx_data. Process it.
@@ -58,7 +63,9 @@ static void UART2_Read_Callback(uintptr_t context)
     // IMPORTANT: Re-arm the UART read interrupt for the next byte
     UART2_Read(&rx_data, 1);
 }
+*/
 
+/* GRBL Serial functions disabled - using app.c UART handling instead
 void GRBL_Serial_Initialize(void)
 {
     rx_buffer_head = 0;
@@ -68,9 +75,10 @@ void GRBL_Serial_Initialize(void)
     line_ready = false;
 
     // Register the callback and arm the first read
-    UART2_ReadCallbackRegister(UART2_Read_Callback, (uintptr_t)NULL);
-    UART2_Read(&rx_data, 1); // Initial read
+    // UART2_ReadCallbackRegister(UART2_Read_Callback, (uintptr_t)NULL);
+    // UART2_Read(&rx_data, 1); // Initial read
 }
+*/
 
 void GRBL_RegisterWriteCallback(grbl_write_callback_t callback)
 {
@@ -100,6 +108,7 @@ static void serial_write(const char *s)
     }
 }
 
+/* GRBL Tasks function disabled - using app.c UART handling instead
 void GRBL_Tasks(void)
 {
     // Process real-time commands first, these are high priority
@@ -141,7 +150,9 @@ void GRBL_Tasks(void)
         }
     }
 }
+*/
 
+/* Handle real-time commands function disabled
 static void handle_real_time_character(uint8_t c)
 {
     switch (c)
@@ -176,6 +187,7 @@ static void process_line(void)
         motion_callback(line_buffer);
     }
 }
+*/
 
 void grbl_send_response(const char *message)
 {

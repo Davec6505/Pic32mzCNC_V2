@@ -50,15 +50,16 @@
 // Parser state structure
 typedef struct
 {
-    float current_position[3];     // Current X, Y, Z position
-    float current_feedrate;        // Current feedrate
-    int current_spindle_state;     // 0=off, 1=CW, -1=CCW
-    float current_spindle_speed;   // RPM
-    int current_coolant_state;     // 0=off, 1=flood
-    int current_plane;             // G17=XY, G18=XZ, G19=YZ
-    int current_units;             // G20=inches, G21=mm
-    int current_distance_mode;     // G90=absolute, G91=incremental
-    int current_coordinate_system; // G54-G59
+  float current_position[3];     // Current X, Y, Z position
+  float current_feedrate;        // Current feedrate
+  int current_spindle_state;     // 0=off, 1=CW, -1=CCW
+  float current_spindle_speed;   // RPM
+  int current_coolant_state;     // 0=off, 1=flood
+  int current_plane;             // G17=XY, G18=XZ, G19=YZ
+  int current_units;             // G20=inches, G21=mm
+  int current_distance_mode;     // G90=absolute, G91=incremental
+  int current_feed_rate_mode;    // G93=inverse time, G94=units per minute (default)
+  int current_coordinate_system; // G54-G59
 } motion_parser_state_t;
 
 // *****************************************************************************
@@ -230,6 +231,21 @@ void MotionGCodeParser_UpdateUnits(const char *command);
     None
 *******************************************************************************/
 void MotionGCodeParser_UpdateDistanceMode(const char *command);
+
+/*******************************************************************************
+  Function:
+    void MotionGCodeParser_UpdateFeedRateMode(const char *command)
+
+  Summary:
+    Updates feed rate mode based on G93/G94 commands.
+
+  Parameters:
+    command - G-code command string containing feed rate mode command
+
+  Returns:
+    None
+*******************************************************************************/
+void MotionGCodeParser_UpdateFeedRateMode(const char *command);
 
 /*******************************************************************************
   Function:
