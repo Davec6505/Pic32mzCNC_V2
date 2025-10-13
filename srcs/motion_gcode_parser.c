@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include <stdio.h>
 
 // *****************************************************************************
 // *****************************************************************************
@@ -88,7 +89,7 @@ bool MotionGCodeParser_ParseMove(const char *command, motion_block_t *block)
         return false;
     }
 
-    // Extract coordinates if present
+    // Parsing successful - coordinates will be extracted below    // Extract coordinates if present
     if (parsed_command.words & WORD_X)
     {
         if (parser_state.current_distance_mode == 90)
@@ -99,6 +100,7 @@ bool MotionGCodeParser_ParseMove(const char *command, motion_block_t *block)
         { // Incremental
             block->target_pos[0] = parser_state.current_position[0] + parsed_command.X;
         }
+        // X coordinate updated
     }
 
     if (parsed_command.words & WORD_Y)

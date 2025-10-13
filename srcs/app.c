@@ -37,6 +37,7 @@
 #include "motion_buffer.h"
 #include "motion_gcode_parser.h"
 #include "motion_planner.h"
+#include "gcode_helpers.h"
 #include "peripheral/uart/plib_uart2.h"
 #include "peripheral/uart/plib_uart_common.h"
 #include "peripheral/coretimer/plib_coretimer.h"
@@ -80,11 +81,10 @@ uint32_t uart_callback_counter = 0;
 
 APP_DATA appData;
 
-// TIMER1 ISSUE DOCUMENTED:
-// Timer1 causes system hang when started (TMR1_Start())
-// Issue is likely interrupt priority conflict or configuration problem
-// System works perfectly without Timer1 trajectory timer
-// TODO: Investigate Timer1 interrupt priorities in MCC when time allows
+// TIMER1 ISSUE RESOLVED:
+// Timer1 prescaler fixed to run at 1kHz instead of problematic 300μs
+// Now using Timer1 for both interpolation engine and motion planner
+// Timer1 callback handles: INTERP_Tasks() + MotionPlanner_UpdateTrajectory() + LED heartbeat
 
 // CNC Axis data structures
 cnc_axis_t cnc_axes[MAX_AXES];
@@ -124,45 +124,6 @@ static void APP_PrintGCodeParameters(void);
 static void APP_PrintParserState(void);
 static void APP_ProcessSettingChange(const char *command);
 static void APP_ProcessGCodeCommand(const char *command);
-
-// G-code Type Enumeration for optimized parsing
-typedef enum
-{
-    GCODE_UNKNOWN = 999, // Use high number to avoid conflicts with actual G/M codes
-    GCODE_G0 = 0,
-    GCODE_G1 = 1,
-    GCODE_G2 = 2,
-    GCODE_G3 = 3,
-    GCODE_G4 = 4,
-    GCODE_G10 = 10,
-    GCODE_G17 = 17,
-    GCODE_G18 = 18,
-    GCODE_G19 = 19,
-    GCODE_G20 = 20,
-    GCODE_G21 = 21,
-    GCODE_G28 = 28,
-    GCODE_G30 = 30,
-    GCODE_G54 = 54,
-    GCODE_G55 = 55,
-    GCODE_G56 = 56,
-    GCODE_G57 = 57,
-    GCODE_G58 = 58,
-    GCODE_G59 = 59,
-    GCODE_G90 = 90,
-    GCODE_G91 = 91,
-    GCODE_G92 = 92,
-    GCODE_G93 = 93,
-    GCODE_G94 = 94,
-    GCODE_M3 = 103,
-    GCODE_M4 = 104,
-    GCODE_M5 = 105,
-    GCODE_M8 = 108,
-    GCODE_M9 = 109,
-    GCODE_F = 200
-} gcode_type_t;
-
-// Optimized G-code parser function
-static gcode_type_t APP_ParseGCodeType(const char *command);
 
 // Motion System Functions
 static void APP_SendError(uint8_t error_code);
@@ -254,9 +215,8 @@ void APP_Initialize(void)
     }
     */
 
-    // Start UART read without debug output
-    UART2_Read(&uart_rx_char, 1); // Removed automatic welcome message - UGS expects clean handshake
-    // APP_UARTPrint_blocking("Grbl 1.1f ['$' for help]\r\n");
+    // Start UART read - UGS will initiate handshake with ? and $I commands
+    UART2_Read(&uart_rx_char, 1);
 }
 
 // *****************************************************************************
@@ -292,6 +252,8 @@ void APP_Tasks(void)
         if (received_char == '?')
         {
             // Status report - process immediately for proper sequencing
+            // DEBUG: Log status request for UGS debugging
+            // APP_UARTPrint_blocking("[DEBUG: Status request received]\r\n");
             APP_SendStatus();
             continue; // Don't buffer this character
         }
@@ -302,6 +264,10 @@ void APP_Tasks(void)
             if (rx_pos > 0)
             {
                 rx_buffer[rx_pos] = '\0';
+                // DEBUG: Log command received for UGS debugging
+                char debug_cmd[128];
+                sprintf(debug_cmd, "[DEBUG: Command received: '%s']\r\n", rx_buffer);
+                // APP_UARTPrint_blocking(debug_cmd);  // Commented out for UGS compatibility
                 APP_ProcessGRBLCommand(rx_buffer);
                 rx_pos = 0; // Reset buffer
             }
@@ -494,14 +460,13 @@ static void APP_MotionSystemInit(void)
     TMR3_Start(); // Base timer for OCMP4 (X-axis)
     TMR4_Start(); // Base timer for OCMP5 (Z-axis)
 
-    /* TRAJECTORY SYSTEM - Using Core Timer instead of Timer1 */
-    /* Core Timer runs at 100MHz, set period for 1kHz trajectory updates */
-    /* Period = 100MHz / 1000Hz = 100000 */
+    /* TRAJECTORY SYSTEM - Now using Timer1 (prescaler fixed to 1kHz) */
+    /* Timer1 configured by Harmony, just need to start it */
     if (!appData.trajectory_timer_active)
     {
-        CORETIMER_CallbackSet(APP_TrajectoryTimerCallback_CoreTimer, 0);
-        CORETIMER_PeriodSet(100000); // 1kHz trajectory updates
-        CORETIMER_Start();
+        // Timer1 callback already registered by interpolation engine
+        // Timer1 now handles both INTERP_Tasks() AND MotionPlanner_UpdateTrajectory()
+        TMR1_Start(); // This should work now that prescaler is fixed
         appData.trajectory_timer_active = true;
     }
 
@@ -679,22 +644,39 @@ bool APP_ExecuteMotionBlock(motion_block_t *block)
             APP_SetAxisActiveState(i, true);
 
             /* Enable the appropriate OCR module for this axis */
+            // DEBUG: Disabled for UGS compatibility
+            // char ocr_debug[128];
+            // sprintf(ocr_debug, "[DEBUG: OCR Setup] Axis %d: target=%d current=%d velocity=%.1f\r\n",
+            //         i, target_pos, current_pos, APP_GetAxisTargetVelocity(i));
+            // APP_UARTPrint_blocking(ocr_debug);
+
             switch (i)
             {
-            case 0: // X-axis -> OCMP4 (as per existing main.c)
+            case 0: // X-axis -> OCMP4 (uses Timer3)
                 OCMP4_Enable();
+                TMR3_Start(); // CRITICAL: Start the timer that drives OCMP4
+                // APP_UARTPrint_blocking("[DEBUG: OCMP4 enabled + TMR3 started for X-axis]\r\n");
                 break;
-            case 1: // Y-axis -> OCMP1
+            case 1: // Y-axis -> OCMP1 (uses Timer2)
                 OCMP1_Enable();
+                TMR2_Start(); // CRITICAL: Start the timer that drives OCMP1
+                // APP_UARTPrint_blocking("[DEBUG: OCMP1 enabled + TMR2 started for Y-axis]\r\n");
                 break;
-            case 2: // Z-axis -> OCMP5
+            case 2: // Z-axis -> OCMP5 (uses Timer4)
                 OCMP5_Enable();
+                TMR4_Start(); // CRITICAL: Start the timer that drives OCMP5
+                // APP_UARTPrint_blocking("[DEBUG: OCMP5 enabled + TMR4 started for Z-axis]\r\n");
                 break;
             }
 
             /* Calculate and set OCR period using motion planner function */
             float target_velocity = APP_GetAxisTargetVelocity(i);
             uint32_t ocr_period = MotionPlanner_CalculateOCRPeriod(target_velocity);
+
+            // DEBUG: Disabled for UGS compatibility
+            // sprintf(ocr_debug, "[DEBUG: OCR Period] Axis %d: period=%u (velocity=%.1f)\r\n",
+            //         i, ocr_period, target_velocity);
+            // APP_UARTPrint_blocking(ocr_debug);
 
             switch (i)
             {
@@ -793,8 +775,7 @@ static void APP_UART_Callback(uintptr_t context)
 
         case '!':
             // Feed hold
-            APP_UARTPrint_blocking("[MSG:Feed Hold]\r\n");
-            break;
+            break; // Removed message
 
         case '~':
             // Cycle start (resume)
@@ -978,33 +959,90 @@ static void APP_PrintParserState(void)
     APP_UARTPrint_blocking("[GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0 S0]\r\nok\r\n");
 }
 
-static gcode_type_t APP_ParseGCodeType(const char *command)
-{
-    // Ultra-fast parsing - single atoi call + direct enum return
-    char first_char = command[0];
-
-    if (first_char == 'G' || first_char == 'g')
-    {
-        return (gcode_type_t)atoi(&command[1]); // Direct cast - enum values match G-code numbers
-    }
-    else if (first_char == 'M' || first_char == 'm')
-    {
-        int mcode_num = atoi(&command[1]);
-        return (gcode_type_t)(mcode_num + 100); // M-codes offset by 100 in enum
-    }
-    else if (first_char == 'F' || first_char == 'f')
-    {
-        return GCODE_F;
-    }
-
-    return GCODE_UNKNOWN;
-}
-
 static void APP_ProcessGCodeCommand(const char *command)
 {
+    // Set up debug callback for helper functions (disabled for UGS compatibility)
+    // GCodeHelpers_SetDebugCallback(APP_UARTPrint_blocking);
 
-    // Enhanced G-code command processing with optimized switch-based parsing
-    gcode_type_t gcode_type = APP_ParseGCodeType(command);
+    // DEBUG: Disabled for UGS compatibility
+    // char debug_msg[128];
+    // sprintf(debug_msg, "[DEBUG: ProcessGCode called with: '%s']\r\n", command);
+    // APP_UARTPrint_blocking(debug_msg);
+
+    // Clean and validate the command
+    if (!GCodeHelpers_IsValidCommand(command))
+    {
+        // DEBUG: Disabled for UGS compatibility
+        // APP_UARTPrint_blocking("[DEBUG: Invalid or empty command]\r\n");
+        APP_UARTPrint_blocking("ok\r\n"); // Empty commands get "ok"
+        return;
+    }
+
+    // Tokenize the command using MikroC-style tokenizer
+    char tokens[MAX_GCODE_TOKENS][MAX_GCODE_TOKEN_LENGTH];
+    int token_count = GCodeHelpers_TokenizeString(command, tokens);
+
+    if (token_count == 0)
+    {
+        // DEBUG: Disabled for UGS compatibility
+        // APP_UARTPrint_blocking("[DEBUG: No tokens found]\r\n");
+        APP_UARTPrint_blocking("ok\r\n");
+        return;
+    }
+
+    // Debug: Show the tokenized command (disabled for UGS compatibility)
+    // GCodeHelpers_DebugTokens(tokens, token_count);
+
+    // Analyze the tokens for motion commands
+    motion_analysis_t analysis = GCodeHelpers_AnalyzeMotionTokens(tokens, token_count);
+
+    // Process motion commands if present
+    if (analysis.has_motion)
+    {
+        // DEBUG: Disabled for UGS compatibility
+        // char motion_debug[128];
+        // sprintf(motion_debug, "[DEBUG: Motion command detected - %s]\r\n",
+        //         GCodeHelpers_GetGCodeTypeName(analysis.motion_type));
+        // APP_UARTPrint_blocking(motion_debug);
+
+        // Use existing motion parser for actual execution
+        if (MotionBuffer_HasSpace())
+        {
+            motion_block_t move_block;
+            if (MotionGCodeParser_ParseMove(command, &move_block))
+            {
+                MotionPlanner_CalculateDistance(&move_block);
+                if (MotionBuffer_Add(&move_block))
+                {
+                    // Comment out this debug line:
+                    // APP_UARTPrint_blocking("[BUFFER_ADD] head=X tail=Y");
+                    MotionPlanner_ProcessBuffer();
+                    APP_SendMotionOkResponse();
+                }
+                else
+                {
+                    APP_UARTPrint_blocking("error:14\r\n"); // Motion buffer overflow
+                }
+            }
+            else
+            {
+                APP_UARTPrint_blocking("error:33\r\n"); // Invalid gcode
+            }
+        }
+        else
+        {
+            APP_UARTPrint_blocking("error:14\r\n"); // Motion buffer full
+        }
+        return; // Early return for motion commands
+    }
+
+    // Process non-motion commands - check first token for G/M codes
+    gcode_type_t gcode_type = GCodeHelpers_ParseGCodeType(tokens[0]);
+
+    // DEBUG: Disabled for UGS compatibility
+    // char type_debug[128];
+    // sprintf(type_debug, "[DEBUG: Processing %s]\r\n", GCodeHelpers_GetGCodeTypeName(gcode_type));
+    // APP_UARTPrint_blocking(type_debug);
 
     switch (gcode_type)
     {
@@ -1021,6 +1059,8 @@ static void APP_ProcessGCodeCommand(const char *command)
 
                 if (MotionBuffer_Add(&move_block))
                 {
+                    // Comment out this debug line:
+                    // APP_UARTPrint_blocking("[BUFFER_ADD] head=X tail=Y");
                     MotionPlanner_ProcessBuffer();
                     APP_SendMotionOkResponse(); // Use helper for proper timing
                 }
@@ -1229,12 +1269,14 @@ void APP_OCMP1_Callback(uintptr_t context)
     /* Y-axis step pulse - PERFORMANCE CRITICAL: Direct access for speed */
     LED2_Toggle(); // Step activity indicator
 
-    // DEBUG: Always indicate callback triggered
+    // DEBUG: Callback debug disabled for UGS compatibility
+    /*
     static uint32_t debug_counter = 0;
     if ((debug_counter++ % 100) == 0) // Print every 100th callback to avoid spam
     {
         APP_UARTPrint("[OCMP1_CB]\r\n");
     }
+    */
 
     if (cnc_axes[1].is_active && cnc_axes[1].motion_state != AXIS_IDLE)
     {
@@ -1253,12 +1295,14 @@ void APP_OCMP4_Callback(uintptr_t context)
     LED1_Toggle(); // X-axis OCR interrupt indicator - should blink if firing
     LED2_Toggle(); // Step activity indicator
 
-    // DEBUG: Always indicate callback triggered
+    // DEBUG: Callback debug disabled for UGS compatibility
+    /*
     static uint32_t debug_counter = 0;
     if ((debug_counter++ % 100) == 0) // Print every 100th callback to avoid spam
     {
         APP_UARTPrint("[OCMP4_CB]\r\n");
     }
+    */
 
     if (cnc_axes[0].is_active && cnc_axes[0].motion_state != AXIS_IDLE)
     {
@@ -1394,10 +1438,13 @@ void APP_EmergencyStop(void)
     /* Use interpolation engine emergency stop for proper coordination */
     INTERP_EmergencyStop();
 
-    /* Stop all OCR modules directly */
+    /* Stop all OCR modules and their timers */
     OCMP1_Disable();
+    TMR2_Stop(); // Stop Timer2 (drives OCMP1)
     OCMP4_Disable();
+    TMR3_Stop(); // Stop Timer3 (drives OCMP4)
     OCMP5_Disable();
+    TMR4_Stop(); // Stop Timer4 (drives OCMP5)
 
     /* Reset all axes */
     for (int i = 0; i < MAX_AXES; i++)
@@ -1500,8 +1547,8 @@ void APP_ReportAlarm(int alarm_code)
 
 void APP_ExecuteMotionCommand(const char *line)
 {
-    // DEBUG: Track if this function is still being called somewhere
-    APP_UARTPrint_blocking("[DEBUG:APP_ExecuteMotionCommand called - should NOT happen!]\r\n");
+    // DEBUG: Track if this function is still being called somewhere (disabled for UGS compatibility)
+    // APP_UARTPrint_blocking("[DEBUG:APP_ExecuteMotionCommand called - should NOT happen!]\r\n");
     APP_UARTPrint_blocking("error:99\r\n"); // Unique error to identify this path
 }
 
@@ -1546,22 +1593,21 @@ void APP_SendStatus(void)
         break;
     }
 
-    // Get current position from motion planner (replacing faulty interpolation engine)
-    extern position_t MotionPlanner_GetCurrentPosition(void);
-    position_t current_pos = MotionPlanner_GetCurrentPosition();
+    // Get current position efficiently from step counters (not complex motion planner)
+    float current_x, current_y, current_z;
+    GCodeHelpers_GetCurrentPositionFromSteps(&current_x, &current_y, &current_z);
+
+    // Position conversion working correctly - debug removed for UGS compatibility
 
     // Get motion planner statistics for enhanced feedback
     float current_velocity = MotionPlanner_GetCurrentVelocity(0); // Use X-axis velocity as representative
     float feed_rate = 100.0f;                                     // Default feed rate - could be retrieved from settings
 
-    // Get step counts for detailed feedback
-    uint32_t x_steps = APP_GetAxisStepCount(0);
-    uint32_t y_steps = APP_GetAxisStepCount(1);
-    uint32_t z_steps = APP_GetAxisStepCount(2);
+    // Step counts removed for UGS compatibility - not used in clean status format
 
-    // Build enhanced status string with position, velocity, and step counts using sprintf directly
-    sprintf(status_buffer, "<%s|MPos:%.3f,%.3f,%.3f|FS:%.1f,%.0f|Steps:%u,%u,%u>\r\n",
-            state_name, current_pos.x, current_pos.y, current_pos.z, current_velocity, feed_rate, x_steps, y_steps, z_steps);
+    // Build GRBL v1.1 compatible status string (clean format for UGS)
+    sprintf(status_buffer, "<%s|MPos:%.3f,%.3f,%.3f|FS:%.1f,%.0f>\r\n",
+            state_name, current_x, current_y, current_z, current_velocity, feed_rate);
     APP_UARTPrint_blocking(status_buffer);
 }
 
@@ -1571,15 +1617,21 @@ void APP_SendDetailedStatus(void)
     char debug_buffer[1024];
     char pos_str[200], step_str[200], vel_str[200];
 
-    // Get positions from both interpolation engine and direct axis readings
+    // Get positions efficiently from step counters
+    float step_x, step_y, step_z;
+    GCodeHelpers_GetCurrentPositionFromSteps(&step_x, &step_y, &step_z);
+
+    // Get raw step counts for debugging
+    int32_t x_steps, y_steps, z_steps;
+    GCodeHelpers_GetPositionInSteps(&x_steps, &y_steps, &z_steps);
+
+    // Get positions from interpolation engine for comparison (legacy)
     position_t interp_pos = INTERP_GetCurrentPosition();
 
-    // Build position details
-    sprintf(pos_str, "InterpPos:%.3f,%.3f,%.3f AxisPos:%d,%d,%d",
-            interp_pos.x, interp_pos.y, interp_pos.z,
-            APP_GetAxisCurrentPosition(0), APP_GetAxisCurrentPosition(1), APP_GetAxisCurrentPosition(2));
-
-    // Build step count details
+    // Build position details - compare step-based vs interpolation-based positions
+    sprintf(pos_str, "StepPos:%.3f,%.3f,%.3f InterpPos:%.3f,%.3f,%.3f RawSteps:%d,%d,%d",
+            step_x, step_y, step_z, interp_pos.x, interp_pos.y, interp_pos.z,
+            x_steps, y_steps, z_steps); // Build step count details
     sprintf(step_str, "Steps:%u,%u,%u",
             APP_GetAxisStepCount(0), APP_GetAxisStepCount(1), APP_GetAxisStepCount(2));
 
@@ -1718,14 +1770,17 @@ void APP_SetAxisActiveState(uint8_t axis, bool active)
             // Disable OCR module when axis becomes inactive
             switch (axis)
             {
-            case 0: // X-axis -> OCMP4
+            case 0: // X-axis -> OCMP4 (uses Timer3)
                 OCMP4_Disable();
+                TMR3_Stop(); // Stop Timer3 when X-axis motion complete
                 break;
-            case 1: // Y-axis -> OCMP1
+            case 1: // Y-axis -> OCMP1 (uses Timer2)
                 OCMP1_Disable();
+                TMR2_Stop(); // Stop Timer2 when Y-axis motion complete
                 break;
-            case 2: // Z-axis -> OCMP5
+            case 2: // Z-axis -> OCMP5 (uses Timer4)
                 OCMP5_Disable();
+                TMR4_Stop(); // Stop Timer4 when Z-axis motion complete
                 break;
             }
 

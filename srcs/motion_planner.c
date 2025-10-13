@@ -104,7 +104,7 @@ static bool CalculateSCurveProfile(float distance, float target_velocity, scurve
     float accel_mm_sec2 = SCURVE_MAX_ACCELERATION / 3600.0f;
     float accel_distance = (velocity_mm_sec * velocity_mm_sec) / (2.0f * accel_mm_sec2);
 
-    // Debug calculations (temporary)
+    // Debug calculations disabled for UGS compatibility
     /*
     char debug_calc[256];
     sprintf(debug_calc, "[DEBUG] dist=%.3f, vel_min=%.1f, vel_sec=%.3f, accel_sec2=%.6f, accel_dist=%.3f\r\n",
@@ -516,7 +516,16 @@ float MotionPlanner_CalculateJunctionVelocity(motion_block_t *block1, motion_blo
 void MotionPlanner_ExecuteBlock(motion_block_t *block)
 {
     if (block == NULL)
+    {
+        // Debug disabled for UGS compatibility
+        // extern void APP_UARTPrint_blocking(const char *message);
+        // APP_UARTPrint_blocking("[DEBUG: MotionPlanner_ExecuteBlock called with NULL block!]\r\n");
         return;
+    }
+
+    // Debug disabled for UGS compatibility
+    // extern void APP_UARTPrint_blocking(const char *message);
+    // APP_UARTPrint_blocking("[DEBUG: MotionPlanner_ExecuteBlock called - starting hardware motion]\r\n");
 
     execution_state = PLANNER_STATE_EXECUTING;
 
@@ -533,12 +542,14 @@ void MotionPlanner_ExecuteBlock(motion_block_t *block)
     // This will activate OCR modules and start step pulse generation
     if (APP_ExecuteMotionBlock(block))
     {
-        // Successfully started hardware motion
+        // Successfully started hardware motion - debug disabled for UGS compatibility
+        // APP_UARTPrint_blocking("[DEBUG: APP_ExecuteMotionBlock SUCCESS - hardware started]\r\n");
         statistics.execution_time_ms += motion_execution_timer;
     }
     else
     {
-        // Hardware failed to start - mark as simulation only
+        // Hardware failed to start - mark as simulation only - debug disabled for UGS compatibility
+        // APP_UARTPrint_blocking("[DEBUG: APP_ExecuteMotionBlock FAILED - hardware not started]\r\n");
         execution_state = PLANNER_STATE_IDLE;
     }
 }
@@ -647,7 +658,21 @@ void MotionPlanner_UpdateTrajectory(void)
 
         if (current_motion_block != NULL)
         {
-            // New block received! (debug disabled for UGS)
+            // New block received! - Debug disabled for UGS compatibility
+            // extern void APP_UARTPrint_blocking(const char *message);
+            // APP_UARTPrint_blocking("[DEBUG: Motion planner got new block]\r\n");
+
+            // char block_debug[128];
+            // sprintf(block_debug, "[DEBUG: Block target X=%.3f Y=%.3f Z=%.3f]\r\n",
+            //         current_motion_block->target_pos[0],
+            //         current_motion_block->target_pos[1],
+            //         current_motion_block->target_pos[2]);
+            // APP_UARTPrint_blocking(block_debug);
+
+            // CRITICAL FIX: Execute the hardware motion for the new block
+            // This was missing - the planner was getting blocks but never executing them!
+            MotionPlanner_ExecuteBlock(current_motion_block);
+
             /*
             char debug_msg[128];
             sprintf(debug_msg, "[MP_NEW_BLOCK] X=%.1f Y=%.1f Z=%.1f\r\n",
@@ -725,6 +750,18 @@ void MotionPlanner_UpdateTrajectory(void)
         // Use S-curve profile timing instead of motion block duration
         float total_duration_ms = current_motion_profile.total_time * 1000.0f;
 
+        // Debug timing disabled for UGS compatibility
+        // static uint16_t timing_debug_counter = 0;
+        // timing_debug_counter++;
+        // if (timing_debug_counter == 1 || timing_debug_counter % 100 == 0) // Debug first and every 100ms
+        // {
+        //     char timing_debug[128];
+        //     sprintf(timing_debug, "[DEBUG: Motion timing] timer=%d duration_ms=%.1f\r\n",
+        //             motion_execution_timer, total_duration_ms);
+        //     extern void APP_UARTPrint_blocking(const char *message);
+        //     APP_UARTPrint_blocking(timing_debug);
+        // }
+
         if (motion_execution_timer < total_duration_ms)
         {
             // Still executing current block - update position with S-curve interpolation
@@ -747,13 +784,13 @@ void MotionPlanner_UpdateTrajectory(void)
         }
         else
         {
-            // Motion for this block is complete (debug disabled for UGS)
-            /*
-            char debug_msg[128];
-            sprintf(debug_msg, "[MP_BLOCK_DONE] timer=%d duration_ms=%.1f\r\n",
-                    motion_execution_timer, total_duration_ms);
-            APP_UARTPrint(debug_msg);
-            */
+            // Motion for this block is complete - debug disabled for UGS compatibility
+            // char completion_debug[128];
+            // sprintf(completion_debug, "[DEBUG: Motion block completed] timer=%d duration_ms=%.1f\r\n",
+            //         motion_execution_timer, total_duration_ms);
+            // extern void APP_UARTPrint_blocking(const char *message);
+            // APP_UARTPrint_blocking(completion_debug);
+
             // Ensure we reach the exact target position
             current_position = target_position;
             /*
@@ -769,16 +806,20 @@ void MotionPlanner_UpdateTrajectory(void)
             cnc_axes[1].current_position = (int32_t)(current_position.y * 400.0f); // Y-axis
             cnc_axes[2].current_position = (int32_t)(current_position.z * 400.0f); // Z-axis
 
-            /*
-            sprintf(debug_msg, "[MP_CNC_AXES_UPDATE] X=%d Y=%d Z=%d steps\r\n",
-                    cnc_axes[0].current_position, cnc_axes[1].current_position, cnc_axes[2].current_position);
-            APP_UARTPrint(debug_msg);
-            */
+            // Debug output disabled for UGS compatibility
+            // char debug_msg[128];
+            // sprintf(debug_msg, "[DEBUG: Motion completed - updating cnc_axes] X=%d Y=%d Z=%d steps\r\n",
+            //         cnc_axes[0].current_position, cnc_axes[1].current_position, cnc_axes[2].current_position);
+            // extern void APP_UARTPrint_blocking(const char *message);
+            // APP_UARTPrint_blocking(debug_msg);
+
             // Mark the block as complete in the buffer
+            // APP_UARTPrint_blocking("[DEBUG: Calling MotionBuffer_Complete() - advancing tail]\r\n");
             MotionBuffer_Complete();
 
             // Set planner to idle, ready for the next block
             current_motion_block = NULL;
+            // APP_UARTPrint_blocking("[DEBUG: Block completed - ready for next block]\r\n");
         }
     }
 }

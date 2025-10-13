@@ -801,10 +801,25 @@ void INTERP_LimitVelocity(velocity_t *velocity, float max_velocity)
 
 void INTERP_Timer1Callback(uint32_t status, uintptr_t context)
 {
-    // This should be called from Timer1 ISR at 1kHz
+    // This should be called from Timer1 ISR at 1kHz (now that prescaler is fixed)
     (void)status;  // Suppress unused parameter warning
     (void)context; // Suppress unused parameter warning
+
+    // Handle interpolation engine tasks
     INTERP_Tasks();
+
+    // ALSO handle motion planner trajectory updates
+    // This replaces the Core Timer approach now that Timer1 prescaler is fixed
+    extern void MotionPlanner_UpdateTrajectory(void);
+    MotionPlanner_UpdateTrajectory();
+
+    // Handle LED heartbeat (moved from Core Timer callback)
+    static uint16_t led_counter = 0;
+    led_counter++;
+    if ((led_counter % 100) == 0) // Every 100ms at 1kHz
+    {
+        LED1_Toggle();
+    }
 }
 
 bool INTERP_ConfigureTimer1(void)
