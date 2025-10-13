@@ -134,6 +134,7 @@ typedef enum
     GCODE_G2 = 2,
     GCODE_G3 = 3,
     GCODE_G4 = 4,
+    GCODE_G10 = 10,
     GCODE_G17 = 17,
     GCODE_G18 = 18,
     GCODE_G19 = 19,
@@ -886,6 +887,14 @@ static void APP_ProcessGRBLCommand(const char *command)
             // Run homing cycle
             APP_UARTPrint_blocking("[MSG:Homing cycle completed]\r\nok\r\n");
         }
+        else if (strncmp(command, "$J=", 3) == 0)
+        {
+            // Jogging command - extract G-code part and process as motion
+            const char *gcode_part = &command[3]; // Skip "$J="
+            APP_ProcessGCodeCommand(gcode_part);
+            // Note: Jogging commands in GRBL don't send "ok" response immediately
+            // The motion system will handle the response timing
+        }
         else if (command[1] >= '0' && command[1] <= '9')
         {
             // Setting change command (like $0=10)
@@ -1074,6 +1083,13 @@ static void APP_ProcessGCodeCommand(const char *command)
         {
             APP_UARTPrint_blocking("error:14\r\n");
         }
+        break;
+
+    case GCODE_G10:
+        // Coordinate system programming (G10 L2 P1 X0 Y0 Z0 or G10 L20 P0 X0 Y0 Z0)
+        // UGS uses this for coordinate system setup and position setting
+        MotionGCodeParser_UpdateCoordinateOffset(command);
+        APP_UARTPrint_blocking("ok\r\n");
         break;
 
     case GCODE_M3:
