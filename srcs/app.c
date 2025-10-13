@@ -125,6 +125,44 @@ static void APP_PrintParserState(void);
 static void APP_ProcessSettingChange(const char *command);
 static void APP_ProcessGCodeCommand(const char *command);
 
+// G-code Type Enumeration for optimized parsing
+typedef enum
+{
+    GCODE_UNKNOWN = 0,
+    GCODE_G0 = 1,
+    GCODE_G1 = 2,
+    GCODE_G2 = 3,
+    GCODE_G3 = 4,
+    GCODE_G4 = 5,
+    GCODE_G17 = 17,
+    GCODE_G18 = 18,
+    GCODE_G19 = 19,
+    GCODE_G20 = 20,
+    GCODE_G21 = 21,
+    GCODE_G28 = 28,
+    GCODE_G30 = 30,
+    GCODE_G54 = 54,
+    GCODE_G55 = 55,
+    GCODE_G56 = 56,
+    GCODE_G57 = 57,
+    GCODE_G58 = 58,
+    GCODE_G59 = 59,
+    GCODE_G90 = 90,
+    GCODE_G91 = 91,
+    GCODE_G92 = 92,
+    GCODE_G93 = 93,
+    GCODE_G94 = 94,
+    GCODE_M3 = 103,
+    GCODE_M4 = 104,
+    GCODE_M5 = 105,
+    GCODE_M8 = 108,
+    GCODE_M9 = 109,
+    GCODE_F = 200
+} gcode_type_t;
+
+// Optimized G-code parser function
+static gcode_type_t APP_ParseGCodeType(const char *command);
+
 // Motion System Functions
 static void APP_SendError(uint8_t error_code);
 static void APP_SendAlarm(uint8_t alarm_code);
@@ -703,9 +741,8 @@ static void APP_ProcessUART(void)
             if (received_char == '\n' || received_char == '\r')
             {
                 appData.uart_rx_buffer[appData.uart_rx_buffer_pos] = '\0';
-                if (appData.uart_rx_buffer_pos > 0)
-                {
-                    APP_ExecuteMotionCommand(appData.uart_rx_buffer);
+                if (appData.uart_rx_buffer_pos > 0) {
+                    APP_ProcessGRBLCommand(appData.uart_rx_buffer);
                 }
                 appData.uart_rx_buffer_pos = 0; // Reset for next line
             }
@@ -931,63 +968,70 @@ static void APP_PrintParserState(void)
     APP_UARTPrint_blocking("[GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0 S0]\r\nok\r\n");
 }
 
+static gcode_type_t APP_ParseGCodeType(const char *command)
+{
+    // Ultra-fast parsing - single atoi call + direct enum return
+    char first_char = command[0];
+
+    if (first_char == 'G' || first_char == 'g')
+    {
+        return (gcode_type_t)atoi(&command[1]); // Direct cast - enum values match G-code numbers
+    }
+    else if (first_char == 'M' || first_char == 'm')
+    {
+        int mcode_num = atoi(&command[1]);
+        return (gcode_type_t)(mcode_num + 100); // M-codes offset by 100 in enum
+    }
+    else if (first_char == 'F' || first_char == 'f')
+    {
+        return GCODE_F;
+    }
+
+    return GCODE_UNKNOWN;
+}
+
 static void APP_ProcessGCodeCommand(const char *command)
 {
-    // Enhanced G-code command processing with motion planning buffer integration
-    // Debug output disabled for UGS clean protocol
-    /*
-    APP_UARTPrint_blocking("[DEBUG: Processing G-code: ");
-    APP_UARTPrint_blocking(command);
-    APP_UARTPrint_blocking("]\r\n");
-    */
+    // Enhanced G-code command processing with optimized switch-based parsing
+    gcode_type_t gcode_type = APP_ParseGCodeType(command);
 
-    if (strncmp(command, "G0", 2) == 0 || strncmp(command, "G1", 2) == 0)
+    switch (gcode_type)
     {
-        // APP_UARTPrint_blocking("[DEBUG: G0/G1 detected]\r\n");
-        // Check if motion buffer has space before adding new move
+    case GCODE_G0:
+    case GCODE_G1:
+        // Motion commands - Check buffer space before adding new move
         if (MotionBuffer_HasSpace())
         {
-            // APP_UARTPrint_blocking("[DEBUG: Motion buffer has space]\r\n");
             motion_block_t move_block;
             if (MotionGCodeParser_ParseMove(command, &move_block))
             {
-                // APP_UARTPrint_blocking("[DEBUG: Parse successful, adding to buffer]\r\n");
-
                 // Calculate distance and duration for the motion block
                 MotionPlanner_CalculateDistance(&move_block);
 
-                // Successfully parsed, add to motion buffer
-                // APP_UARTPrint_blocking("[DEBUG: About to call MotionBuffer_Add]\r\n");
-                bool add_result = MotionBuffer_Add(&move_block);
-                if (add_result)
+                if (MotionBuffer_Add(&move_block))
                 {
-                    // APP_UARTPrint_blocking("[DEBUG: MotionBuffer_Add succeeded]\r\n");
+                    MotionPlanner_ProcessBuffer();
+                    APP_UARTPrint_blocking("ok\r\n");
                 }
                 else
                 {
-                    // APP_UARTPrint_blocking("[DEBUG: MotionBuffer_Add FAILED]\r\n");
+                    APP_UARTPrint_blocking("error:14\r\n"); // Motion buffer overflow
                 }
-                // Start motion processing
-                MotionPlanner_ProcessBuffer();
-                APP_UARTPrint_blocking("ok\r\n");
             }
             else
             {
-                // Parse error
-                // APP_UARTPrint_blocking("[DEBUG: Parse failed]\r\n");
                 APP_UARTPrint_blocking("error:33\r\n"); // Invalid gcode ID:33
             }
         }
         else
         {
-            // Buffer full - UGS/GRBL will wait for space
-            // APP_UARTPrint_blocking("[DEBUG: Motion buffer full]\r\n");
             APP_UARTPrint_blocking("error:14\r\n"); // Motion buffer overflow
         }
-    }
-    else if (strncmp(command, "G2", 2) == 0 || strncmp(command, "G3", 2) == 0)
-    {
-        // Circular movement - Check buffer space
+        break;
+
+    case GCODE_G2:
+    case GCODE_G3:
+        // Circular movement
         if (MotionBuffer_HasSpace())
         {
             motion_block_t arc_block;
@@ -1006,10 +1050,10 @@ static void APP_ProcessGCodeCommand(const char *command)
         {
             APP_UARTPrint_blocking("error:14\r\n");
         }
-    }
-    else if (strncmp(command, "G4", 2) == 0)
-    {
-        // Dwell - Add to motion buffer as zero-movement block with time delay
+        break;
+
+    case GCODE_G4:
+        // Dwell
         if (MotionBuffer_HasSpace())
         {
             motion_block_t dwell_block;
@@ -1028,40 +1072,41 @@ static void APP_ProcessGCodeCommand(const char *command)
         {
             APP_UARTPrint_blocking("error:14\r\n");
         }
-    }
-    else if (strncmp(command, "M3", 2) == 0 || strncmp(command, "M4", 2) == 0)
-    {
-        // Spindle on - Update machine state immediately
+        break;
+
+    case GCODE_M3:
+    case GCODE_M4:
+    case GCODE_M5:
+        // Spindle control
         MotionGCodeParser_UpdateSpindleState(command);
         APP_UARTPrint_blocking("ok\r\n");
-    }
-    else if (strncmp(command, "M5", 2) == 0)
-    {
-        // Spindle off - Update machine state immediately
-        MotionGCodeParser_UpdateSpindleState(command);
-        APP_UARTPrint_blocking("ok\r\n");
-    }
-    else if (strncmp(command, "M8", 2) == 0 || strncmp(command, "M9", 2) == 0)
-    {
-        // Coolant control - Update machine state immediately
+        break;
+
+    case GCODE_M8:
+    case GCODE_M9:
+        // Coolant control
         MotionGCodeParser_UpdateCoolantState(command);
         APP_UARTPrint_blocking("ok\r\n");
-    }
-    else if (strncmp(command, "G17", 3) == 0 || strncmp(command, "G18", 3) == 0 || strncmp(command, "G19", 3) == 0)
-    {
-        // Plane selection - Update parser state
+        break;
+
+    case GCODE_G17:
+    case GCODE_G18:
+    case GCODE_G19:
+        // Plane selection
         MotionGCodeParser_UpdatePlaneSelection(command);
         APP_UARTPrint_blocking("ok\r\n");
-    }
-    else if (strncmp(command, "G20", 3) == 0 || strncmp(command, "G21", 3) == 0)
-    {
+        break;
+
+    case GCODE_G20:
+    case GCODE_G21:
         // Units - Update parser state
         MotionGCodeParser_UpdateUnits(command);
         APP_UARTPrint_blocking("ok\r\n");
-    }
-    else if (strncmp(command, "G28", 3) == 0 || strncmp(command, "G30", 3) == 0)
-    {
-        // Go to predefined position - Add homing move to buffer
+        break;
+
+    case GCODE_G28:
+    case GCODE_G30:
+        // Homing
         if (MotionBuffer_HasSpace())
         {
             motion_block_t home_block;
@@ -1080,45 +1125,49 @@ static void APP_ProcessGCodeCommand(const char *command)
         {
             APP_UARTPrint_blocking("error:14\r\n");
         }
-    }
-    else if (strncmp(command, "G90", 3) == 0 || strncmp(command, "G91", 3) == 0)
-    {
-        // Distance mode - Update parser state
+        break;
+
+    case GCODE_G90:
+    case GCODE_G91:
+        // Distance mode
         MotionGCodeParser_UpdateDistanceMode(command);
         APP_UARTPrint_blocking("ok\r\n");
-    }
-    else if (strncmp(command, "G92", 3) == 0)
-    {
-        // Coordinate system offset - Update coordinate system
+        break;
+
+    case GCODE_G92:
+        // Coordinate system offset
         MotionGCodeParser_UpdateCoordinateOffset(command);
         APP_UARTPrint_blocking("ok\r\n");
-    }
-    else if (strncmp(command, "G93", 3) == 0 || strncmp(command, "G94", 3) == 0)
-    {
-        // Feed rate mode - G93: Inverse time mode, G94: Units per minute mode
-        // For now, just acknowledge - most systems default to G94 mode
-        // G94 is units per minute (default), G93 is inverse time mode
+        break;
+
+    case GCODE_G93:
+    case GCODE_G94:
+        // Feed rate mode
         MotionGCodeParser_UpdateFeedRateMode(command);
         APP_UARTPrint_blocking("ok\r\n");
-    }
-    else if (strncmp(command, "G54", 3) == 0 || strncmp(command, "G55", 3) == 0 ||
-             strncmp(command, "G56", 3) == 0 || strncmp(command, "G57", 3) == 0 ||
-             strncmp(command, "G58", 3) == 0 || strncmp(command, "G59", 3) == 0)
-    {
-        // Work coordinate systems - Update active coordinate system
+        break;
+
+    case GCODE_G54:
+    case GCODE_G55:
+    case GCODE_G56:
+    case GCODE_G57:
+    case GCODE_G58:
+    case GCODE_G59:
+        // Work coordinate systems
         MotionGCodeParser_UpdateWorkCoordinateSystem(command);
         APP_UARTPrint_blocking("ok\r\n");
-    }
-    else if (command[0] == 'F')
-    {
-        // Feed rate command (F100, F500, etc.)
-        // For now, just acknowledge - feed rate is handled in G1 commands
+        break;
+
+    case GCODE_F:
+        // Feed rate command
         APP_UARTPrint_blocking("ok\r\n");
-    }
-    else
-    {
-        // Unknown command - Send proper error
+        break;
+
+    case GCODE_UNKNOWN:
+    default:
+        // Unknown command
         APP_UARTPrint_blocking("error:20\r\n"); // Unsupported or invalid g-code ID:20
+        break;
     }
 }
 
