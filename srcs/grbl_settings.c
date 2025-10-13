@@ -607,7 +607,7 @@ void GRBL_SendStatusReport(void)
         return;
 
     // Get current position from interpolation engine
-    position_t current_pos = INTERP_GetCurrentPosition();
+    volatile position_t current_pos = INTERP_GetCurrentPosition(); // Ensure volatile to prevent optimization
 
     // Update context
     grbl_context.current_position[0] = current_pos.x;

@@ -430,6 +430,14 @@ void APP_Tasks(void)
 
 static void APP_MotionSystemInit(void)
 {
+    /* Initialize interpolation engine - CRITICAL! */
+    if (!INTERP_Initialize())
+    {
+        printf("ERROR: Failed to initialize interpolation engine!\n");
+        return;
+    }
+    printf("Interpolation engine initialized successfully\n");
+
     /* Initialize CNC axes */
     for (int i = 0; i < MAX_AXES; i++)
     {

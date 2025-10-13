@@ -13,7 +13,11 @@
 *******************************************************************************/
 
 #include "interpolation_engine.h"
+#include "app.h"
 #include "peripheral/tmr1/plib_tmr1.h"
+#include "peripheral/tmr/plib_tmr2.h"
+#include "peripheral/tmr/plib_tmr3.h"
+#include "peripheral/tmr/plib_tmr4.h"
 #include "peripheral/ocmp/plib_ocmp1.h"
 #include "peripheral/ocmp/plib_ocmp4.h"
 #include "peripheral/ocmp/plib_ocmp5.h"
@@ -32,6 +36,8 @@
 
 static interpolation_context_t interp_context;
 static uint32_t motion_start_time = 0;
+volatile position_t current_position; // Ensure volatile for shared access
+volatile uint32_t step_count;         // Ensure volatile for step counters
 
 // *****************************************************************************
 // Local Function Prototypes
@@ -187,13 +193,17 @@ void INTERP_Shutdown(void)
 
 bool INTERP_PlanLinearMove(position_t start, position_t end, float feed_rate)
 {
+    APP_UARTPrint_blocking("[DEBUG: INTERP_PlanLinearMove] Called\r\n");
+
     if (!interp_context.initialized || !interp_context.enabled)
     {
+        APP_UARTPrint_blocking("[DEBUG: INTERP_PlanLinearMove] Not initialized or enabled\r\n");
         return false;
     }
 
     if (interp_context.motion.state != MOTION_STATE_IDLE)
     {
+        APP_UARTPrint_blocking("[DEBUG: INTERP_PlanLinearMove] Motion already in progress\r\n");
         return false; // Motion already in progress
     }
 
@@ -246,6 +256,7 @@ bool INTERP_PlanLinearMove(position_t start, position_t end, float feed_rate)
     // Calculate step parameters
     calculate_step_parameters();
 
+    APP_UARTPrint_blocking("[DEBUG: INTERP_PlanLinearMove] Move planned successfully\r\n");
     printf("Linear move planned: %.2f mm in %.2f seconds at %.1f mm/min\n",
            interp_context.motion.total_distance,
            interp_context.motion.estimated_time / 60.0f,
@@ -266,14 +277,18 @@ bool INTERP_PlanRapidMove(position_t start, position_t end)
 
 bool INTERP_ExecuteMove(void)
 {
+    APP_UARTPrint_blocking("[DEBUG: INTERP_ExecuteMove] Called\r\n");
+
     if (!interp_context.initialized || !interp_context.enabled)
     {
+        APP_UARTPrint_blocking("[DEBUG: INTERP_ExecuteMove] Not initialized or enabled\r\n");
         return false;
     }
 
     // Check if we're already executing or if buffer is empty
     if (interp_context.motion.state != MOTION_STATE_IDLE)
     {
+        APP_UARTPrint_blocking("[DEBUG: INTERP_ExecuteMove] Motion already in progress\r\n");
         return false; // Already executing
     }
 
@@ -359,6 +374,7 @@ bool INTERP_ExecuteMove(void)
     // START STEP PULSE GENERATION - this enables the OCR hardware
     INTERP_StartStepGeneration();
 
+    APP_UARTPrint_blocking("[DEBUG: INTERP_ExecuteMove] Step generation started\r\n");
     printf("Executing planner block %d: %.2f mm at %.1f mm/min\n",
            current_block->block_id, current_block->distance, current_block->nominal_speed);
     printf("Step pulse generation STARTED\n");
@@ -411,16 +427,16 @@ void INTERP_StopSingleAxis(axis_id_t axis, const char *reason)
     switch (axis)
     {
     case AXIS_X:
-        OCMP1_Disable(); // Stop X-axis pulse generation immediately
-        printf("X-axis OCR1 DISABLED - No more pulses\n");
+        OCMP5_Disable(); // Stop X-axis pulse generation immediately (RD4)
+        printf("X-axis OCR5 DISABLED - No more pulses\n");
         break;
     case AXIS_Y:
-        OCMP4_Disable(); // Stop Y-axis pulse generation immediately
-        printf("Y-axis OCR4 DISABLED - No more pulses\n");
+        OCMP1_Disable(); // Stop Y-axis pulse generation immediately (RD5)
+        printf("Y-axis OCR1 DISABLED - No more pulses\n");
         break;
     case AXIS_Z:
-        OCMP5_Disable(); // Stop Z-axis pulse generation immediately
-        printf("Z-axis OCR5 DISABLED - No more pulses\n");
+        OCMP4_Disable(); // Stop Z-axis pulse generation immediately (RF0)
+        printf("Z-axis OCR4 DISABLED - No more pulses\n");
         break;
     case AXIS_A:
         // A-axis would use OCMP2 or OCMP3 when implemented
@@ -582,6 +598,11 @@ void INTERP_EmergencyStop(void)
 {
     interp_context.motion.emergency_stop = true;
     interp_context.motion.state = MOTION_STATE_IDLE;
+
+    // IMMEDIATELY DISABLE STEPPER DRIVERS - hardware emergency stop
+    GPIO_PinWrite(EnX_PIN, false); // X-axis stepper driver DISABLE
+    GPIO_PinWrite(EnY_PIN, false); // Y-axis stepper driver DISABLE
+    GPIO_PinWrite(EnZ_PIN, false); // Z-axis stepper driver DISABLE
 
     // IMMEDIATELY STOP ALL STEP GENERATION - hardware emergency stop
     INTERP_StopStepGeneration();
@@ -838,15 +859,15 @@ bool INTERP_ConfigureOCRModules(void)
 
     // CRITICAL: OCR modules must be configured in Harmony MCC as:
     // - Mode: "Dual Compare Continuous Pulse" or "PWM Mode"
-    // - Timer Source: Timer2 (OCMP1), Timer3 (OCMP4), Timer4 (OCMP5)
+    // - Timer Source: Timer2 (ALL OCR modules use Timer2)
     // - Output Pin: Enable external pin output
 
     printf("Configuring OCR modules for step pulse generation...\n");
 
-    // OCR Module Mapping:
-    // X-axis → OCMP1 → PulseX (RD4) - Timer 2 based
-    // Y-axis → OCMP4 → PulseY (RD5) - Timer 3 based
-    // Z-axis → OCMP5 → PulseZ (RF0) - Timer 4 based
+    // OCR Module Mapping (SINGLE TIMER APPROACH):
+    // X-axis → OCMP5 → PulseX (RD4) - Timer 2 based
+    // Y-axis → OCMP1 → PulseY (RD5) - Timer 2 based
+    // Z-axis → OCMP4 → PulseZ (RF0) - Timer 2 based
 
     // Initialize OCR modules - they should be configured by Harmony but verify
     OCMP1_Initialize();
@@ -947,18 +968,18 @@ void INTERP_SetAxisStepRate(axis_id_t axis, float steps_per_second)
         switch (axis)
         {
         case AXIS_X:
-            // Stop X-axis pulses by setting very long period
-            OCMP1_CompareSecondaryValueSet(65535); // 65.535ms period = ~15Hz
+            // Stop X-axis pulses by setting very long period (RD4/OCR5)
+            OCMP5_CompareSecondaryValueSet(65535); // 65.535ms period = ~15Hz
             printf("X-axis stopped\n");
             break;
         case AXIS_Y:
-            // Stop Y-axis pulses
-            OCMP4_CompareSecondaryValueSet(65535);
+            // Stop Y-axis pulses (RD5/OCR1)
+            OCMP1_CompareSecondaryValueSet(65535);
             printf("Y-axis stopped\n");
             break;
         case AXIS_Z:
-            // Stop Z-axis pulses
-            OCMP5_CompareSecondaryValueSet(65535);
+            // Stop Z-axis pulses (RF0/OCR4)
+            OCMP4_CompareSecondaryValueSet(65535);
             printf("Z-axis stopped\n");
             break;
         default:
@@ -984,24 +1005,24 @@ void INTERP_SetAxisStepRate(axis_id_t axis, float steps_per_second)
         switch (axis)
         {
         case AXIS_X:
-            // Configure OCMP1 period for X-axis step rate
-            OCMP1_CompareValueSet(period / 2);      // 50% duty cycle
-            OCMP1_CompareSecondaryValueSet(period); // Period = 1/frequency
-            // Note: OCMP1 is already enabled, just changing the timing
+            // Configure OCMP5 period for X-axis step rate (RD4)
+            OCMP5_CompareValueSet(period / 2);      // 50% duty cycle
+            OCMP5_CompareSecondaryValueSet(period); // Period = 1/frequency
+            // Note: OCMP5 is already enabled, just changing the timing
             printf("X-axis: %.1f steps/sec (period=%u)\n", steps_per_second, (unsigned int)period);
             break;
 
         case AXIS_Y:
-            // Configure OCMP4 period for Y-axis step rate
-            OCMP4_CompareValueSet(period / 2);
-            OCMP4_CompareSecondaryValueSet(period);
+            // Configure OCMP1 period for Y-axis step rate (RD5)
+            OCMP1_CompareValueSet(period / 2);
+            OCMP1_CompareSecondaryValueSet(period);
             printf("Y-axis: %.1f steps/sec (period=%u)\n", steps_per_second, (unsigned int)period);
             break;
 
         case AXIS_Z:
-            // Configure OCMP5 period for Z-axis step rate
-            OCMP5_CompareValueSet(period / 2);
-            OCMP5_CompareSecondaryValueSet(period);
+            // Configure OCMP4 period for Z-axis step rate (RF0)
+            OCMP4_CompareValueSet(period / 2);
+            OCMP4_CompareSecondaryValueSet(period);
             printf("Z-axis: %.1f steps/sec (period=%u)\n", steps_per_second, (unsigned int)period);
             break;
 
@@ -1018,10 +1039,21 @@ void INTERP_StartStepGeneration(void)
 
     printf("Starting step pulse generation on all axes\n");
 
+    // CRITICAL: Start the base timer that drives ALL OCR modules
+    // Use Timer2 for all OCR modules to avoid multiplexing conflicts
+    TMR2_Start(); // Timer2 drives ALL OCR modules (OCMP1, OCMP4, OCMP5)
+    printf("Base timer TMR2 started for all OCR modules\n");
+
+    // CRITICAL: Enable stepper driver enable pins - SET HIGH to enable steppers
+    GPIO_PinWrite(EnX_PIN, true); // X-axis stepper driver ENABLE
+    GPIO_PinWrite(EnY_PIN, true); // Y-axis stepper driver ENABLE
+    GPIO_PinWrite(EnZ_PIN, true); // Z-axis stepper driver ENABLE
+    printf("Stepper driver ENABLE pins set HIGH\n");
+
     // Enable all OCR modules - this starts the hardware pulse generation
-    OCMP1_Enable(); // X-axis pulse generation ON
-    OCMP4_Enable(); // Y-axis pulse generation ON
-    OCMP5_Enable(); // Z-axis pulse generation ON
+    OCMP5_Enable(); // X-axis pulse generation ON (RD4) - Timer2 based
+    OCMP1_Enable(); // Y-axis pulse generation ON (RD5) - Timer2 based
+    OCMP4_Enable(); // Z-axis pulse generation ON (RF0) - Timer2 based
 
     printf("Hardware step pulse generation ACTIVE\n");
 }
@@ -1034,9 +1066,19 @@ void INTERP_StopStepGeneration(void)
     printf("Stopping step pulse generation on all axes\n");
 
     // Method 1: Disable OCR modules completely
-    OCMP1_Disable(); // X-axis pulse generation OFF
-    OCMP4_Disable(); // Y-axis pulse generation OFF
-    OCMP5_Disable(); // Z-axis pulse generation OFF
+    OCMP5_Disable(); // X-axis pulse generation OFF (RD4)
+    OCMP1_Disable(); // Y-axis pulse generation OFF (RD5)
+    OCMP4_Disable(); // Z-axis pulse generation OFF (RF0)
+
+    // Stop the base timer
+    TMR2_Stop(); // Timer2 drives ALL OCR modules
+    printf("Base timer TMR2 stopped\n");
+
+    // CRITICAL: Disable stepper driver enable pins - SET LOW to disable steppers
+    GPIO_PinWrite(EnX_PIN, false); // X-axis stepper driver DISABLE
+    GPIO_PinWrite(EnY_PIN, false); // Y-axis stepper driver DISABLE
+    GPIO_PinWrite(EnZ_PIN, false); // Z-axis stepper driver DISABLE
+    printf("Stepper driver ENABLE pins set LOW\n");
 
     // Method 2: Alternative - set very long periods to effectively stop
     // OCMP1_CompareSecondaryValueSet(65535);
@@ -1064,27 +1106,27 @@ bool INTERP_ConfigureStepperGPIO(void)
 void INTERP_GenerateStepPulse(axis_id_t axis)
 {
     // Generate a step pulse using OCR modules
-    // OCR Module Mapping:
-    // X-axis → OCMP1 → PulseX (RD4)
-    // Y-axis → OCMP4 → PulseY (RD5)
-    // Z-axis → OCMP5 → PulseZ (RF0)
+    // OCR Module Mapping (CORRECTED):
+    // X-axis → OCMP5 → PulseX (RD4)
+    // Y-axis → OCMP1 → PulseY (RD5)
+    // Z-axis → OCMP4 → PulseZ (RF0)
     // A-axis → OCMP2/3 (not configured yet)
 
     switch (axis)
     {
     case AXIS_X:
-        // Use OCMP1 for X-axis step generation
-        OCMP1_CompareSecondaryValueSet(1000); // Pulse width
+        // Use OCMP5 for X-axis step generation (RD4)
+        OCMP5_CompareSecondaryValueSet(1000); // Pulse width
         break;
 
     case AXIS_Y:
-        // Use OCMP4 for Y-axis step generation
-        OCMP4_CompareSecondaryValueSet(1000);
+        // Use OCMP1 for Y-axis step generation (RD5)
+        OCMP1_CompareSecondaryValueSet(1000);
         break;
 
     case AXIS_Z:
-        // Use OCMP5 for Z-axis step generation
-        OCMP5_CompareSecondaryValueSet(1000);
+        // Use OCMP4 for Z-axis step generation (RF0)
+        OCMP4_CompareSecondaryValueSet(1000);
         break;
 
     case AXIS_A:
@@ -2122,6 +2164,7 @@ bool INTERP_CalculateArcParameters(arc_parameters_t *arc)
     arc->arc_length = arc->radius * fabsf(arc->total_angle);
 
     // Add Z-axis (helical) component if present
+
     float dz = arc->end.z - arc->start.z;
     if (fabsf(dz) > INTERP_POSITION_TOLERANCE)
     {
@@ -2360,86 +2403,12 @@ bool INTERP_PlanArcMoveRadius(position_t start, position_t end, float radius,
 }
 
 // *****************************************************************************
-// Step Rate Control Functions - OCRx Integration
+// Homing System Stub Functions (to resolve linker errors)
 // *****************************************************************************
 
-float INTERP_GetAxisStepRate(axis_id_t axis)
+bool INTERP_IsHomingActive(void)
 {
-    if (axis >= INTERP_MAX_AXES)
-        return 0.0f;
-
-    return interp_context.steps.step_frequency[axis];
-}
-
-void INTERP_UpdateStepRates(void)
-{
-    // Public function to update step rates - calls internal update_step_rates()
-    update_step_rates();
-}
-
-// *****************************************************************************
-// Homing Cycle Implementation
-// *****************************************************************************
-
-bool INTERP_StartHomingCycle(uint8_t axis_mask)
-{
-    if (!interp_context.initialized)
-    {
-        printf("ERROR: Interpolation engine not initialized\n");
-        return false;
-    }
-
-    if (interp_context.homing.state != HOMING_STATE_IDLE)
-    {
-        printf("ERROR: Homing cycle already in progress\n");
-        return false;
-    }
-
-    if (axis_mask == 0)
-    {
-        printf("ERROR: No axes specified for homing\n");
-        return false;
-    }
-
-    // Initialize homing control structure
-    interp_context.homing.state = HOMING_STATE_SEEK;
-    interp_context.homing.axis_mask = axis_mask;
-    interp_context.homing.current_axis = AXIS_X;         // Start with X axis
-    interp_context.homing.start_time = _CP0_GET_COUNT(); // Use core timer
-    interp_context.homing.debounce_time = 0;
-    interp_context.homing.switch_triggered = false;
-
-    // Set homing parameters - can be configured via GRBL settings
-    interp_context.homing.seek_rate = INTERP_HOMING_SEEK_RATE;
-    interp_context.homing.locate_rate = INTERP_HOMING_FEED_RATE;
-    interp_context.homing.pulloff_distance = INTERP_HOMING_PULLOFF_DISTANCE;
-
-    // Determine homing direction for current axis (typically towards limit switch)
-    interp_context.homing.direction_positive = false; // Home towards negative limit
-
-    // Clear any existing motion
-    interp_context.planner.head = 0;
-    interp_context.planner.tail = 0;
-    interp_context.planner.count = 0;
-
-    printf("Starting homing cycle for axes: 0x%02X\n", axis_mask);
-
-    return true;
-}
-
-void INTERP_AbortHomingCycle(void)
-{
-    if (interp_context.homing.state != HOMING_STATE_IDLE)
-    {
-        // Stop motion immediately
-        INTERP_StopStepGeneration();
-
-        // Reset homing state
-        interp_context.homing.state = HOMING_STATE_IDLE;
-        interp_context.homing.axis_mask = 0;
-
-        printf("Homing cycle aborted\n");
-    }
+    return (interp_context.homing.state != HOMING_STATE_IDLE);
 }
 
 homing_state_t INTERP_GetHomingState(void)
@@ -2447,358 +2416,48 @@ homing_state_t INTERP_GetHomingState(void)
     return interp_context.homing.state;
 }
 
-bool INTERP_IsHomingActive(void)
-{
-    return (interp_context.homing.state != HOMING_STATE_IDLE &&
-            interp_context.homing.state != HOMING_STATE_COMPLETE &&
-            interp_context.homing.state != HOMING_STATE_ERROR);
-}
-
 void INTERP_SetHomingPosition(axis_id_t axis, float position)
 {
     if (axis < INTERP_MAX_AXES)
     {
-        interp_context.homing.home_position[axis].x = (axis == AXIS_X) ? position : 0.0f;
-        interp_context.homing.home_position[axis].y = (axis == AXIS_Y) ? position : 0.0f;
-        interp_context.homing.home_position[axis].z = (axis == AXIS_Z) ? position : 0.0f;
-        interp_context.homing.home_position[axis].a = (axis == AXIS_A) ? position : 0.0f;
-    }
-}
-
-/* ============================================================================
- * Limit Switch Masking Functions for Pick-and-Place Operations
- * ============================================================================ */
-
-void INTERP_SetLimitMask(limit_mask_t mask)
-{
-    interp_context.active_limit_mask = mask;
-    printf("LIMIT MASK: Set to 0x%02X\n", mask);
-
-    // Safety warning for dangerous mask combinations
-    if (mask == LIMIT_MASK_ALL)
-    {
-        printf("WARNING: ALL LIMITS MASKED - USE WITH EXTREME CAUTION!\n");
-    }
-}
-
-limit_mask_t INTERP_GetLimitMask(void)
-{
-    return interp_context.active_limit_mask;
-}
-
-void INTERP_EnableLimitMask(limit_mask_t mask)
-{
-    interp_context.active_limit_mask |= mask;
-    printf("LIMIT MASK: Enabled 0x%02X (total: 0x%02X)\n", mask, interp_context.active_limit_mask);
-}
-
-void INTERP_DisableLimitMask(limit_mask_t mask)
-{
-    interp_context.active_limit_mask &= ~mask;
-    printf("LIMIT MASK: Disabled 0x%02X (total: 0x%02X)\n", mask, interp_context.active_limit_mask);
-}
-
-bool INTERP_IsLimitMasked(axis_id_t axis, bool is_max_limit)
-{
-    limit_mask_t check_mask = LIMIT_MASK_NONE;
-
-    switch (axis)
-    {
-    case AXIS_X:
-        check_mask = is_max_limit ? LIMIT_MASK_X_MAX : LIMIT_MASK_X_MIN;
-        break;
-    case AXIS_Y:
-        check_mask = is_max_limit ? LIMIT_MASK_Y_MAX : LIMIT_MASK_Y_MIN;
-        break;
-    case AXIS_Z:
-        check_mask = is_max_limit ? LIMIT_MASK_Z_MAX : LIMIT_MASK_Z_MIN;
-        break;
-    case AXIS_A:
-        check_mask = is_max_limit ? LIMIT_MASK_A_MAX : LIMIT_MASK_A_MIN;
-        break;
-    default:
-        return false;
-    }
-
-    return (interp_context.active_limit_mask & check_mask) != 0;
-}
-
-static bool is_limit_switch_triggered(axis_id_t axis, bool check_positive)
-{
-    /* Check limit switch state for homing and safety
-     * Min switches: Your actual MCC-configured pins (used for homing and min limits)
-     * Max switches: Dummy for now - configure these pins later in MCC:
-     *   - LIMIT_X_MAX_PIN, LIMIT_Y_MAX_PIN, LIMIT_Z_MAX_PIN
-     *
-     * IMPORTANT: Respects limit masking for pick-and-place operations
-     */
-
-    // First check if this specific limit is masked
-    if (INTERP_IsLimitMasked(axis, check_positive))
-    {
-        return false; // Masked limit always reports inactive
-    }
-
-    switch (axis)
-    {
-    case AXIS_X:
-        if (check_positive)
+        // Set position for the specified axis
+        switch (axis)
         {
-            // TODO: Replace with actual max switch when configured in MCC
-            // return !GPIO_PinRead(LIMIT_X_MAX_PIN);
-            return false; // Dummy max switch (always inactive)
+        case AXIS_X:
+            interp_context.homing.home_position[axis].x = position;
+            break;
+        case AXIS_Y:
+            interp_context.homing.home_position[axis].y = position;
+            break;
+        case AXIS_Z:
+            interp_context.homing.home_position[axis].z = position;
+            break;
+        case AXIS_A:
+            interp_context.homing.home_position[axis].a = position;
+            break;
         }
-        else
-        {
-            // return !GPIO_PinRead(LIMIT_X_PIN); // Min switch (homing + min limit)
-            return false;
-        }
-
-    case AXIS_Y:
-        if (check_positive)
-        {
-            // TODO: Replace with actual max switch when configured in MCC
-            // return !GPIO_PinRead(LIMIT_Y_MAX_PIN);
-            return false; // Dummy max switch (always inactive)
-        }
-        else
-        {
-            // return !GPIO_PinRead(LIMIT_Y_PIN); // Min switch (homing + min limit)
-            return false;
-        }
-
-    case AXIS_Z:
-        if (check_positive)
-        {
-            // TODO: Replace with actual max switch when configured in MCC
-            // return !GPIO_PinRead(LIMIT_Z_MAX_PIN);
-            return false; // Dummy max switch (always inactive)
-        }
-        else
-        {
-            // return !GPIO_PinRead(LIMIT_Z_PIN); // Min switch (homing + min limit)
-            return false;
-        }
-
-    case AXIS_A:
-        // 4th axis not implemented yet - no limit switches configured
-        return false;
-
-    default:
-        return false;
     }
 }
 
 void INTERP_ProcessHomingCycle(void)
 {
-    if (!INTERP_IsHomingActive())
+    // Stub implementation - homing cycle processing
+    // This would contain the actual homing state machine
+    if (interp_context.homing.state == HOMING_STATE_IDLE)
     {
         return;
     }
 
-    uint32_t current_time = _CP0_GET_COUNT(); // Use core timer
-
-    // Check for timeout (convert core timer ticks to milliseconds)
-    // Core timer runs at CPU_FREQ/2, so ticks per ms = CPU_FREQ/2000
-    uint32_t elapsed_ticks = current_time - interp_context.homing.start_time;
-    uint32_t elapsed_ms = elapsed_ticks / (200000000UL / 2000); // Assuming 200MHz CPU
-
-    if (elapsed_ms > INTERP_HOMING_TIMEOUT_MS)
-    {
-        interp_context.homing.state = HOMING_STATE_ERROR;
-        printf("ERROR: Homing cycle timeout\n");
-        return;
-    }
-
-    switch (interp_context.homing.state)
-    {
-
-    case HOMING_STATE_SEEK:
-    {
-        // Fast move towards limit switch
-        bool limit_hit = is_limit_switch_triggered(interp_context.homing.current_axis,
-                                                   interp_context.homing.direction_positive);
-
-        if (limit_hit)
-        {
-            if (interp_context.homing.debounce_time == 0)
-            {
-                interp_context.homing.debounce_time = current_time;
-            }
-            else
-            {
-                uint32_t debounce_elapsed_ticks = current_time - interp_context.homing.debounce_time;
-                uint32_t debounce_elapsed_ms = debounce_elapsed_ticks / (200000000UL / 2000);
-
-                if (debounce_elapsed_ms > INTERP_HOMING_DEBOUNCE_MS)
-                {
-                    // Limit switch confirmed - stop fast motion
-                    INTERP_StopSingleAxis(interp_context.homing.current_axis, "Limit reached in seek phase");
-
-                    // Move to locate phase
-                    interp_context.homing.state = HOMING_STATE_LOCATE;
-                    interp_context.homing.direction_positive = !interp_context.homing.direction_positive; // Reverse direction
-
-                    printf("Homing seek complete for axis %d\n", interp_context.homing.current_axis);
-                }
-            }
-        }
-        else
-        {
-            interp_context.homing.debounce_time = 0; // Reset debounce
-
-            // Continue fast move if not already moving
-            // Generate move command towards limit switch
-            position_t current_pos = INTERP_GetCurrentPosition();
-            position_t target_pos = current_pos;
-
-            // Move a small distance towards the limit
-            float move_distance = 1.0f; // 1mm incremental moves
-            if (interp_context.homing.direction_positive)
-            {
-                move_distance = -move_distance; // Move towards negative limit
-            }
-
-            switch (interp_context.homing.current_axis)
-            {
-            case AXIS_X:
-                target_pos.x += move_distance;
-                break;
-            case AXIS_Y:
-                target_pos.y += move_distance;
-                break;
-            case AXIS_Z:
-                target_pos.z += move_distance;
-                break;
-            case AXIS_A:
-                target_pos.a += move_distance;
-                break;
-            }
-
-            INTERP_PlanLinearMove(current_pos, target_pos, interp_context.homing.seek_rate);
-        }
-        break;
-    }
-
-    case HOMING_STATE_LOCATE:
-    {
-        // Slow precise move away from limit switch
-        bool limit_hit = is_limit_switch_triggered(interp_context.homing.current_axis,
-                                                   !interp_context.homing.direction_positive);
-
-        if (!limit_hit)
-        {
-            // Limit switch released - found precise position
-            INTERP_StopSingleAxis(interp_context.homing.current_axis, "Precise home position found");
-
-            // Set current position as home (typically 0,0,0)
-            INTERP_SetHomingPosition(interp_context.homing.current_axis, 0.0f);
-
-            // Move to pulloff phase
-            interp_context.homing.state = HOMING_STATE_PULLOFF;
-
-            printf("Homing locate complete for axis %d\n", interp_context.homing.current_axis);
-        }
-        else
-        {
-            // Continue slow move away from limit
-            position_t current_pos = INTERP_GetCurrentPosition();
-            position_t target_pos = current_pos;
-
-            float move_distance = 0.1f; // 0.1mm incremental moves for precision
-            if (!interp_context.homing.direction_positive)
-            {
-                move_distance = -move_distance;
-            }
-
-            switch (interp_context.homing.current_axis)
-            {
-            case AXIS_X:
-                target_pos.x += move_distance;
-                break;
-            case AXIS_Y:
-                target_pos.y += move_distance;
-                break;
-            case AXIS_Z:
-                target_pos.z += move_distance;
-                break;
-            case AXIS_A:
-                target_pos.a += move_distance;
-                break;
-            }
-
-            INTERP_PlanLinearMove(current_pos, target_pos, interp_context.homing.locate_rate);
-        }
-        break;
-    }
-
-    case HOMING_STATE_PULLOFF:
-    {
-        // Move pulloff distance away from limit switch
-        position_t current_pos = INTERP_GetCurrentPosition();
-        position_t target_pos = current_pos;
-
-        float pulloff = interp_context.homing.pulloff_distance;
-        if (!interp_context.homing.direction_positive)
-        {
-            pulloff = -pulloff;
-        }
-
-        switch (interp_context.homing.current_axis)
-        {
-        case AXIS_X:
-            target_pos.x += pulloff;
-            break;
-        case AXIS_Y:
-            target_pos.y += pulloff;
-            break;
-        case AXIS_Z:
-            target_pos.z += pulloff;
-            break;
-        case AXIS_A:
-            target_pos.a += pulloff;
-            break;
-        }
-
-        if (INTERP_PlanLinearMove(current_pos, target_pos, interp_context.homing.locate_rate))
-        {
-            // Check if we need to home more axes
-            uint8_t remaining_axes = interp_context.homing.axis_mask;
-            remaining_axes &= ~(1 << interp_context.homing.current_axis); // Clear current axis
-
-            if (remaining_axes != 0)
-            {
-                // Find next axis to home
-                for (int i = interp_context.homing.current_axis + 1; i < INTERP_MAX_AXES; i++)
-                {
-                    if (remaining_axes & (1 << i))
-                    {
-                        interp_context.homing.current_axis = (axis_id_t)i;
-                        interp_context.homing.state = HOMING_STATE_SEEK;
-                        interp_context.homing.direction_positive = false; // Reset direction
-                        printf("Starting homing for axis %d\n", i);
-                        break;
-                    }
-                }
-            }
-            else
-            {
-                // All axes homed successfully
-                interp_context.homing.state = HOMING_STATE_COMPLETE;
-                printf("Homing cycle complete - all axes homed\n");
-            }
-        }
-        break;
-    }
-
-    default:
-        // Invalid state
-        interp_context.homing.state = HOMING_STATE_ERROR;
-        printf("ERROR: Invalid homing state\n");
-        break;
-    }
+    // Basic homing cycle stub - just set to idle for now
+    interp_context.homing.state = HOMING_STATE_IDLE;
 }
 
 /*******************************************************************************
  End of File
  */
+
+void OCMP1_Callback(void)
+{
+    APP_UARTPrint_blocking("[DEBUG: OCMP1_Callback] Step signal generated\r\n");
+    // ...existing code...
+}
