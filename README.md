@@ -37,7 +37,7 @@ This is a professional-grade CNC motion control system implemented on the **PIC3
 - **Package**: 100-pin TQFP
 - **Development Environment**: MPLAB X IDE v6.25 + XC32 v4.60
 
-### Hardware Pulse Generation
+### Hardware Pulse Generation in 
 ```
 OCRx Module Assignments:
 ├── OCMP1 → Y-axis step pulses
@@ -45,8 +45,8 @@ OCRx Module Assignments:
 └── OCMP5 → Z-axis step pulses
 
 Timer Sources:
-├── TMR2/TMR3/TMR4 → OCRx time base
-├── CORETIMER → System timing / Motion control timing
+├── TMR2/TMR3/TMR4/TMR5 → OCRx time base
+├── TMR1 → System timing / Motion control timing
 ```
 
 ### GPIO Pin Assignments
@@ -72,9 +72,9 @@ The motion control system has been restructured into clean, modular components w
 ```
 Motion Control Architecture:
 ┌─────────────────────────────────────────────────────────────────────┐
-│                          Core Timer (1kHz)                         │
-│                    MotionPlanner_UpdateTrajectory()                │
-└───────────────────────────────┬───────────────────────────────────┘
+│                          Core Timer (1kHz)                          │
+│                    MotionPlanner_UpdateTrajectory()                 │
+└───────────────────────────────┬─────────────────────────────────────┘
                                 │
                 ┌───────────────▼───────────────┐
                 │        Motion Planner        │

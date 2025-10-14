@@ -923,7 +923,8 @@ bool INTERP_ConfigureOCRModules(void)
     // - Timer Source: Timer2 (ALL OCR modules use Timer2)
     // - Output Pin: Enable external pin output
 
-    printf("Configuring OCR modules for step pulse generation...\n");
+    // REMOVED: printf() causes hang during initialization before UART ready
+    // printf("Configuring OCR modules for step pulse generation...\n");
 
     // OCR Module Mapping (SINGLE TIMER APPROACH):
     // X-axis → OCMP5 → PulseX (RD4) - Timer 2 based
@@ -962,11 +963,12 @@ bool INTERP_ConfigureOCRModules(void)
         interp_context.steps.bresenham_delta[i] = 0;
     }
 
-    printf("OCR modules enabled - continuous pulse generation active\n");
-    printf("X-axis: OCMP1 on pin RD4\n");
-    printf("Y-axis: OCMP4 on pin RD5\n");
-    printf("Z-axis: OCMP5 on pin RF0\n");
-    printf("Initial pulse rate: ~15 Hz (very slow for safety)\n");
+    // REMOVED: printf() causes hang during initialization before UART ready
+    // printf("OCR modules enabled - continuous pulse generation active\n");
+    // printf("X-axis: OCMP1 on pin RD4\n");
+    // printf("Y-axis: OCMP4 on pin RD5\n");
+    // printf("Z-axis: OCMP5 on pin RF0\n");
+    // printf("Initial pulse rate: ~15 Hz (very slow for safety)\n");
 
     return true;
 }

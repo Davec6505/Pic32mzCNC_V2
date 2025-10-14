@@ -121,113 +121,60 @@ OC2                  | Timer4 or Timer5
 OC3 (A-axis)         | Timer4 or Timer5
 OC4 (X-axis)         | Timer2 or Timer3
 OC5 (Z-axis)         | Timer2 or Timer3
-OC6-OC9              | Timer6/Timer7 (not used)
 ```
 
-**Timer pairing capability:**
-- PIC32MZ timers can operate as 16-bit or be paired for 32-bit mode
-- TMR2/TMR3 can combine into one 32-bit timer
-- TMR4/TMR5 can combine into one 32-bit timer
-- **This project uses separate 16-bit mode** for independent axis control
+**OCR Dual-Compare Architecture:**
+- **OCxRS Register**: Primary compare (pulse width = 40 counts fixed)
+- **OCxR Register**: Secondary compare (pulse period = variable for speed)
+- **TMRxPR Register**: Timer period (must satisfy: TMRxPR > OCxRS > OCxR)
+- **Constraint**: Maximum period = 65485 counts (16-bit timer limit minus safety margin)
 
-**Output Compare Module Hardware (Figure 18-1):**
-
-The OCR module uses a dual-compare architecture for pulse generation:
-
-```
-Timer → Comparator → Output Logic → OCx Pin
-         ↑     ↑
-      OCxRS  OCxR
-      (16bit)(16bit)
-```
-
-**Key hardware components:**
-- **OCxRS Register**: Primary compare value (sets pulse width - fixed at 40 counts)
-- **OCxR Register**: Secondary compare value (sets pulse period - variable for speed control)
-- **Comparator**: Continuously compares timer count against OCxRS and OCxR
-- **Output Logic**: Generates pulse edges when timer matches compare values
-- **Mode Select**: OCM<2:0> bits configure continuous pulse mode
-
-**Critical timing relationships in continuous pulse mode (Dual Compare Mode):**
-
-The OCx pin operates in a low-to-high and high-to-low sequence:
-1. Timer counts from 0 to TMRxPR (period register) then resets to 0x0000
-2. **Rising edge**: When Timer = OCxRS → Output goes HIGH
-3. **Falling edge**: When Timer = OCxR → Output goes LOW
-4. Timer rolls over at TMRxPR and the cycle repeats
-
-**Key timing requirements from PIC32 Reference Manual (Section 16.3.2.4):**
-- OCx pin is driven HIGH one PBCLK after compare match with OCxRS
-- OCx pin remains HIGH until next match between timer and OCxR
-- Pulse generation continues until mode change or module disable
-- Timer base will count up to PRy value, then reset to 0x0000
-
-**CRITICAL CONSTRAINTS (Table 16-2 - Special Cases):**
-- **PRy ≥ OCxRS and OCxRS ≥ OCxR**: Normal continuous pulse operation
-- **OCxRS > PRy and PRy ≥ OCxR**: Only rising edge generated, OCxIF not set (invalid mode)
-- **OCxR > PRy**: Unsupported mode; timer resets prior to match condition
-- **If OCxRS ≤ PRy**: Must ensure OCxR < OCxRS for falling edge generation
-- **MUST maintain**: PRy > (OCxR + OCxRS) for proper edge detection at all times
-
-**CRITICAL: OCR Continuous Pulse Mode Constraints**
-
-For continuous pulse generation in Dual Compare Mode, the timer Period Register (PRy) and compare registers must maintain specific relationships per PIC32 Reference Manual Table 16-2:
-
+**Critical timing pattern:**
 ```c
-// REQUIRED RELATIONSHIP (from PIC32 Reference Manual Section 16.3.2.4):
-// Normal operation requires: PRy ≥ OCxRS and OCxRS ≥ OCxR
-// 
-// Pulse generation sequence:
-// 1. When Timer = OCxRS → OCx pin goes HIGH (rising edge)
-// 2. When Timer = OCxR → OCx pin goes LOW (falling edge)  
-// 3. When Timer = PRy → Timer resets to 0x0000
-// 4. Cycle repeats
-//
-// Therefore: OCxR must be less than OCxRS for falling edge to occur
-//           PRy must be greater than OCxRS for proper timer rollover
+#define OCMP_PULSE_WIDTH 40  // DRV8825 requires min 1.9µs, we use ~40 timer counts
 
-// IMPLEMENTATION PATTERN:
-#define OCMP_PULSE_WIDTH 40  // Constant value for OCxRS register
-                             // Sets rising edge at timer count = 40
-                             // Just long enough for stepper driver detection
-
-// When updating step rate:
 uint32_t period = MotionPlanner_CalculateOCRPeriod(velocity_mm_min);
-
-// CRITICAL: Update TMRxPR and OCRxR together to maintain proper pulse timing
-TMRx_PeriodSet(period);                                      // PRy (period register)
-OCMPx_CompareSecondaryValueSet(period - OCMP_PULSE_WIDTH);  // OCxR (falling edge position)
-OCMPx_CompareValueSet(OCMP_PULSE_WIDTH);                    // OCxRS = 40 (rising edge - constant)
-
-// This maintains: PRy > OCxRS > OCxR
-// Where: PRy = period
-//        OCxRS = 40 (rising edge at count 40)
-//        OCxR = period - 40 (falling edge before rollover)
+TMRx_PeriodSet(period);                                      // Set timer rollover
+OCMPx_CompareSecondaryValueSet(period - OCMP_PULSE_WIDTH);  // Falling edge position
+OCMPx_CompareValueSet(OCMP_PULSE_WIDTH);                    // Rising edge position (constant)
 ```
 
-**Velocity range constraints:**
-- **Timer configuration**: TMR2/3/4/5 configured as 16-bit timers (not 32-bit mode)
-  - Note: PIC32MZ timers can be paired (e.g., TMR2/TMR3) for 32-bit operation, but we use separate 16-bit mode
-- **Slowest speed**: TMRxPR must not exceed maximum 16-bit value minus safety margin
-  - Maximum period = `0xFFFF - OCMP_PULSE_WIDTH - 10`
-  - Maximum period = `65535 - 40 - 10 = 65485` counts
-  - The -10 count safety margin ensures rising/falling edges are properly detected
-  - OCRxR calculation at slowest speed: `TMRxPR - OCMP_PULSE_WIDTH`
-  - This guarantees edge detection: TMRxPR > (OCRxR + OCRxRS) by at least 10 counts
+### DRV8825 Stepper Driver Interface
+**Hardware**: Pololu DRV8825 carrier boards (or compatible) for bipolar stepper motors
 
-**Why this matters:**
-- OCxRS sets the **rising edge position** (fixed at 40 counts - when output goes HIGH)
-- OCxR sets the **falling edge position** (variable - when output goes LOW before period rollover)
-- **TMRxPR and OCxR must be updated together** - they track each other for proper pulse period adjustment
-- The relationship PRy > OCxRS > OCxR ensures both edges occur within each timer cycle
-- Violating these constraints causes pulse generation failure (see Table 16-2 Special Cases)
-- Always calculate OCxR as `TMRxPR - constant_offset` to maintain proper timing
-- The 10-count safety margin ensures reliable edge detection at slowest speeds
+**Control signals** (microcontroller → driver):
+- **STEP**: Pulse input - each rising edge = one microstep (pulled low by 100kΩ)
+- **DIR**: Direction control - HIGH/LOW sets rotation direction (pulled low by 100kΩ)
+- **ENABLE**: Active-low enable (can leave disconnected for always-enabled)
+- **RESET/SLEEP**: Pulled high by 1MΩ/10kΩ respectively (normal operation)
 
-**Note on startup timing:**
-- There may be scan penalties when starting TMR and OCR modules simultaneously
-- Investigation ongoing for startup lag behavior between timer and compare modules
-- Current implementation prioritizes correct pulse generation over startup optimization
+**Timing requirements** (DRV8825 datasheet):
+- **Minimum STEP pulse width**: 1.9µs HIGH + 1.9µs LOW
+- **Our implementation**: 40 timer counts ≈ safe margin above minimum
+- **Why 40 counts**: Ensures reliable detection across all microstepping modes
+
+**Microstepping configuration** (MODE0/1/2 pins with 100kΩ pull-downs):
+```
+MODE2  MODE1  MODE0  Resolution
+--------------------------------
+ Low    Low    Low   Full step
+High    Low    Low   Half step
+ Low   High    Low   1/4 step
+High   High    Low   1/8 step
+ Low    Low   High   1/16 step
+High    Low   High   1/32 step
+```
+
+**Power and current limiting**:
+- **VMOT**: 8.2V - 45V motor supply (100µF decoupling capacitor required)
+- **Current limit**: Set via VREF potentiometer using formula `Current = VREF × 2`
+- **Current sense resistors**: 0.100Ω (DRV8825) vs 0.330Ω (A4988)
+- **CRITICAL**: Never connect/disconnect motors while powered - will destroy driver
+
+**Fault protection**:
+- **FAULT pin**: Pulls low on over-current, over-temperature, or under-voltage
+- **Protection resistor**: 1.5kΩ in series allows safe connection to logic supply
+- Our system can monitor this pin for real-time error detection
 
 ### GRBL Settings Pattern
 Full GRBL v1.1f compliance with UGS integration:

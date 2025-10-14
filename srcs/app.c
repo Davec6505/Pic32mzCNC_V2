@@ -164,6 +164,9 @@ void APP_Initialize(void)
 
     /* Place the App state machine in its initial state. */
     appData.state = APP_STATE_INIT;
+    
+    // CRITICAL DEBUG: Turn LED2 OFF at startup - will be turned ON in APP_MotionSystemInit()
+    LED2_Clear();
 
     // Temporarily disable GRBL Serial to test direct UART handling
     // GRBL_Serial_Initialize();
@@ -436,10 +439,12 @@ static void APP_MotionSystemInit(void)
     /* Initialize interpolation engine - CRITICAL! */
     if (!INTERP_Initialize())
     {
-        printf("ERROR: Failed to initialize interpolation engine!\n");
+        // REMOVED: printf() blocks before UART ready - causes hang
+        // printf("ERROR: Failed to initialize interpolation engine!\n");
         return;
     }
-    printf("Interpolation engine initialized successfully\n");
+    // REMOVED: printf() blocks before UART ready - causes hang
+    // printf("Interpolation engine initialized successfully\n");
 
     /* Initialize CNC axes */
     for (int i = 0; i < MAX_AXES; i++)
@@ -475,11 +480,15 @@ static void APP_MotionSystemInit(void)
     /* Timer1 configured by Harmony, just need to start it */
     if (!appData.trajectory_timer_active)
     {
-        APP_UARTPrint_blocking("Starting Timer1 for trajectory updates\r\n");
+        // CRITICAL DEBUG: Toggle LED to prove we reach this point
+        LED2_Toggle();
+        
         // Timer1 callback already registered by interpolation engine
         // Timer1 now handles both INTERP_Tasks() AND MotionPlanner_UpdateTrajectory()
         TMR1_Start(); // This should work now that prescaler is fixed
         appData.trajectory_timer_active = true;
+        
+
     }
 
     appData.motion_system_ready = true;
