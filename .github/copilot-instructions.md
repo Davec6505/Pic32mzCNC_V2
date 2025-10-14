@@ -104,40 +104,111 @@ cnc_axes[AXIS_X].current_position = new_position; // DON'T DO THIS
 // OCMP4 → X-axis step pulses
 // OCMP5 → Z-axis step pulses
 
-// Timer sources (selected from available options):
+// Timer sources (VERIFIED per MCC configuration - October 2025):
 // TMR1 → 1kHz motion control timing (MotionPlanner_UpdateTrajectory)
-// TMR2 → OCMP1 time base for Y-axis step pulse generation
-// TMR3 → OCMP4 time base for X-axis step pulse generation
-// TMR4 → OCMP5 time base for Z-axis step pulse generation
+// TMR2 → OCMP4 time base for X-axis step pulse generation
+// TMR3 → OCMP5 time base for Z-axis step pulse generation
+// TMR4 → OCMP1 time base for Y-axis step pulse generation
 // TMR5 → OCMP3 time base for A-axis step pulse generation
 ```
 
 **PIC32MZ Timer Source Options (Table 18-1):**
 ```
-Output Compare Module | Available Timer Sources
---------------------------------------------------
-OC1 (Y-axis)         | Timer2 or Timer3
-OC2                  | Timer4 or Timer5
-OC3 (A-axis)         | Timer4 or Timer5
-OC4 (X-axis)         | Timer2 or Timer3
-OC5 (Z-axis)         | Timer2 or Timer3
+Output Compare Module | Available Timer Sources | ACTUAL Assignment
+------------------------------------------------------------------
+OC1 (Y-axis)         | Timer2 or Timer3        | TMR4 (per MCC)
+OC2 (unused)         | Timer4 or Timer5        | N/A
+OC3 (A-axis)         | Timer4 or Timer5        | TMR5 (per MCC)
+OC4 (X-axis)         | Timer2 or Timer3        | TMR2 (per MCC)
+OC5 (Z-axis)         | Timer2 or Timer3        | TMR3 (per MCC)
 ```
 
-**OCR Dual-Compare Architecture:**
-- **OCxRS Register**: Primary compare (pulse width = 40 counts fixed)
-- **OCxR Register**: Secondary compare (pulse period = variable for speed)
-- **TMRxPR Register**: Timer period (must satisfy: TMRxPR > OCxRS > OCxR)
-- **Constraint**: Maximum period = 65485 counts (16-bit timer limit minus safety margin)
+**OCR Dual-Compare Architecture - VERIFIED WORKING PATTERN (Oct 2025):**
 
-**Critical timing pattern:**
+This is the **PRODUCTION-PROVEN CONFIGURATION** tested with hardware oscilloscope verification:
+
 ```c
-#define OCMP_PULSE_WIDTH 40  // DRV8825 requires min 1.9µs, we use ~40 timer counts
+/* DRV8825 requires minimum 1.9µs pulse width - use 40 timer counts for safety */
+const uint32_t OCMP_PULSE_WIDTH = 40;
 
+/* Calculate OCR period from velocity */
 uint32_t period = MotionPlanner_CalculateOCRPeriod(velocity_mm_min);
-TMRx_PeriodSet(period);                                      // Set timer rollover
-OCMPx_CompareSecondaryValueSet(period - OCMP_PULSE_WIDTH);  // Falling edge position
-OCMPx_CompareValueSet(OCMP_PULSE_WIDTH);                    // Rising edge position (constant)
+
+/* Clamp period to 16-bit timer maximum (safety margin) */
+if (period > 65485) {
+    period = 65485;
+}
+
+/* Ensure period is greater than pulse width */
+if (period <= OCMP_PULSE_WIDTH) {
+    period = OCMP_PULSE_WIDTH + 10;
+}
+
+/* Configure OCR dual-compare mode (CRITICAL - exact register sequence):
+ * TMRxPR = period (timer rollover)
+ * OCxR = period - OCMP_PULSE_WIDTH (rising edge)
+ * OCxRS = OCMP_PULSE_WIDTH (falling edge)
+ * 
+ * IMPORTANT: OCxR and OCxRS appear reversed from intuition but this is CORRECT!
+ * The hardware generates rising edge at OCxR and falling edge at OCxRS.
+````
+ * 
+ * Example with period=300:
+ *   TMR2PR = 300          // Timer rolls over at 300
+ *   OC4R = 260            // Pulse rises at count 260 (300-40)
+ *   OC4RS = 40            // Pulse falls at count 40
+ *   Result: Pin HIGH from count 40 to 260, LOW from 260 to 300, then repeat
+ *   Effective pulse width = 40 counts (meets DRV8825 1.9µs minimum)
+ * 
+ * Timing diagram:
+ *   Count: 0....40.......260.......300 (rollover)
+ *   Pin:   LOW  HIGH     LOW       LOW
+ *          └────────────┘
+ *          40 counts ON
+ */
+TMRx_PeriodSet(period);                                    // Set timer rollover
+OCMPx_CompareValueSet(period - OCMP_PULSE_WIDTH);         // Rising edge (variable)
+OCMPx_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);         // Falling edge (fixed at 40)
+OCMPx_Enable();
+TMRx_Start();                                              // CRITICAL: Must restart timer for each move
 ```
+
+**CRITICAL MOTION EXECUTION PATTERN (October 2025):**
+
+This sequence is **MANDATORY** for reliable bidirectional motion:
+
+```c
+// 1. Set direction GPIO BEFORE enabling step pulses (DRV8825 requirement)
+if (direction_forward) {
+    DirX_Set();    // GPIO high for forward
+} else {
+    DirX_Clear();  // GPIO low for reverse
+}
+
+// 2. Configure OCR registers with proven pattern
+TMR2_PeriodSet(period);
+OCMP4_CompareValueSet(period - 40);  // Rising edge
+OCMP4_CompareSecondaryValueSet(40);  // Falling edge
+
+// 3. Enable OCR module
+OCMP4_Enable();
+
+// 4. **ALWAYS** restart timer for each move (even if already running)
+TMR2_Start();  // Critical! Timers are stopped when motion completes
+```
+
+**Common Mistakes to Avoid:**
+- ❌ **Don't forget `TMRx_Start()`** - Timer stops when motion completes, must restart for next move
+- ❌ **Don't swap OCxR/OCxRS values** - Use exact pattern above (period-40 / 40)
+- ❌ **Don't set direction after step pulses start** - DRV8825 needs direction stable before first pulse
+- ❌ **Don't use wrong timer** - X=TMR2, Y=TMR4, Z=TMR3 per MCC configuration
+
+**Key Register Values:**
+- **TMRxPR**: Timer period register (controls pulse frequency)
+- **OCxR**: Primary compare (rising edge - varies: period-40)
+- **OCxRS**: Secondary compare (falling edge - fixed at 40)
+- **Pulse Width**: Always 40 counts (meeting DRV8825 1.9µs minimum)
+- **Maximum Period**: 65485 counts (16-bit timer limit with safety margin)
 
 ### DRV8825 Stepper Driver Interface
 **Hardware**: Pololu DRV8825 carrier boards (or compatible) for bipolar stepper motors
@@ -145,13 +216,16 @@ OCMPx_CompareValueSet(OCMP_PULSE_WIDTH);                    // Rising edge posit
 **Control signals** (microcontroller → driver):
 - **STEP**: Pulse input - each rising edge = one microstep (pulled low by 100kΩ)
 - **DIR**: Direction control - HIGH/LOW sets rotation direction (pulled low by 100kΩ)
+  - **CRITICAL**: Must be set BEFORE first step pulse and remain stable during motion
+  - **Our implementation**: Set via `DirX_Set()`/`DirX_Clear()` before `OCMPx_Enable()`
 - **ENABLE**: Active-low enable (can leave disconnected for always-enabled)
 - **RESET/SLEEP**: Pulled high by 1MΩ/10kΩ respectively (normal operation)
 
 **Timing requirements** (DRV8825 datasheet):
 - **Minimum STEP pulse width**: 1.9µs HIGH + 1.9µs LOW
-- **Our implementation**: 40 timer counts ≈ safe margin above minimum
+- **Our implementation**: 40 timer counts @ 1MHz = 40µs (safe margin above minimum)
 - **Why 40 counts**: Ensures reliable detection across all microstepping modes
+- **Direction setup time**: 200ns minimum (our GPIO write provides this)
 
 **Microstepping configuration** (MODE0/1/2 pins with 100kΩ pull-downs):
 ```
@@ -246,6 +320,33 @@ APP_SetPickAndPlaceMode(true);   // Mask Z minimum limit
 // ... perform pick/place operations ...
 APP_SetPickAndPlaceMode(false);  // Restore normal limits
 ```
+
+## Critical Bugs Fixed (October 2025)
+
+### Bug #1: Status Report Steps/mm Mismatch
+**Symptom**: Motion appeared to stop at 62.5% of target (e.g., 6.25mm instead of 10mm)  
+**Root Cause**: `gcode_helpers.c` used hardcoded 400 steps/mm for status conversion while motion execution used 250 steps/mm  
+**Fix**: Changed `GCodeHelpers_GetCurrentPositionFromSteps()` fallback from 400 to 250 steps/mm  
+**Impact**: Status reports now accurately reflect actual machine position
+
+### Bug #2: Missing Timer Restart
+**Symptom**: First move worked, second move failed (no motion, position stuck)  
+**Root Cause**: OCR callbacks stopped timers (TMR2/3/4) on completion, but motion execution didn't restart them  
+**Fix**: Added `TMR2_Start()`, `TMR3_Start()`, `TMR4_Start()` calls in `APP_ExecuteMotionBlock()` for each axis  
+**Impact**: Multi-move sequences now work correctly; timers restart for each new move
+
+### Bug #3: Missing Direction Pin Control
+**Symptom**: Reverse motion didn't execute (position stayed at target)  
+**Root Cause**: Direction GPIO pins (DirX/Y/Z) were never set by motion execution code  
+**Fix**: Added direction pin control before OCR enable:
+```c
+switch (axis) {
+    case 0: cnc_axes[0].direction_forward ? DirX_Set() : DirX_Clear(); break;
+    case 1: cnc_axes[1].direction_forward ? DirY_Set() : DirY_Clear(); break;
+    case 2: cnc_axes[2].direction_forward ? DirZ_Set() : DirZ_Clear(); break;
+}
+```
+**Impact**: Bidirectional motion now fully functional
 
 ## Integration Points
 

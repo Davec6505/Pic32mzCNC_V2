@@ -164,7 +164,7 @@ void APP_Initialize(void)
 
     /* Place the App state machine in its initial state. */
     appData.state = APP_STATE_INIT;
-    
+
     // CRITICAL DEBUG: Turn LED2 OFF at startup - will be turned ON in APP_MotionSystemInit()
     LED2_Clear();
 
@@ -324,7 +324,6 @@ void APP_Tasks(void)
 
     case APP_STATE_MOTION_IDLE:
     {
-
         /* Process user input */
         APP_ProcessSwitches();
 
@@ -341,16 +340,15 @@ void APP_Tasks(void)
 
     case APP_STATE_MOTION_PLANNING:
     {
-        APP_UARTPrint_blocking("PLANNING\r\n");
         /* Execute the next motion block */
         APP_ExecuteNextMotionBlock();
+
         appData.state = APP_STATE_MOTION_EXECUTING;
         break;
     }
 
     case APP_STATE_MOTION_EXECUTING:
     {
-
         /* Check if homing cycle is active */
         if (INTERP_IsHomingActive())
         {
@@ -375,6 +373,7 @@ void APP_Tasks(void)
 
         /* Check if current motion is complete */
         bool all_axes_complete = true;
+
         for (int i = 0; i < MAX_AXES; i++)
         {
             if (cnc_axes[i].is_active &&
@@ -388,6 +387,19 @@ void APP_Tasks(void)
 
         if (all_axes_complete)
         {
+            /* DEBUG: Log final positions before reset */
+            char debug[128];
+            for (int i = 0; i < MAX_AXES; i++)
+            {
+                if (cnc_axes[i].step_count > 0) // Only log axes that moved
+                {
+                    sprintf(debug, "[COMPLETE] Axis %d: final_pos=%d step_count=%d target=%d\r\n",
+                            i, (int)cnc_axes[i].current_position, (int)cnc_axes[i].step_count,
+                            (int)cnc_axes[i].target_position);
+                    APP_UARTPrint_blocking(debug);
+                }
+            }
+
             /* Mark current buffer entry as processed */
             MotionBuffer_Complete();
 
@@ -471,24 +483,27 @@ static void APP_MotionSystemInit(void)
     OCMP5_CallbackRegister(APP_OCMP5_Callback, 0);
 
     /* Start base timers that drive OCR modules - CRITICAL for motion! */
-    /* Based on working stepper code: OCR modules need their base timers running */
-    TMR2_Start(); // Base timer for OCMP1 (Y-axis)
-    TMR3_Start(); // Base timer for OCMP4 (X-axis)
-    TMR4_Start(); // Base timer for OCMP5 (Z-axis)
+    /* Timer-to-OCR mapping per MCC configuration:
+     * TMR2 → OCMP4 (X-axis)
+     * TMR3 → OCMP5 (Z-axis)
+     * TMR4 → OCMP1 (Y-axis)
+     * TMR5 → OCMP3 (A-axis/4th axis)
+     */
+    TMR2_Start(); // Base timer for OCMP4 (X-axis)
+    TMR3_Start(); // Base timer for OCMP5 (Z-axis)
+    TMR4_Start(); // Base timer for OCMP1 (Y-axis)
 
     /* TRAJECTORY SYSTEM - Now using Timer1 (prescaler fixed to 1kHz) */
     /* Timer1 configured by Harmony, just need to start it */
     if (!appData.trajectory_timer_active)
     {
-        // CRITICAL DEBUG: Toggle LED to prove we reach this point
-        LED2_Toggle();
-        
+        // CRITICAL DEBUG: Turn ON LED2 to prove we reach this point
+        LED2_Set(); // Changed from Toggle to Set for clear indication
+
         // Timer1 callback already registered by interpolation engine
         // Timer1 now handles both INTERP_Tasks() AND MotionPlanner_UpdateTrajectory()
         TMR1_Start(); // This should work now that prescaler is fixed
         appData.trajectory_timer_active = true;
-        
-
     }
 
     appData.motion_system_ready = true;
@@ -565,6 +580,7 @@ static void APP_ExecuteNextMotionBlock(void)
 {
     if (APP_IsBufferEmpty())
     {
+        APP_UARTPrint_blocking("[EXEC] Buffer empty\r\n");
         return;
     }
 
@@ -572,18 +588,50 @@ static void APP_ExecuteNextMotionBlock(void)
 
     if (block == NULL)
     {
+        APP_UARTPrint_blocking("[EXEC] Block is NULL\r\n");
         return;
     }
 
-    /* Setup axes for movement */
+    APP_UARTPrint_blocking("[EXEC] Processing block\r\n");
+
+    /* Get steps per mm from GRBL settings (with fallback to defaults) */
+    float steps_per_mm[3];
+    steps_per_mm[0] = GRBL_GetSetting(SETTING_X_STEPS_PER_MM); // X-axis
+    steps_per_mm[1] = GRBL_GetSetting(SETTING_Y_STEPS_PER_MM); // Y-axis
+    steps_per_mm[2] = GRBL_GetSetting(SETTING_Z_STEPS_PER_MM); // Z-axis
+
+    /* Fallback to defaults if GRBL not initialized */
+    if (steps_per_mm[0] <= 0.0f || isnan(steps_per_mm[0]))
+        steps_per_mm[0] = 250.0f;
+    if (steps_per_mm[1] <= 0.0f || isnan(steps_per_mm[1]))
+        steps_per_mm[1] = 250.0f;
+    if (steps_per_mm[2] <= 0.0f || isnan(steps_per_mm[2]))
+        steps_per_mm[2] = 250.0f;
+
+    char debug[200];
+    sprintf(debug, "[EXEC] Steps/mm: X=%.1f Y=%.1f Z=%.1f\r\n",
+            steps_per_mm[0], steps_per_mm[1], steps_per_mm[2]);
+    APP_UARTPrint_blocking(debug);
+    sprintf(debug, "[EXEC] Target pos: X=%.3f Y=%.3f Z=%.3f\r\n",
+            block->target_pos[0], block->target_pos[1], block->target_pos[2]);
+    APP_UARTPrint_blocking(debug);
+
+    /* Setup axes for movement with OCR dual-compare mode */
     for (int i = 0; i < MAX_AXES; i++)
     {
-        int32_t target_pos = (int32_t)block->target_pos[i];
+        /* Convert target position from mm to steps */
+        int32_t target_pos_steps = (int32_t)(block->target_pos[i] * steps_per_mm[i]);
+
+        sprintf(debug, "[EXEC] Axis %d: target=%d current=%d\r\n",
+                i, (int)target_pos_steps, (int)cnc_axes[i].current_position);
+        APP_UARTPrint_blocking(debug);
 
         /* Only move axis if target is different from current position */
-        if (target_pos != cnc_axes[i].current_position)
+        if (target_pos_steps != cnc_axes[i].current_position)
         {
-            cnc_axes[i].target_position = target_pos;
+            /* Calculate number of steps to move (delta, not absolute position) */
+            int32_t steps_to_move = abs(target_pos_steps - cnc_axes[i].current_position);
+            cnc_axes[i].target_position = steps_to_move; // Store delta for callback comparison
             cnc_axes[i].target_velocity = block->feedrate;
             cnc_axes[i].max_velocity = block->max_velocity > 0 ? block->max_velocity : DEFAULT_MAX_VELOCITY;
             cnc_axes[i].motion_state = AXIS_ACCEL;
@@ -591,23 +639,112 @@ static void APP_ExecuteNextMotionBlock(void)
             cnc_axes[i].step_count = 0;
 
             /* Set direction */
-            cnc_axes[i].direction_forward = (target_pos > cnc_axes[i].current_position);
+            cnc_axes[i].direction_forward = (target_pos_steps > cnc_axes[i].current_position);
 
-            /* Enable the appropriate OCR module for this axis */
+            /* Set direction GPIO pins - DRV8825 requires direction set BEFORE step pulses */
             switch (i)
             {
-            case 0: // X-axis -> OCMP4 (as per existing main.c)
+            case 0: // X-axis
+                if (cnc_axes[i].direction_forward)
+                {
+                    DirX_Set(); // Forward (positive direction)
+                }
+                else
+                {
+                    DirX_Clear(); // Reverse (negative direction)
+                }
+                break;
+
+            case 1: // Y-axis
+                if (cnc_axes[i].direction_forward)
+                {
+                    DirY_Set();
+                }
+                else
+                {
+                    DirY_Clear();
+                }
+                break;
+
+            case 2: // Z-axis
+                if (cnc_axes[i].direction_forward)
+                {
+                    DirZ_Set();
+                }
+                else
+                {
+                    DirZ_Clear();
+                }
+                break;
+            }
+
+            sprintf(debug, "[EXEC] Axis %d ACTIVE: dir=%s feedrate=%.1f steps=%d\r\n",
+                    i, cnc_axes[i].direction_forward ? "FWD" : "REV", block->feedrate, (int)steps_to_move);
+            APP_UARTPrint_blocking(debug);
+
+            /* Calculate OCR period from velocity */
+            uint32_t period = MotionPlanner_CalculateOCRPeriod(cnc_axes[i].target_velocity);
+
+            /* DRV8825 requires minimum 1.9µs pulse width - use 40 timer counts for safety */
+            const uint32_t OCMP_PULSE_WIDTH = 40;
+
+            /* Clamp period to 16-bit timer maximum (safety margin) */
+            if (period > 65485)
+            {
+                period = 65485;
+            }
+
+            /* Ensure period is greater than pulse width */
+            if (period <= OCMP_PULSE_WIDTH)
+            {
+                period = OCMP_PULSE_WIDTH + 10;
+            }
+
+            sprintf(debug, "[EXEC] Axis %d OCR: period=%u pulse=%u\r\n",
+                    i, (unsigned int)period, (unsigned int)OCMP_PULSE_WIDTH);
+            APP_UARTPrint_blocking(debug);
+
+            /* Configure OCR dual-compare mode - VERIFIED WORKING CONFIGURATION:
+             * Proven ratio pattern from idle state test: OC4R=250, OC4RS=40, Period=300
+             * This translates to: OCxR = (period - OCMP_PULSE_WIDTH), OCxRS = OCMP_PULSE_WIDTH
+             * Timer-to-OCR mapping per MCC: TMR2→OCMP4, TMR3→OCMP5, TMR4→OCMP1, TMR5→OCMP3
+             */
+            switch (i)
+            {
+            case 0: // X-axis -> OCMP4 + TMR2 (per MCC)
+                /* TMR2 has no timer interrupt - only OCR interrupt used */
+                TMR2_PeriodSet(period);                           // Set timer rollover
+                OCMP4_CompareValueSet(period - OCMP_PULSE_WIDTH); // Rising edge (e.g., 300-40=260)
+                OCMP4_CompareSecondaryValueSet(OCMP_PULSE_WIDTH); // Falling edge (e.g., 40)
                 OCMP4_Enable();
+                TMR2_Start(); // CRITICAL: Restart timer for each move
+                APP_UARTPrint_blocking("[EXEC] X-axis OCMP4+TMR2 started\r\n");
                 break;
-            case 1: // Y-axis -> OCMP1
+
+            case 1:                                               // Y-axis -> OCMP1 + TMR4 (per MCC)
+                TMR4_InterruptDisable();                          // Disable timer interrupt (use OCR interrupt only)
+                TMR4_PeriodSet(period);                           // Set timer rollover
+                OCMP1_CompareValueSet(period - OCMP_PULSE_WIDTH); // Rising edge
+                OCMP1_CompareSecondaryValueSet(OCMP_PULSE_WIDTH); // Falling edge
                 OCMP1_Enable();
+                TMR4_Start(); // CRITICAL: Restart timer for each move
+                APP_UARTPrint_blocking("[EXEC] Y-axis OCMP1+TMR4 started\r\n");
                 break;
-            case 2: // Z-axis -> OCMP5
+
+            case 2:                                               // Z-axis -> OCMP5 + TMR3 (per MCC)
+                TMR3_InterruptDisable();                          // Disable timer interrupt (use OCR interrupt only)
+                TMR3_PeriodSet(period);                           // Set timer rollover
+                OCMP5_CompareValueSet(period - OCMP_PULSE_WIDTH); // Rising edge
+                OCMP5_CompareSecondaryValueSet(OCMP_PULSE_WIDTH); // Falling edge
                 OCMP5_Enable();
+                TMR3_Start(); // CRITICAL: Restart timer for each move
+                APP_UARTPrint_blocking("[EXEC] Z-axis OCMP5+TMR3 started\r\n");
                 break;
             }
         }
     }
+
+    APP_UARTPrint_blocking("[EXEC] Block execution complete\r\n");
 }
 
 /* TEMPORARILY COMMENTED FOR DEBUG - APP_CalculateTrajectory function
@@ -664,45 +801,55 @@ bool APP_ExecuteMotionBlock(motion_block_t *block)
             /* Activate axis */
             APP_SetAxisActiveState(i, true);
 
-            /* Calculate and set OCR period using motion planner function */
+            /* Calculate OCR period from velocity */
             float target_velocity = APP_GetAxisTargetVelocity(i);
-            uint32_t timer_period = MotionPlanner_CalculateOCRPeriod(target_velocity);
+            uint32_t period = MotionPlanner_CalculateOCRPeriod(target_velocity);
 
-            // Apply YOUR constraint formula: OCRxR + OCRxRS ≤ TMRx_PR
-            uint32_t pulse_width = 40;                // OCRxRS fixed value
-            uint32_t ocr_compare = timer_period - 10; // OCRxR = TMRx_PR - 10
+            /* DRV8825 requires minimum 1.9µs pulse width - use 40 timer counts for safety */
+            const uint32_t OCMP_PULSE_WIDTH = 40;
 
-            // Ensure we never violate the constraint
-            if (ocr_compare + pulse_width > timer_period)
+            /* Clamp period to 16-bit timer maximum (safety margin) */
+            if (period > 65485)
             {
-                ocr_compare = timer_period - pulse_width - 10;
+                period = 65485;
             }
 
-            // Configure timer period and OCR compare values, then enable in correct sequence
+            /* Ensure period is greater than pulse width */
+            if (period <= OCMP_PULSE_WIDTH)
+            {
+                period = OCMP_PULSE_WIDTH + 10;
+            }
+
+            /* Configure OCR dual-compare mode - STANDARD PATTERN:
+             * TMRxPR = period (timer rollover)
+             * OCxR = OCMP_PULSE_WIDTH (rising edge - pulse start)
+             * OCxRS = period - OCMP_PULSE_WIDTH (falling edge - pulse end)
+             * Result: Pulse width = OCxRS - OCxR = 40 counts
+             */
             switch (i)
             {
-            case 0:                                          // X-axis -> OCMP4 + TMR3
-                TMR3_PeriodSet(timer_period);                // Set TMR3_PR first
-                OCMP4_CompareValueSet(ocr_compare);          // Set OC4R
-                OCMP4_CompareSecondaryValueSet(pulse_width); // Set OC4RS = 40
-                OCMP4_Enable();                              // Enable OCMP4
-                TMR3_Start();                                // Start TMR3 last
+            case 0:                                                        // X-axis -> OCMP4 + TMR3
+                TMR3_PeriodSet(period);                                    // Set timer rollover
+                OCMP4_CompareValueSet(OCMP_PULSE_WIDTH);                   // Rising edge (fixed)
+                OCMP4_CompareSecondaryValueSet(period - OCMP_PULSE_WIDTH); // Falling edge (variable)
+                OCMP4_Enable();
+                TMR3_Start();
                 break;
 
-            case 1:                                          // Y-axis -> OCMP1 + TMR2
-                TMR2_PeriodSet(timer_period);                // Set TMR2_PR first
-                OCMP1_CompareValueSet(ocr_compare);          // Set OC1R
-                OCMP1_CompareSecondaryValueSet(pulse_width); // Set OC1RS = 40
-                OCMP1_Enable();                              // Enable OCMP1
-                TMR2_Start();                                // Start TMR2 last
+            case 1:                                                        // Y-axis -> OCMP1 + TMR2
+                TMR2_PeriodSet(period);                                    // Set timer rollover
+                OCMP1_CompareValueSet(OCMP_PULSE_WIDTH);                   // Rising edge (fixed)
+                OCMP1_CompareSecondaryValueSet(period - OCMP_PULSE_WIDTH); // Falling edge (variable)
+                OCMP1_Enable();
+                TMR2_Start();
                 break;
 
-            case 2:                                          // Z-axis -> OCMP5 + TMR4
-                TMR4_PeriodSet(timer_period);                // Set TMR4_PR first
-                OCMP5_CompareValueSet(ocr_compare);          // Set OC5R
-                OCMP5_CompareSecondaryValueSet(pulse_width); // Set OC5RS = 40
-                OCMP5_Enable();                              // Enable OCMP5
-                TMR4_Start();                                // Start TMR4 last
+            case 2:                                                        // Z-axis -> OCMP5 + TMR4
+                TMR4_PeriodSet(period);                                    // Set timer rollover
+                OCMP5_CompareValueSet(OCMP_PULSE_WIDTH);                   // Rising edge (fixed)
+                OCMP5_CompareSecondaryValueSet(period - OCMP_PULSE_WIDTH); // Falling edge (variable)
+                OCMP5_Enable();
+                TMR4_Start();
                 break;
             }
         }
@@ -1064,19 +1211,23 @@ static void APP_ProcessGCodeCommand(const char *command)
     case GCODE_G0:
     case GCODE_G1:
         // Motion commands - Check buffer space before adding new move
+        APP_UARTPrint_blocking("[GCODE] G0/G1 command received\r\n");
+
         if (MotionBuffer_HasSpace())
         {
+            APP_UARTPrint_blocking("[GCODE] Buffer has space\r\n");
             motion_block_t move_block;
             if (MotionGCodeParser_ParseMove(command, &move_block))
             {
+                APP_UARTPrint_blocking("[GCODE] Move parsed successfully\r\n");
                 // Calculate distance and duration for the motion block
                 MotionPlanner_CalculateDistance(&move_block);
 
                 if (MotionBuffer_Add(&move_block))
                 {
-                    // Comment out this debug line:
-                    // APP_UARTPrint_blocking("[BUFFER_ADD] head=X tail=Y");
+                    APP_UARTPrint_blocking("[GCODE] Move added to buffer\r\n");
                     MotionPlanner_ProcessBuffer();
+                    APP_UARTPrint_blocking("[GCODE] Buffer processed\r\n");
                     APP_SendMotionOkResponse(); // Use helper for proper timing
                 }
                 else
@@ -1301,23 +1452,25 @@ void APP_OCMP1_Callback(uintptr_t context)
 
         // Provide position feedback to motion planner
         MotionPlanner_UpdateAxisPosition(1, cnc_axes[1].current_position);
+
+        // Check if target reached
+        if (cnc_axes[1].step_count >= cnc_axes[1].target_position)
+        {
+            // Stop Y-axis (OCMP1 uses TMR4 per MCC)
+            TMR4_Stop();
+            OCMP1_Disable();
+
+            // Mark axis complete
+            cnc_axes[1].motion_state = AXIS_COMPLETE;
+            cnc_axes[1].is_active = false;
+        }
     }
 }
 
 void APP_OCMP4_Callback(uintptr_t context)
 {
     /* X-axis step pulse - PERFORMANCE CRITICAL: Direct access for speed */
-    LED1_Toggle(); // X-axis OCR interrupt indicator - should blink if firing
     LED2_Toggle(); // Step activity indicator
-
-    // DEBUG: Callback debug disabled for UGS compatibility
-    /*
-    static uint32_t debug_counter = 0;
-    if ((debug_counter++ % 100) == 0) // Print every 100th callback to avoid spam
-    {
-        APP_UARTPrint("[OCMP4_CB]\r\n");
-    }
-    */
 
     if (cnc_axes[0].is_active && cnc_axes[0].motion_state != AXIS_IDLE)
     {
@@ -1327,9 +1480,40 @@ void APP_OCMP4_Callback(uintptr_t context)
 
         // Provide position feedback to motion planner
         MotionPlanner_UpdateAxisPosition(0, cnc_axes[0].current_position);
+
+        // Check if target reached
+        if (cnc_axes[0].step_count >= cnc_axes[0].target_position)
+        {
+            /* DEBUG: Log stop condition - reset flag when step_count was 0 */
+            static bool stop_logged = false;
+            static uint32_t last_step_count = 0;
+
+            if (last_step_count == 0 && cnc_axes[0].step_count > 0)
+            {
+                stop_logged = false; // New move started
+            }
+            last_step_count = cnc_axes[0].step_count;
+
+            if (!stop_logged)
+            {
+                char debug_msg[128];
+                sprintf(debug_msg, "[STOP] X: step_count=%d target=%d pos=%d\r\n",
+                        (int)cnc_axes[0].step_count, (int)cnc_axes[0].target_position,
+                        (int)cnc_axes[0].current_position);
+                APP_UARTPrint_blocking(debug_msg);
+                stop_logged = true; // Only log once per move
+            }
+
+            // Stop X-axis (OCMP4 uses TMR2 per MCC)
+            TMR2_Stop();
+            OCMP4_Disable();
+
+            // Mark axis complete
+            cnc_axes[0].motion_state = AXIS_COMPLETE;
+            cnc_axes[0].is_active = false;
+        }
     }
 }
-
 void APP_OCMP5_Callback(uintptr_t context)
 {
     /* Z-axis step pulse - PERFORMANCE CRITICAL: Direct access for speed */
@@ -1343,6 +1527,18 @@ void APP_OCMP5_Callback(uintptr_t context)
 
         // Provide position feedback to motion planner
         MotionPlanner_UpdateAxisPosition(2, cnc_axes[2].current_position);
+
+        // Check if target reached
+        if (cnc_axes[2].step_count >= cnc_axes[2].target_position)
+        {
+            // Stop Z-axis (OCMP5 uses TMR3 per MCC)
+            TMR3_Stop();
+            OCMP5_Disable();
+
+            // Mark axis complete
+            cnc_axes[2].motion_state = AXIS_COMPLETE;
+            cnc_axes[2].is_active = false;
+        }
     }
 }
 

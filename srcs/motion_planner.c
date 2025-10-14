@@ -199,11 +199,14 @@ static void UpdatePosition(float progress)
         current_position.z = current_motion_profile.start_pos.z +
                              (current_motion_profile.end_pos.z - current_motion_profile.start_pos.z) * progress;
 
-        // CRITICAL: Update cnc_axes position during linear motion for real-time status reporting
+        // DISABLED: Position now tracked by OCR callback hardware step counting
+        // Motion planner trajectory calculations would overwrite real hardware position
+        /*
         extern cnc_axis_t cnc_axes[MAX_AXES];
         cnc_axes[0].current_position = (int32_t)(current_position.x * 400.0f); // X-axis (400 steps/mm)
         cnc_axes[1].current_position = (int32_t)(current_position.y * 400.0f); // Y-axis
         cnc_axes[2].current_position = (int32_t)(current_position.z * 400.0f); // Z-axis
+        */
         return;
     }
 
@@ -222,11 +225,13 @@ static void UpdatePosition(float progress)
     current_position.z = current_motion_profile.start_pos.z +
                          (current_motion_profile.end_pos.z - current_motion_profile.start_pos.z) * scurve_progress;
 
-    // CRITICAL: Update cnc_axes position during motion for real-time status reporting
+    // DISABLED: Position now tracked by OCR callback hardware step counting
+    /*
     extern cnc_axis_t cnc_axes[MAX_AXES];
     cnc_axes[0].current_position = (int32_t)(current_position.x * 400.0f); // X-axis (400 steps/mm)
     cnc_axes[1].current_position = (int32_t)(current_position.y * 400.0f); // Y-axis
     cnc_axes[2].current_position = (int32_t)(current_position.z * 400.0f); // Z-axis
+    */
 }
 
 // External interface for status reporting
@@ -799,12 +804,14 @@ void MotionPlanner_UpdateTrajectory(void)
             APP_UARTPrint(debug_msg);
             */
 
-            // CRITICAL FIX: Update cnc_axes position tracking for status reporting
-            // Convert from mm (float) to steps (int32_t) for cnc_axes system
+            // DISABLED: Position now tracked by OCR callback hardware step counting
+            // This was causing position to jump to target at end of motion
+            /*
             extern cnc_axis_t cnc_axes[MAX_AXES];
             cnc_axes[0].current_position = (int32_t)(current_position.x * 400.0f); // X-axis (400 steps/mm)
             cnc_axes[1].current_position = (int32_t)(current_position.y * 400.0f); // Y-axis
             cnc_axes[2].current_position = (int32_t)(current_position.z * 400.0f); // Z-axis
+            */
 
             // Debug output disabled for UGS compatibility
             // char debug_msg[128];

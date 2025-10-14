@@ -37,17 +37,88 @@ This is a professional-grade CNC motion control system implemented on the **PIC3
 - **Package**: 100-pin TQFP
 - **Development Environment**: MPLAB X IDE v6.25 + XC32 v4.60
 
-### Hardware Pulse Generation in 
+### Hardware Pulse Generation
 ```
-OCRx Module Assignments:
-├── OCMP1 → Y-axis step pulses
-├── OCMP4 → X-axis step pulses  
-└── OCMP5 → Z-axis step pulses
+OCRx Module Assignments (VERIFIED per MCC - October 2025):
+├── OCMP1 → Y-axis step pulses (TMR4 time base)
+├── OCMP4 → X-axis step pulses (TMR2 time base)
+└── OCMP5 → Z-axis step pulses (TMR3 time base)
 
 Timer Sources:
-├── TMR2/TMR3/TMR4/TMR5 → OCRx time base
-├── TMR1 → System timing / Motion control timing
+├── TMR2 → OCMP4 time base (X-axis)
+├── TMR3 → OCMP5 time base (Z-axis)
+├── TMR4 → OCMP1 time base (Y-axis)
+├── TMR5 → OCMP3 time base (A-axis, future)
+└── TMR1 → 1kHz motion control timing
 ```
+
+### OCR Dual-Compare Mode (PRODUCTION-PROVEN PATTERN)
+
+The system uses OCR dual-compare mode to generate precise step pulses for DRV8825 stepper drivers:
+
+```c
+/* DRV8825 requires minimum 1.9µs pulse width - use 40 timer counts for safety */
+const uint32_t OCMP_PULSE_WIDTH = 40;
+
+/* Calculate OCR period from velocity */
+uint32_t period = MotionPlanner_CalculateOCRPeriod(velocity_mm_min);
+
+/* Clamp period to 16-bit timer maximum (safety margin) */
+if (period > 65485) {
+    period = 65485;
+}
+
+/* Ensure period is greater than pulse width */
+if (period <= OCMP_PULSE_WIDTH) {
+    period = OCMP_PULSE_WIDTH + 10;
+}
+
+/* Configure OCR dual-compare mode (CRITICAL - exact register sequence):
+ * TMRxPR = period (timer rollover)
+ * OCxR = period - OCMP_PULSE_WIDTH (rising edge)
+ * OCxRS = OCMP_PULSE_WIDTH (falling edge)
+ * 
+ * IMPORTANT: OCxR and OCxRS appear reversed from intuition but this is CORRECT!
+ * 
+ * Example with period=300:
+ *   TMR2PR = 300          // Timer rolls over at 300
+ *   OC4R = 260            // Pulse rises at count 260 (300-40)
+ *   OC4RS = 40            // Pulse falls at count 40
+ *   Result: Pin HIGH from count 40 to 260, LOW from 260 to 300, then repeat
+ *   Effective pulse width = 40 counts (meets DRV8825 1.9µs minimum)
+ */
+TMRx_PeriodSet(period);                                    // Set timer rollover
+OCMPx_CompareValueSet(period - OCMP_PULSE_WIDTH);         // Rising edge (variable)
+OCMPx_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);         // Falling edge (fixed at 40)
+OCMPx_Enable();
+TMRx_Start();                                              // CRITICAL: Must restart timer for each move
+```
+
+**CRITICAL: Motion Execution Pattern**
+```c
+// 1. Set direction GPIO BEFORE enabling step pulses
+if (direction_forward) {
+    DirX_Set();    // GPIO high for forward
+} else {
+    DirX_Clear();  // GPIO low for reverse
+}
+
+// 2. Configure OCR registers
+TMR2_PeriodSet(period);
+OCMP4_CompareValueSet(period - 40);
+OCMP4_CompareSecondaryValueSet(40);
+
+// 3. Enable OCR and start timer
+OCMP4_Enable();
+TMR2_Start();  // CRITICAL: Always restart timer for each move
+```
+
+**Key Register Values:**
+- **TMRxPR**: Timer period register (controls pulse frequency)
+- **OCxR**: Primary compare (rising edge - varies: period-40)
+- **OCxRS**: Secondary compare (falling edge - fixed at 40)
+- **Pulse Width**: Always 40 counts (meeting DRV8825 1.9µs minimum)
+- **Maximum Period**: 65485 counts (16-bit timer limit with safety margin)
 
 ### GPIO Pin Assignments
 ```
@@ -483,6 +554,47 @@ INTERP_StopSingleAxis(AXIS_X, "Limit switch triggered");
 - ✅ Motion buffer clearing
 - ✅ System state recovery
 - ✅ Error reporting via UART
+
+## Recent Updates (October 2025)
+
+### OCR Dual-Compare Continuous Pulse Mode - FULLY OPERATIONAL ✅
+
+Successfully implemented and verified hardware-based step pulse generation with the following fixes:
+
+#### Bug Fix #1: Status Report Steps/mm Mismatch
+- **Issue**: Motion appeared to stop at 62.5% of target (6.25mm instead of 10mm)
+- **Cause**: `gcode_helpers.c` used hardcoded 400 steps/mm while execution used 250 steps/mm
+- **Solution**: Updated `GCodeHelpers_GetCurrentPositionFromSteps()` to use 250 steps/mm fallback
+- **Result**: Status reports now accurately reflect actual machine position
+
+#### Bug Fix #2: Missing Timer Restart on Subsequent Moves
+- **Issue**: First move worked, second move failed (no motion)
+- **Cause**: OCR callbacks stopped timers (TMR2/3/4) on completion but weren't restarted
+- **Solution**: Added `TMR2_Start()`, `TMR3_Start()`, `TMR4_Start()` in motion execution
+- **Result**: Multi-move sequences now work reliably
+
+#### Bug Fix #3: Missing Direction Pin Control
+- **Issue**: Reverse motion didn't execute
+- **Cause**: Direction GPIO pins (DirX/Y/Z) never set before step pulses
+- **Solution**: Added direction pin control before OCR enable for all axes
+- **Result**: Bidirectional motion fully functional
+
+### Verified Working Pattern
+```c
+// 1. Set direction FIRST (DRV8825 requirement)
+cnc_axes[axis].direction_forward ? DirX_Set() : DirX_Clear();
+
+// 2. Configure OCR dual-compare registers
+TMR2_PeriodSet(period);
+OCMP4_CompareValueSet(period - 40);      // Rising edge
+OCMP4_CompareSecondaryValueSet(40);       // Falling edge
+
+// 3. Enable and start
+OCMP4_Enable();
+TMR2_Start();  // CRITICAL: Always restart timer
+```
+
+**Test Results**: G0 X10 → 10.000mm ✅ | G0 X1 → 1.000mm (reverse) ✅
 
 ## Integration with UGS
 

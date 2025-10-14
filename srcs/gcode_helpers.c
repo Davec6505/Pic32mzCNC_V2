@@ -523,20 +523,19 @@ void GCodeHelpers_GetCurrentPositionFromSteps(float *x, float *y, float *z)
     float y_steps_per_mm = GRBL_GetSetting(SETTING_Y_STEPS_PER_MM);
     float z_steps_per_mm = GRBL_GetSetting(SETTING_Z_STEPS_PER_MM);
 
-    // Note: GRBL settings integration pending - using motion planner values for consistency
-
-    // Ensure consistent steps/mm values with motion planner (400 steps/mm for current hardware)
+    // Fallback to defaults if GRBL settings invalid (matches app.c execution defaults)
+    // CRITICAL: Must match steps_per_mm used in APP_ExecuteMotionBlock() for accurate status reports
     if (x_steps_per_mm <= 0.0f || isnan(x_steps_per_mm))
     {
-        x_steps_per_mm = 400.0f; // Microstepping configuration: matches motion planner
+        x_steps_per_mm = 250.0f; // Default: matches GRBL $100 setting and app.c fallback
     }
     if (y_steps_per_mm <= 0.0f || isnan(y_steps_per_mm))
     {
-        y_steps_per_mm = 400.0f; // Microstepping configuration: matches motion planner
+        y_steps_per_mm = 250.0f; // Default: matches GRBL $101 setting and app.c fallback
     }
     if (z_steps_per_mm <= 0.0f || isnan(z_steps_per_mm))
     {
-        z_steps_per_mm = 400.0f; // Microstepping configuration: matches motion planner
+        z_steps_per_mm = 250.0f; // Default: matches GRBL $102 setting and app.c fallback
     }
 
     // Get current step positions
