@@ -54,6 +54,7 @@
 #include "interrupts.h"
 
 
+volatile static TMR_TIMER_OBJECT tmr3Obj;
 
 
 void TMR3_Initialize(void)
@@ -63,18 +64,20 @@ void TMR3_Initialize(void)
 
     /*
     SIDL = 0
-    TCKPS =3
+    TCKPS =1
     T32   = 0
     TCS = 0
     */
-    T3CONSET = 0x30;
+    T3CONSET = 0x10;
 
     /* Clear counter */
     TMR3 = 0x0;
 
     /*Set period */
-    PR3 = 61U;
+    PR3 = 249U;
 
+    /* Enable TMR Interrupt */
+    IEC0SET = _IEC0_T3IE_MASK;
 
 }
 
@@ -108,16 +111,39 @@ uint16_t TMR3_CounterGet(void)
 
 uint32_t TMR3_FrequencyGet(void)
 {
-    return (6250000);
+    return (25000000);
 }
 
 
-
-bool TMR3_PeriodHasExpired(void)
+void __attribute__((used)) TIMER_3_InterruptHandler (void)
 {
-    bool status;
-        status = (IFS0bits.T3IF != 0U);
-        IFS0CLR = _IFS0_T3IF_MASK;
+    uint32_t status  = 0U;
+    status = IFS0bits.T3IF;
+    IFS0CLR = _IFS0_T3IF_MASK;
 
-    return status;
+    if((tmr3Obj.callback_fn != NULL))
+    {
+        uintptr_t context = tmr3Obj.context;
+        tmr3Obj.callback_fn(status, context);
+    }
+}
+
+
+void TMR3_InterruptEnable(void)
+{
+    IEC0SET = _IEC0_T3IE_MASK;
+}
+
+
+void TMR3_InterruptDisable(void)
+{
+    IEC0CLR = _IEC0_T3IE_MASK;
+}
+
+
+void TMR3_CallbackRegister( TMR_CALLBACK callback_fn, uintptr_t context )
+{
+    /* Save callback_fn and context in local memory */
+    tmr3Obj.callback_fn = callback_fn;
+    tmr3Obj.context = context;
 }

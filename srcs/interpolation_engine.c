@@ -12,6 +12,12 @@
     velocity profiles for professional CNC motion control.
 *******************************************************************************/
 
+// System headers
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+
 #include "interpolation_engine.h"
 #include "app.h"
 #include "peripheral/tmr1/plib_tmr1.h"
@@ -22,9 +28,6 @@
 #include "peripheral/ocmp/plib_ocmp4.h"
 #include "peripheral/ocmp/plib_ocmp5.h"
 #include "peripheral/gpio/plib_gpio.h"
-#include <stdio.h>
-#include <string.h>
-#include <math.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -426,21 +429,25 @@ void INTERP_StopSingleAxis(axis_id_t axis, const char *reason)
     // Disable OCR module for this axis specifically
     switch (axis)
     {
-    case AXIS_X:
-        OCMP5_Disable(); // Stop X-axis pulse generation immediately (RD4)
-        printf("X-axis OCR5 DISABLED - No more pulses\n");
+    case AXIS_X: // OC5 RD4 TMR3
+        TMR3_Stop();
+        OCMP5_Disable(); // X: OCMP5/TMR3
+        printf("X-axis OCR5/TMR3 DISABLED - No more pulses\n");
         break;
-    case AXIS_Y:
-        OCMP1_Disable(); // Stop Y-axis pulse generation immediately (RD5)
-        printf("Y-axis OCR1 DISABLED - No more pulses\n");
+    case AXIS_Y: // OC1 RD5 TMR4
+        TMR4_Stop();
+        OCMP1_Disable(); // Y: OCMP1/TMR4
+        printf("Y-axis OCR1/TMR4 DISABLED - No more pulses\n");
         break;
-    case AXIS_Z:
-        OCMP4_Disable(); // Stop Z-axis pulse generation immediately (RF0)
-        printf("Z-axis OCR4 DISABLED - No more pulses\n");
+    case AXIS_Z: // Z: OC4 RF0 TMR2
+        TMR2_Stop();
+        OCMP4_Disable(); // Z: OCMP4/TMR2
+        printf("Z-axis OCR4/TMR2 DISABLED - No more pulses\n");
         break;
-    case AXIS_A:
-        // A-axis would use OCMP2 or OCMP3 when implemented
-        printf("A-axis stopped (OCR not yet configured)\n");
+    case AXIS_A: // A: OC3 RF1 TMR5
+        TMR5_Stop();
+        OCMP3_Disable(); // A: OCMP3/TMR5
+        printf("A-axis OCR3/TMR5 DISABLED - No more pulses\n");
         break;
     }
 
@@ -611,7 +618,7 @@ void INTERP_EmergencyStop(void)
     for (int i = 0; i < INTERP_MAX_AXES; i++)
     {
         interp_context.steps.step_active[i] = false;
-        INTERP_SetStepPin((axis_id_t)i, false);
+        // No need to toggle step pin in OCR continuous pulse mode
     }
 
     if (interp_context.error_callback)
@@ -820,6 +827,60 @@ void INTERP_LimitVelocity(velocity_t *velocity, float max_velocity)
 // Hardware Integration Functions
 // *****************************************************************************
 
+// Configure GPIO pins for stepper enable, step, and direction
+bool INTERP_ConfigureStepperGPIO(void)
+{
+    // Example pin initialization for stepper drivers
+    // These macros/pins should be defined in Harmony or your BSP
+    // If not, replace with actual pin initialization code
+
+    // Enable pins (set as output, initial state LOW)
+    GPIO_PinWrite(EnX_PIN, false);   // X-axis stepper driver DISABLE
+    GPIO_PinWrite(EnY_PIN, false);   // Y-axis stepper driver DISABLE
+    GPIO_PinWrite(EnZ_PIN, false);   // Z-axis stepper driver DISABLE
+  //  GPIO_PinWrite(EnA_PIN, false);   // A-axis stepper driver DISABLE (if used)
+
+    // Step and direction pins (set as output, initial state LOW)
+    // Replace StepX_PIN, DirX_PIN, etc. with your actual pin macros
+    // If not defined, this is a placeholder for user to fill in
+#ifdef StepX_PIN
+    GPIO_PinWrite(StepX_PIN, false);
+#endif
+#ifdef DirX_PIN
+    GPIO_PinWrite(DirX_PIN, false);
+#endif
+#ifdef StepY_PIN
+    GPIO_PinWrite(StepY_PIN, false);
+#endif
+#ifdef DirY_PIN
+    GPIO_PinWrite(DirY_PIN, false);
+#endif
+#ifdef StepZ_PIN
+    GPIO_PinWrite(StepZ_PIN, false);
+#endif
+#ifdef DirZ_PIN
+    GPIO_PinWrite(DirZ_PIN, false);
+#endif
+
+    // If you have an A axis:
+#ifdef EnA_PIN
+    GPIO_PinWrite(EnA_PIN, false);
+#endif
+#ifdef StepA_PIN
+    GPIO_PinWrite(StepA_PIN, false);
+#endif
+#ifdef DirA_PIN
+    GPIO_PinWrite(DirA_PIN, false);
+#endif
+
+    // Add any additional pin configuration as needed
+
+    // If Harmony or BSP provides pin direction configuration, set as output
+    // e.g., GPIO_PinSetDirection(EnX_PIN, GPIO_DIRECTION_OUTPUT);
+
+    // Return true if configuration succeeded
+    return true;
+}
 void INTERP_Timer1Callback(uint32_t status, uintptr_t context)
 {
     // This should be called from Timer1 ISR at 1kHz (now that prescaler is fixed)
@@ -839,7 +900,7 @@ void INTERP_Timer1Callback(uint32_t status, uintptr_t context)
     led_counter++;
     if ((led_counter % 100) == 0) // Every 100ms at 1kHz
     {
-        LED1_Toggle();
+        LED2_Toggle();
     }
 }
 
@@ -952,81 +1013,81 @@ static void update_step_rates(void)
     INTERP_SetStepDirection(AXIS_Z, current_velocity.z >= 0.0f);
     INTERP_SetStepDirection(AXIS_A, current_velocity.magnitude >= 0.0f);
 }
-
 void INTERP_SetAxisStepRate(axis_id_t axis, float steps_per_second)
 {
-    if (axis >= INTERP_MAX_AXES)
-        return;
-
-    interp_context.steps.step_frequency[axis] = steps_per_second;
-
     if (steps_per_second < 1.0f)
     {
-        // Stop the axis by setting maximum period
-        interp_context.steps.step_period[axis] = 65535;
-
+        // Stop the axis
         switch (axis)
         {
-        case AXIS_X:
-            // Stop X-axis pulses by setting very long period (RD4/OCR5)
-            OCMP5_CompareSecondaryValueSet(65535); // 65.535ms period = ~15Hz
-            printf("X-axis stopped\n");
+        case AXIS_X: // OCMP5 + TMR3
+            TMR3_Stop();
+            OCMP5_Disable();
             break;
-        case AXIS_Y:
-            // Stop Y-axis pulses (RD5/OCR1)
-            OCMP1_CompareSecondaryValueSet(65535);
-            printf("Y-axis stopped\n");
+        case AXIS_Y: // OCMP1 + TMR4
+            TMR4_Stop();
+            OCMP1_Disable();
             break;
-        case AXIS_Z:
-            // Stop Z-axis pulses (RF0/OCR4)
-            OCMP4_CompareSecondaryValueSet(65535);
-            printf("Z-axis stopped\n");
+        case AXIS_Z: // OCMP4 + TMR2
+            TMR2_Stop();
+            OCMP4_Disable();
             break;
-        default:
+        case AXIS_A: // OCMP3 + TMR5
+            TMR5_Stop();
+            OCMP3_Disable();
             break;
         }
     }
     else
     {
-        // Calculate OCR period for desired step frequency
-        // Timer frequency = 1MHz (1μs resolution)
-        // Period = Timer_Freq / Step_Freq
-        uint32_t period = (uint32_t)(1000000.0f / steps_per_second);
+        // YOUR CRITICAL CONSTRAINT: OCR4R + OCR4RS ≤ TMR2_PR
+        // Calculate TMR_PR for desired frequency
+        uint32_t timer_period = (uint32_t)(1000000.0f / steps_per_second);
 
-        // Clamp period to valid range
-        if (period < 100)
-            period = 100; // Maximum 10kHz step rate
-        if (period > 65535)
-            period = 65535; // Minimum ~15Hz step rate
+        // Fixed pulse width (your OCR4RS = 40)
+        uint32_t pulse_width = 40;
 
-        interp_context.steps.step_period[axis] = period;
+        // OCR compare value (your method: TMR_PR - 50 for safety)
+        uint32_t ocr_compare = timer_period - 50;
 
-        // Configure OCR module for continuous pulse generation
+        // Ensure constraint: ocr_compare + pulse_width ≤ timer_period
+        if (ocr_compare + pulse_width > timer_period)
+        {
+            ocr_compare = timer_period - pulse_width - 10; // Extra safety margin
+        }
+
         switch (axis)
         {
-        case AXIS_X:
-            // Configure OCMP5 period for X-axis step rate (RD4)
-            OCMP5_CompareValueSet(period / 2);      // 50% duty cycle
-            OCMP5_CompareSecondaryValueSet(period); // Period = 1/frequency
-            // Note: OCMP5 is already enabled, just changing the timing
-            printf("X-axis: %.1f steps/sec (period=%u)\n", steps_per_second, (unsigned int)period);
+        case AXIS_X: // RD4 OCMP5 + TMR3
+            TMR3_PeriodSet(timer_period);
+            OCMP5_CompareValueSet(ocr_compare);          // OC5R
+            OCMP5_CompareSecondaryValueSet(pulse_width); // OC5RS = 40
+            OCMP5_Enable();
+            TMR3_Start();
             break;
 
-        case AXIS_Y:
-            // Configure OCMP1 period for Y-axis step rate (RD5)
-            OCMP1_CompareValueSet(period / 2);
-            OCMP1_CompareSecondaryValueSet(period);
-            printf("Y-axis: %.1f steps/sec (period=%u)\n", steps_per_second, (unsigned int)period);
+        case AXIS_Y: // RD5 OCMP1 + TMR4
+            TMR4_PeriodSet(timer_period);
+            OCMP1_CompareValueSet(ocr_compare);          // OC1R
+            OCMP1_CompareSecondaryValueSet(pulse_width); // OC1RS = 40
+            OCMP1_Enable();
+            TMR4_Start();
             break;
 
-        case AXIS_Z:
-            // Configure OCMP4 period for Z-axis step rate (RF0)
-            OCMP4_CompareValueSet(period / 2);
-            OCMP4_CompareSecondaryValueSet(period);
-            printf("Z-axis: %.1f steps/sec (period=%u)\n", steps_per_second, (unsigned int)period);
+        case AXIS_Z: // RF0 OCMP4 + TMR2
+            TMR2_PeriodSet(timer_period);
+            OCMP4_CompareValueSet(ocr_compare);          // OC4R
+            OCMP4_CompareSecondaryValueSet(pulse_width); // OC4RS = 40
+            OCMP4_Enable();
+            TMR2_Start();
             break;
 
-        default:
+        case AXIS_A: // RF1 OCMP3 + TMR5
+            TMR5_PeriodSet(timer_period);
+            OCMP3_CompareValueSet(ocr_compare);          // OC3R
+            OCMP3_CompareSecondaryValueSet(pulse_width); // OC3RS = 40
+            OCMP3_Enable();
+            TMR5_Start();
             break;
         }
     }
@@ -1039,21 +1100,25 @@ void INTERP_StartStepGeneration(void)
 
     printf("Starting step pulse generation on all axes\n");
 
-    // CRITICAL: Start the base timer that drives ALL OCR modules
-    // Use Timer2 for all OCR modules to avoid multiplexing conflicts
-    TMR2_Start(); // Timer2 drives ALL OCR modules (OCMP1, OCMP4, OCMP5)
-    printf("Base timer TMR2 started for all OCR modules\n");
+    // Start and enable each axis in correct sequence
+    // X: OCMP5/TMR3
+    TMR3_Start();
+    OCMP5_Enable();
+    // Y: OCMP1/TMR4
+    TMR4_Start();
+    OCMP1_Enable();
+    // Z: OCMP4/TMR2
+    TMR2_Start();
+    OCMP4_Enable();
+    // A: OCMP3/TMR5 (if used)
+    TMR5_Start();
+    OCMP3_Enable();
 
-    // CRITICAL: Enable stepper driver enable pins - SET HIGH to enable steppers
+    // Enable stepper driver pins
     GPIO_PinWrite(EnX_PIN, true); // X-axis stepper driver ENABLE
     GPIO_PinWrite(EnY_PIN, true); // Y-axis stepper driver ENABLE
     GPIO_PinWrite(EnZ_PIN, true); // Z-axis stepper driver ENABLE
     printf("Stepper driver ENABLE pins set HIGH\n");
-
-    // Enable all OCR modules - this starts the hardware pulse generation
-    OCMP5_Enable(); // X-axis pulse generation ON (RD4) - Timer2 based
-    OCMP1_Enable(); // Y-axis pulse generation ON (RD5) - Timer2 based
-    OCMP4_Enable(); // Z-axis pulse generation ON (RF0) - Timer2 based
 
     printf("Hardware step pulse generation ACTIVE\n");
 }
@@ -1065,25 +1130,26 @@ void INTERP_StopStepGeneration(void)
 
     printf("Stopping step pulse generation on all axes\n");
 
-    // Method 1: Disable OCR modules completely
-    OCMP5_Disable(); // X-axis pulse generation OFF (RD4)
-    OCMP1_Disable(); // Y-axis pulse generation OFF (RD5)
-    OCMP4_Disable(); // Z-axis pulse generation OFF (RF0)
-
-    // Stop the base timer
-    TMR2_Stop(); // Timer2 drives ALL OCR modules
-    printf("Base timer TMR2 stopped\n");
+    // Disable and stop each axis in correct sequence
+    // X: OCMP5/TMR3
+    OCMP5_Disable();
+    TMR3_Stop();
+    // Y: OCMP1/TMR4
+    OCMP1_Disable();
+    TMR4_Stop();
+    // Z: OCMP4/TMR2
+    OCMP4_Disable();
+    TMR2_Stop();
+    // A: OCMP3/TMR5 (if used)
+    OCMP3_Disable();
+    TMR5_Stop();
+    printf("All axis timers and OCR modules stopped\n");
 
     // CRITICAL: Disable stepper driver enable pins - SET LOW to disable steppers
     GPIO_PinWrite(EnX_PIN, false); // X-axis stepper driver DISABLE
     GPIO_PinWrite(EnY_PIN, false); // Y-axis stepper driver DISABLE
     GPIO_PinWrite(EnZ_PIN, false); // Z-axis stepper driver DISABLE
     printf("Stepper driver ENABLE pins set LOW\n");
-
-    // Method 2: Alternative - set very long periods to effectively stop
-    // OCMP1_CompareSecondaryValueSet(65535);
-    // OCMP4_CompareSecondaryValueSet(65535);
-    // OCMP5_CompareSecondaryValueSet(65535);
 
     // Reset step frequencies
     for (int i = 0; i < INTERP_MAX_AXES; i++)
@@ -1093,56 +1159,6 @@ void INTERP_StopStepGeneration(void)
     }
 
     // printf("Hardware step pulse generation STOPPED\n");  // Commented out - UGS treats as error
-}
-
-bool INTERP_ConfigureStepperGPIO(void)
-{
-    // GPIO pins should already be configured by Harmony
-    // This function would set up step and direction pins
-
-    return true;
-}
-
-void INTERP_GenerateStepPulse(axis_id_t axis)
-{
-    // Generate a step pulse using OCR modules
-    // OCR Module Mapping (CORRECTED):
-    // X-axis → OCMP5 → PulseX (RD4)
-    // Y-axis → OCMP1 → PulseY (RD5)
-    // Z-axis → OCMP4 → PulseZ (RF0)
-    // A-axis → OCMP2/3 (not configured yet)
-
-    switch (axis)
-    {
-    case AXIS_X:
-        // Use OCMP5 for X-axis step generation (RD4)
-        OCMP5_CompareSecondaryValueSet(1000); // Pulse width
-        break;
-
-    case AXIS_Y:
-        // Use OCMP1 for Y-axis step generation (RD5)
-        OCMP1_CompareSecondaryValueSet(1000);
-        break;
-
-    case AXIS_Z:
-        // Use OCMP4 for Z-axis step generation (RF0)
-        OCMP4_CompareSecondaryValueSet(1000);
-        break;
-
-    case AXIS_A:
-        // A-axis OCR module not configured yet
-        // Would use OCMP2 or OCMP3 when implemented
-        break;
-
-    default:
-        break;
-    }
-
-    // Call user callback if registered
-    if (interp_context.step_callback)
-    {
-        interp_context.step_callback(axis, interp_context.steps.direction[axis]);
-    }
 }
 
 void INTERP_SetStepDirection(axis_id_t axis, bool direction)

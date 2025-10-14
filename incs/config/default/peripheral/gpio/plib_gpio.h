@@ -197,6 +197,11 @@
 #define PulseZ_GetLatch()          ((LATF >> 0) & 0x1U)
 #define PulseZ_PIN                  GPIO_PIN_RF0
 
+/*** Macros for PulseA pin ***/
+#define PulseA_Get()               ((PORTF >> 1) & 0x1U)
+#define PulseA_GetLatch()          ((LATF >> 1) & 0x1U)
+#define PulseA_PIN                  GPIO_PIN_RF1
+
 /*** Macros for DirY pin ***/
 #define DirY_Set()               (LATESET = (1U<<2))
 #define DirY_Clear()             (LATECLR = (1U<<2))

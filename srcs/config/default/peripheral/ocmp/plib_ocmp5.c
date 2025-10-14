@@ -58,9 +58,9 @@ void OCMP5_Initialize (void)
     /*OCM         = 5        */
     /*OCTSEL       = 1        */
     /*OC32         = 0        */
-    /*SIDL         = true    */
+    /*SIDL         = false    */
 
-    OC5CON = 0x200d;
+    OC5CON = 0xd;
 
     /* unlock system for configuration */
     SYSKEY = 0x00000000;

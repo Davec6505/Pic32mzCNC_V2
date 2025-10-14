@@ -1,20 +1,17 @@
 /*******************************************************************************
-  Data Type definition of Timer PLIB
+  Output Compare OCMP3 Peripheral Library (PLIB)
 
   Company:
     Microchip Technology Inc.
 
   File Name:
-    plib_tmr3.h
+    plib_ocmp3.c
 
   Summary:
-    Data Type definition of the Timer Peripheral Interface Plib.
+    OCMP3 Source File
 
   Description:
-    This file defines the Data Types for the Timer Plib.
-
-  Remarks:
-    None.
+    None
 
 *******************************************************************************/
 
@@ -40,64 +37,91 @@
 * ANY WAY RELATED TO THIS SOFTWARE WILL NOT EXCEED THE AMOUNT OF FEES, IF ANY,
 * THAT YOU HAVE PAID DIRECTLY TO MICROCHIP FOR THIS SOFTWARE.
 *******************************************************************************/
-
-#ifndef PLIB_TMR3_H
-#define PLIB_TMR3_H
-
-#include <stddef.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include "device.h"
-#include "plib_tmr_common.h"
-
-// DOM-IGNORE-BEGIN
-#ifdef __cplusplus  // Provide C++ Compatibility
-
-    extern "C" {
-
-#endif
-// DOM-IGNORE-END
+#include "plib_ocmp3.h"
+#include "interrupts.h"
 
 // *****************************************************************************
+
 // *****************************************************************************
-// Section: Data Types
+// Section: OCMP3 Implementation
 // *****************************************************************************
 // *****************************************************************************
 
 // *****************************************************************************
-// *****************************************************************************
-// Section: Interface Routines
-// *****************************************************************************
-// *****************************************************************************
 
 
-// *****************************************************************************
-void TMR3_Initialize(void);
+volatile static OCMP_OBJECT ocmp3Obj;
 
-void TMR3_Start(void);
+void OCMP3_Initialize (void)
+{
+    /*Setup OC3CON        */
+    /*OCM         = 5        */
+    /*OCTSEL       = 1        */
+    /*OC32         = 0        */
+    /*SIDL         = false    */
 
-void TMR3_Stop(void);
+    OC3CON = 0xd;
 
-void TMR3_PeriodSet(uint16_t period);
+    /* unlock system for configuration */
+    SYSKEY = 0x00000000;
+    SYSKEY = 0xAA996655;
+    SYSKEY = 0x556699AA;  
+    CFGCON |= 0x00010000U;
+    /* Lock system since done with configuration */
+    SYSKEY = 0x33333333;    
+    OC3R = 200;
+    OC3RS = 40;
 
-uint16_t TMR3_PeriodGet(void);
+    IEC0SET = _IEC0_OC3IE_MASK;
+}
 
-uint16_t TMR3_CounterGet(void);
+void OCMP3_Enable (void)
+{
+    OC3CONSET = _OC3CON_ON_MASK;
+}
 
-uint32_t TMR3_FrequencyGet(void);
-
-void TMR3_InterruptEnable(void);
-
-void TMR3_InterruptDisable(void);
-
-void TMR3_CallbackRegister( TMR_CALLBACK callback_fn, uintptr_t context );
+void OCMP3_Disable (void)
+{
+    OC3CONCLR = _OC3CON_ON_MASK;
+}
 
 
-// DOM-IGNORE-BEGIN
-#ifdef __cplusplus  // Provide C++ Compatibility
+void OCMP3_CompareValueSet (uint16_t value)
+{
+    OC3R = value;
+}
 
+uint16_t OCMP3_CompareValueGet (void)
+{
+    return (uint16_t)OC3R;
+}
+
+void OCMP3_CompareSecondaryValueSet (uint16_t value)
+{
+    OC3RS = value;
+}
+
+uint16_t OCMP3_CompareSecondaryValueGet (void)
+{
+    return (uint16_t)OC3RS;
+}
+
+void OCMP3_CallbackRegister(OCMP_CALLBACK callback, uintptr_t context)
+{
+    ocmp3Obj.callback = callback;
+
+    ocmp3Obj.context = context;
+}
+
+void __attribute__((used)) OUTPUT_COMPARE_3_InterruptHandler (void)
+{
+    /* Additional local variable to prevent MISRA C violations (Rule 13.x) */
+    uintptr_t context = ocmp3Obj.context;      
+    IFS0CLR = _IFS0_OC3IF_MASK;    //Clear IRQ flag
+
+    if( (ocmp3Obj.callback != NULL))
+    {
+        ocmp3Obj.callback(context);
     }
-#endif
-// DOM-IGNORE-END
+}
 
-#endif /* PLIB_TMR3_H */

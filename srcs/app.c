@@ -321,6 +321,7 @@ void APP_Tasks(void)
 
     case APP_STATE_MOTION_IDLE:
     {
+
         /* Process user input */
         APP_ProcessSwitches();
 
@@ -337,6 +338,7 @@ void APP_Tasks(void)
 
     case APP_STATE_MOTION_PLANNING:
     {
+        APP_UARTPrint_blocking("PLANNING\r\n");
         /* Execute the next motion block */
         APP_ExecuteNextMotionBlock();
         appData.state = APP_STATE_MOTION_EXECUTING;
@@ -345,6 +347,7 @@ void APP_Tasks(void)
 
     case APP_STATE_MOTION_EXECUTING:
     {
+
         /* Check if homing cycle is active */
         if (INTERP_IsHomingActive())
         {
@@ -472,6 +475,7 @@ static void APP_MotionSystemInit(void)
     /* Timer1 configured by Harmony, just need to start it */
     if (!appData.trajectory_timer_active)
     {
+        APP_UARTPrint_blocking("Starting Timer1 for trajectory updates\r\n");
         // Timer1 callback already registered by interpolation engine
         // Timer1 now handles both INTERP_Tasks() AND MotionPlanner_UpdateTrajectory()
         TMR1_Start(); // This should work now that prescaler is fixed
@@ -648,54 +652,48 @@ bool APP_ExecuteMotionBlock(motion_block_t *block)
             /* Set direction based on movement */
             cnc_axes[i].direction_forward = (target_pos > current_pos);
 
-            /* Activate axis and enable OCR module */
+            /* Activate axis */
             APP_SetAxisActiveState(i, true);
-
-            /* Enable the appropriate OCR module for this axis */
-            // DEBUG: Disabled for UGS compatibility
-            // char ocr_debug[128];
-            // sprintf(ocr_debug, "[DEBUG: OCR Setup] Axis %d: target=%d current=%d velocity=%.1f\r\n",
-            //         i, target_pos, current_pos, APP_GetAxisTargetVelocity(i));
-            // APP_UARTPrint_blocking(ocr_debug);
-
-            switch (i)
-            {
-            case 0: // X-axis -> OCMP4 (uses Timer3)
-                OCMP4_Enable();
-                TMR3_Start(); // CRITICAL: Start the timer that drives OCMP4
-                // APP_UARTPrint_blocking("[DEBUG: OCMP4 enabled + TMR3 started for X-axis]\r\n");
-                break;
-            case 1: // Y-axis -> OCMP1 (uses Timer2)
-                OCMP1_Enable();
-                TMR2_Start(); // CRITICAL: Start the timer that drives OCMP1
-                // APP_UARTPrint_blocking("[DEBUG: OCMP1 enabled + TMR2 started for Y-axis]\r\n");
-                break;
-            case 2: // Z-axis -> OCMP5 (uses Timer4)
-                OCMP5_Enable();
-                TMR4_Start(); // CRITICAL: Start the timer that drives OCMP5
-                // APP_UARTPrint_blocking("[DEBUG: OCMP5 enabled + TMR4 started for Z-axis]\r\n");
-                break;
-            }
 
             /* Calculate and set OCR period using motion planner function */
             float target_velocity = APP_GetAxisTargetVelocity(i);
-            uint32_t ocr_period = MotionPlanner_CalculateOCRPeriod(target_velocity);
+            uint32_t timer_period = MotionPlanner_CalculateOCRPeriod(target_velocity);
 
-            // DEBUG: Disabled for UGS compatibility
-            // sprintf(ocr_debug, "[DEBUG: OCR Period] Axis %d: period=%u (velocity=%.1f)\r\n",
-            //         i, ocr_period, target_velocity);
-            // APP_UARTPrint_blocking(ocr_debug);
+            // Apply YOUR constraint formula: OCRxR + OCRxRS ≤ TMRx_PR
+            uint32_t pulse_width = 40;                // OCRxRS fixed value
+            uint32_t ocr_compare = timer_period - 10; // OCRxR = TMRx_PR - 10
 
+            // Ensure we never violate the constraint
+            if (ocr_compare + pulse_width > timer_period)
+            {
+                ocr_compare = timer_period - pulse_width - 10;
+            }
+
+            // Configure timer period and OCR compare values, then enable in correct sequence
             switch (i)
             {
-            case 0: // X-axis -> OCMP4
-                OCMP4_CompareSecondaryValueSet(ocr_period);
+            case 0:                                          // X-axis -> OCMP4 + TMR3
+                TMR3_PeriodSet(timer_period);                // Set TMR3_PR first
+                OCMP4_CompareValueSet(ocr_compare);          // Set OC4R
+                OCMP4_CompareSecondaryValueSet(pulse_width); // Set OC4RS = 40
+                OCMP4_Enable();                              // Enable OCMP4
+                TMR3_Start();                                // Start TMR3 last
                 break;
-            case 1: // Y-axis -> OCMP1
-                OCMP1_CompareSecondaryValueSet(ocr_period);
+
+            case 1:                                          // Y-axis -> OCMP1 + TMR2
+                TMR2_PeriodSet(timer_period);                // Set TMR2_PR first
+                OCMP1_CompareValueSet(ocr_compare);          // Set OC1R
+                OCMP1_CompareSecondaryValueSet(pulse_width); // Set OC1RS = 40
+                OCMP1_Enable();                              // Enable OCMP1
+                TMR2_Start();                                // Start TMR2 last
                 break;
-            case 2: // Z-axis -> OCMP5
-                OCMP5_CompareSecondaryValueSet(ocr_period);
+
+            case 2:                                          // Z-axis -> OCMP5 + TMR4
+                TMR4_PeriodSet(timer_period);                // Set TMR4_PR first
+                OCMP5_CompareValueSet(ocr_compare);          // Set OC5R
+                OCMP5_CompareSecondaryValueSet(pulse_width); // Set OC5RS = 40
+                OCMP5_Enable();                              // Enable OCMP5
+                TMR4_Start();                                // Start TMR4 last
                 break;
             }
         }
@@ -1152,7 +1150,7 @@ static void APP_ProcessGCodeCommand(const char *command)
     case GCODE_M9:
         // Coolant control
         MotionGCodeParser_UpdateCoolantState(command);
-        APP_UARTPrint_blocking("ok\r\n");
+        APP_UARTPrint("ok\r\n");
         break;
 
     case GCODE_G17:
@@ -1160,14 +1158,14 @@ static void APP_ProcessGCodeCommand(const char *command)
     case GCODE_G19:
         // Plane selection
         MotionGCodeParser_UpdatePlaneSelection(command);
-        APP_UARTPrint_blocking("ok\r\n");
+        APP_UARTPrint("ok\r\n");
         break;
 
     case GCODE_G20:
     case GCODE_G21:
         // Units - Update parser state
         MotionGCodeParser_UpdateUnits(command);
-        APP_UARTPrint_blocking("ok\r\n");
+        APP_UARTPrint("ok\r\n");
         break;
 
     case GCODE_G28:
@@ -1197,20 +1195,20 @@ static void APP_ProcessGCodeCommand(const char *command)
     case GCODE_G91:
         // Distance mode
         MotionGCodeParser_UpdateDistanceMode(command);
-        APP_UARTPrint_blocking("ok\r\n");
+        APP_UARTPrint("ok\r\n");
         break;
 
     case GCODE_G92:
         // Coordinate system offset
         MotionGCodeParser_UpdateCoordinateOffset(command);
-        APP_UARTPrint_blocking("ok\r\n");
+        APP_UARTPrint("ok\r\n");
         break;
 
     case GCODE_G93:
     case GCODE_G94:
         // Feed rate mode
         MotionGCodeParser_UpdateFeedRateMode(command);
-        APP_UARTPrint_blocking("ok\r\n");
+        APP_UARTPrint("ok\r\n");
         break;
 
     case GCODE_G54:
@@ -1221,18 +1219,18 @@ static void APP_ProcessGCodeCommand(const char *command)
     case GCODE_G59:
         // Work coordinate systems
         MotionGCodeParser_UpdateWorkCoordinateSystem(command);
-        APP_UARTPrint_blocking("ok\r\n");
+        APP_UARTPrint("ok\r\n");
         break;
 
     case GCODE_F:
         // Feed rate command
-        APP_UARTPrint_blocking("ok\r\n");
+        APP_UARTPrint("ok\r\n");
         break;
 
     case GCODE_UNKNOWN:
     default:
         // Unknown command
-        APP_UARTPrint_blocking("error:20\r\n"); // Unsupported or invalid g-code ID:20
+        APP_UARTPrint("error:20\r\n"); // Unsupported or invalid g-code ID:20
         break;
     }
 }
@@ -1446,6 +1444,9 @@ void APP_EmergencyStop(void)
     /* Use interpolation engine emergency stop for proper coordination */
     INTERP_EmergencyStop();
 
+    /* Stop trajectory timer */
+    TMR1_Stop();
+    appData.trajectory_timer_active = false;
     /* Stop all OCR modules and their timers */
     OCMP1_Disable();
     TMR2_Stop(); // Stop Timer2 (drives OCMP1)

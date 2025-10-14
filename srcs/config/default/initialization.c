@@ -184,22 +184,26 @@ void SYS_Initialize ( void* data )
 
 	GPIO_Initialize();
 
+    OCMP1_Initialize();
+
+    OCMP4_Initialize();
+
+    OCMP5_Initialize();
+
+    OCMP3_Initialize();
+
     CORETIMER_Initialize();
     TMR4_Initialize();
 
 	UART2_Initialize();
+
+    TMR5_Initialize();
 
     TMR2_Initialize();
 
     TMR3_Initialize();
 
     TMR1_Initialize();
-
-    OCMP1_Initialize();
-
-    OCMP4_Initialize();
-
-    OCMP5_Initialize();
 
 
     EVIC_Initialize();

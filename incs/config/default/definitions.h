@@ -48,19 +48,21 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include "peripheral/coretimer/plib_coretimer.h"
-#include "peripheral/tmr/plib_tmr4.h"
-#include "peripheral/uart/plib_uart2.h"
-#include "peripheral/tmr/plib_tmr2.h"
-#include "peripheral/tmr/plib_tmr3.h"
 #include "peripheral/clk/plib_clk.h"
 #include "peripheral/gpio/plib_gpio.h"
 #include "peripheral/cache/plib_cache.h"
 #include "peripheral/evic/plib_evic.h"
-#include "peripheral/tmr1/plib_tmr1.h"
 #include "peripheral/ocmp/plib_ocmp1.h"
 #include "peripheral/ocmp/plib_ocmp4.h"
 #include "peripheral/ocmp/plib_ocmp5.h"
+#include "peripheral/ocmp/plib_ocmp3.h"
+#include "peripheral/coretimer/plib_coretimer.h"
+#include "peripheral/tmr/plib_tmr4.h"
+#include "peripheral/uart/plib_uart2.h"
+#include "peripheral/tmr/plib_tmr5.h"
+#include "peripheral/tmr/plib_tmr2.h"
+#include "peripheral/tmr/plib_tmr3.h"
+#include "peripheral/tmr1/plib_tmr1.h"
 
 // DOM-IGNORE-BEGIN
 #ifdef __cplusplus  // Provide C++ Compatibility

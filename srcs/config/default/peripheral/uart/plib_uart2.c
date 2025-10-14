@@ -16,27 +16,27 @@
 *******************************************************************************/
 
 /*******************************************************************************
- * Copyright (C) 2019 Microchip Technology Inc. and its subsidiaries.
- *
- * Subject to your compliance with these terms, you may use Microchip software
- * and any derivatives exclusively with Microchip products. It is your
- * responsibility to comply with third party license terms applicable to your
- * use of third party software (including open source software) that may
- * accompany Microchip software.
- *
- * THIS SOFTWARE IS SUPPLIED BY MICROCHIP "AS IS". NO WARRANTIES, WHETHER
- * EXPRESS, IMPLIED OR STATUTORY, APPLY TO THIS SOFTWARE, INCLUDING ANY IMPLIED
- * WARRANTIES OF NON-INFRINGEMENT, MERCHANTABILITY, AND FITNESS FOR A
- * PARTICULAR PURPOSE.
- *
- * IN NO EVENT WILL MICROCHIP BE LIABLE FOR ANY INDIRECT, SPECIAL, PUNITIVE,
- * INCIDENTAL OR CONSEQUENTIAL LOSS, DAMAGE, COST OR EXPENSE OF ANY KIND
- * WHATSOEVER RELATED TO THE SOFTWARE, HOWEVER CAUSED, EVEN IF MICROCHIP HAS
- * BEEN ADVISED OF THE POSSIBILITY OR THE DAMAGES ARE FORESEEABLE. TO THE
- * FULLEST EXTENT ALLOWED BY LAW, MICROCHIP'S TOTAL LIABILITY ON ALL CLAIMS IN
- * ANY WAY RELATED TO THIS SOFTWARE WILL NOT EXCEED THE AMOUNT OF FEES, IF ANY,
- * THAT YOU HAVE PAID DIRECTLY TO MICROCHIP FOR THIS SOFTWARE.
- *******************************************************************************/
+* Copyright (C) 2019 Microchip Technology Inc. and its subsidiaries.
+*
+* Subject to your compliance with these terms, you may use Microchip software
+* and any derivatives exclusively with Microchip products. It is your
+* responsibility to comply with third party license terms applicable to your
+* use of third party software (including open source software) that may
+* accompany Microchip software.
+*
+* THIS SOFTWARE IS SUPPLIED BY MICROCHIP "AS IS". NO WARRANTIES, WHETHER
+* EXPRESS, IMPLIED OR STATUTORY, APPLY TO THIS SOFTWARE, INCLUDING ANY IMPLIED
+* WARRANTIES OF NON-INFRINGEMENT, MERCHANTABILITY, AND FITNESS FOR A
+* PARTICULAR PURPOSE.
+*
+* IN NO EVENT WILL MICROCHIP BE LIABLE FOR ANY INDIRECT, SPECIAL, PUNITIVE,
+* INCIDENTAL OR CONSEQUENTIAL LOSS, DAMAGE, COST OR EXPENSE OF ANY KIND
+* WHATSOEVER RELATED TO THE SOFTWARE, HOWEVER CAUSED, EVEN IF MICROCHIP HAS
+* BEEN ADVISED OF THE POSSIBILITY OR THE DAMAGES ARE FORESEEABLE. TO THE
+* FULLEST EXTENT ALLOWED BY LAW, MICROCHIP'S TOTAL LIABILITY ON ALL CLAIMS IN
+* ANY WAY RELATED TO THIS SOFTWARE WILL NOT EXCEED THE AMOUNT OF FEES, IF ANY,
+* THAT YOU HAVE PAID DIRECTLY TO MICROCHIP FOR THIS SOFTWARE.
+*******************************************************************************/
 
 #include "device.h"
 #include "plib_uart2.h"
@@ -50,23 +50,23 @@
 
 volatile static UART_OBJECT uart2Obj;
 
-void static UART2_ErrorClear(void)
+void static UART2_ErrorClear( void )
 {
     UART_ERROR errors = UART_ERROR_NONE;
     uint8_t dummyData = 0u;
 
     errors = (UART_ERROR)(U2STA & (_U2STA_OERR_MASK | _U2STA_FERR_MASK | _U2STA_PERR_MASK));
 
-    if (errors != UART_ERROR_NONE)
+    if(errors != UART_ERROR_NONE)
     {
         /* If it's a overrun error then clear it to flush FIFO */
-        if ((U2STA & _U2STA_OERR_MASK) != 0U)
+        if((U2STA & _U2STA_OERR_MASK) != 0U)
         {
             U2STACLR = _U2STA_OERR_MASK;
         }
 
         /* Read existing error bytes from FIFO to clear parity and framing error flags */
-        while ((U2STA & _U2STA_URXDA_MASK) != 0U)
+        while((U2STA & _U2STA_URXDA_MASK) != 0U)
         {
             dummyData = (uint8_t)U2RXREG;
         }
@@ -83,7 +83,7 @@ void static UART2_ErrorClear(void)
     (void)dummyData;
 }
 
-void UART2_Initialize(void)
+void UART2_Initialize( void )
 {
     /* Set up UxMODE bits */
     /* STSEL  = 0 */
@@ -93,7 +93,7 @@ void UART2_Initialize(void)
     U2MODE = 0x8;
 
     /* Enable UART2 Receiver and Transmitter */
-    U2STASET = (_U2STA_UTXEN_MASK | _U2STA_URXEN_MASK | _U2STA_UTXISEL1_MASK);
+    U2STASET = (_U2STA_UTXEN_MASK | _U2STA_URXEN_MASK | _U2STA_UTXISEL1_MASK );
 
     /* BAUD Rate register Setup */
     U2BRG = 108;
@@ -122,14 +122,14 @@ void UART2_Initialize(void)
     U2MODESET = _U2MODE_ON_MASK;
 }
 
-bool UART2_SerialSetup(UART_SERIAL_SETUP *setup, uint32_t srcClkFreq)
+bool UART2_SerialSetup( UART_SERIAL_SETUP *setup, uint32_t srcClkFreq )
 {
     bool status = false;
     uint32_t baud;
     uint32_t status_ctrl;
     uint32_t uxbrg = 0;
 
-    if (uart2Obj.rxBusyStatus == true)
+    if(uart2Obj.rxBusyStatus == true)
     {
         /* Transaction is in progress, so return without updating settings */
         return status;
@@ -149,7 +149,7 @@ bool UART2_SerialSetup(UART_SERIAL_SETUP *setup, uint32_t srcClkFreq)
             return status;
         }
 
-        if (srcClkFreq == 0U)
+        if(srcClkFreq == 0U)
         {
             srcClkFreq = UART2_FrequencyGet();
         }
@@ -175,7 +175,7 @@ bool UART2_SerialSetup(UART_SERIAL_SETUP *setup, uint32_t srcClkFreq)
 
         U2MODECLR = _U2MODE_ON_MASK;
 
-        if (setup->dataWidth == UART_DATA_9_BIT)
+        if(setup->dataWidth == UART_DATA_9_BIT)
         {
             /* Configure UART2 mode */
             U2MODE = (U2MODE & (~_U2MODE_PDSEL_MASK)) | setup->dataWidth;
@@ -203,20 +203,20 @@ bool UART2_SerialSetup(UART_SERIAL_SETUP *setup, uint32_t srcClkFreq)
     return status;
 }
 
-bool UART2_AutoBaudQuery(void)
+bool UART2_AutoBaudQuery( void )
 {
     bool autobaudqcheck = false;
-    if ((U2MODE & _U2MODE_ABAUD_MASK) != 0U)
+    if((U2MODE & _U2MODE_ABAUD_MASK) != 0U)
     {
 
-        autobaudqcheck = true;
+       autobaudqcheck = true;
     }
     return autobaudqcheck;
 }
 
-void UART2_AutoBaudSet(bool enable)
+void UART2_AutoBaudSet( bool enable )
 {
-    if (enable == true)
+    if( enable == true )
     {
         U2MODESET = _U2MODE_ABAUD_MASK;
     }
@@ -225,14 +225,14 @@ void UART2_AutoBaudSet(bool enable)
        direction of control is not allowed in this function.                      */
 }
 
-bool UART2_Read(void *buffer, const size_t size)
+bool UART2_Read(void* buffer, const size_t size )
 {
     bool status = false;
 
-    if (buffer != NULL)
+    if(buffer != NULL)
     {
         /* Check if receive request is in progress */
-        if (uart2Obj.rxBusyStatus == false)
+        if(uart2Obj.rxBusyStatus == false)
         {
             /* Clear error flags and flush out error data that may have been received when no active request was pending */
             UART2_ErrorClear();
@@ -255,14 +255,14 @@ bool UART2_Read(void *buffer, const size_t size)
     return status;
 }
 
-bool UART2_Write(void *buffer, const size_t size)
+bool UART2_Write( void* buffer, const size_t size )
 {
     bool status = false;
 
-    if (buffer != NULL)
+    if(buffer != NULL)
     {
         /* Check if transmit request is in progress */
-        if (uart2Obj.txBusyStatus == false)
+        if(uart2Obj.txBusyStatus == false)
         {
             uart2Obj.txBuffer = buffer;
             uart2Obj.txSize = size;
@@ -274,18 +274,18 @@ bool UART2_Write(void *buffer, const size_t size)
             size_t txSize = uart2Obj.txSize;
 
             /* Initiate the transfer by writing as many bytes as we can */
-            while (((U2STA & _U2STA_UTXBF_MASK) == 0U) && (txSize > txProcessedSize))
+            while(((U2STA & _U2STA_UTXBF_MASK) == 0U) && (txSize > txProcessedSize) )
             {
-                if ((U2MODE & (_U2MODE_PDSEL0_MASK | _U2MODE_PDSEL1_MASK)) == (_U2MODE_PDSEL0_MASK | _U2MODE_PDSEL1_MASK))
+                if (( U2MODE & (_U2MODE_PDSEL0_MASK | _U2MODE_PDSEL1_MASK)) == (_U2MODE_PDSEL0_MASK | _U2MODE_PDSEL1_MASK))
                 {
                     /* 9-bit mode */
-                    U2TXREG = ((uint16_t *)uart2Obj.txBuffer)[txProcessedSize];
+                    U2TXREG = ((uint16_t*)uart2Obj.txBuffer)[txProcessedSize];
                     txProcessedSize++;
                 }
                 else
                 {
                     /* 8-bit mode */
-                    U2TXREG = ((uint8_t *)uart2Obj.txBuffer)[txProcessedSize];
+                    U2TXREG = ((uint8_t*)uart2Obj.txBuffer)[txProcessedSize];
                     txProcessedSize++;
                 }
             }
@@ -299,7 +299,7 @@ bool UART2_Write(void *buffer, const size_t size)
     return status;
 }
 
-UART_ERROR UART2_ErrorGet(void)
+UART_ERROR UART2_ErrorGet( void )
 {
     UART_ERROR errors = uart2Obj.errors;
 
@@ -309,19 +309,19 @@ UART_ERROR UART2_ErrorGet(void)
     return errors;
 }
 
-void UART2_ReadCallbackRegister(UART_CALLBACK callback, uintptr_t context)
+void UART2_ReadCallbackRegister( UART_CALLBACK callback, uintptr_t context )
 {
     uart2Obj.rxCallback = callback;
 
     uart2Obj.rxContext = context;
 }
 
-bool UART2_ReadIsBusy(void)
+bool UART2_ReadIsBusy( void )
 {
     return uart2Obj.rxBusyStatus;
 }
 
-size_t UART2_ReadCountGet(void)
+size_t UART2_ReadCountGet( void )
 {
     return uart2Obj.rxProcessedSize;
 }
@@ -346,24 +346,24 @@ bool UART2_ReadAbort(void)
     return true;
 }
 
-void UART2_WriteCallbackRegister(UART_CALLBACK callback, uintptr_t context)
+void UART2_WriteCallbackRegister( UART_CALLBACK callback, uintptr_t context )
 {
     uart2Obj.txCallback = callback;
 
     uart2Obj.txContext = context;
 }
 
-bool UART2_WriteIsBusy(void)
+bool UART2_WriteIsBusy( void )
 {
     return uart2Obj.txBusyStatus;
 }
 
-size_t UART2_WriteCountGet(void)
+size_t UART2_WriteCountGet( void )
 {
     return uart2Obj.txProcessedSize;
 }
 
-void __attribute__((used)) UART2_FAULT_InterruptHandler(void)
+void __attribute__((used)) UART2_FAULT_InterruptHandler (void)
 {
     /* Save the error to be reported later */
     uart2Obj.errors = (U2STA & (_U2STA_OERR_MASK | _U2STA_FERR_MASK | _U2STA_PERR_MASK));
@@ -380,7 +380,7 @@ void __attribute__((used)) UART2_FAULT_InterruptHandler(void)
     UART2_ErrorClear();
 
     /* Client must call UARTx_ErrorGet() function to get the errors */
-    if (uart2Obj.rxCallback != NULL)
+    if( uart2Obj.rxCallback != NULL )
     {
         uintptr_t rxContext = uart2Obj.rxContext;
 
@@ -388,24 +388,24 @@ void __attribute__((used)) UART2_FAULT_InterruptHandler(void)
     }
 }
 
-void __attribute__((used)) UART2_RX_InterruptHandler(void)
+void __attribute__((used)) UART2_RX_InterruptHandler (void)
 {
-    if (uart2Obj.rxBusyStatus == true)
+    if(uart2Obj.rxBusyStatus == true)
     {
         size_t rxSize = uart2Obj.rxSize;
         size_t rxProcessedSize = uart2Obj.rxProcessedSize;
 
-        while ((_U2STA_URXDA_MASK == (U2STA & _U2STA_URXDA_MASK)) && (rxSize > rxProcessedSize))
+        while((_U2STA_URXDA_MASK == (U2STA & _U2STA_URXDA_MASK)) && (rxSize > rxProcessedSize) )
         {
-            if ((U2MODE & (_U2MODE_PDSEL0_MASK | _U2MODE_PDSEL1_MASK)) == (_U2MODE_PDSEL0_MASK | _U2MODE_PDSEL1_MASK))
+            if (( U2MODE & (_U2MODE_PDSEL0_MASK | _U2MODE_PDSEL1_MASK)) == (_U2MODE_PDSEL0_MASK | _U2MODE_PDSEL1_MASK))
             {
                 /* 9-bit mode */
-                ((uint16_t *)uart2Obj.rxBuffer)[rxProcessedSize] = (uint16_t)(U2RXREG);
+                ((uint16_t*)uart2Obj.rxBuffer)[rxProcessedSize] = (uint16_t)(U2RXREG);
             }
             else
             {
                 /* 8-bit mode */
-                ((uint8_t *)uart2Obj.rxBuffer)[rxProcessedSize] = (uint8_t)(U2RXREG);
+                ((uint8_t*)uart2Obj.rxBuffer)[rxProcessedSize] = (uint8_t)(U2RXREG);
             }
             rxProcessedSize++;
         }
@@ -416,7 +416,7 @@ void __attribute__((used)) UART2_RX_InterruptHandler(void)
         IFS4CLR = _IFS4_U2RXIF_MASK;
 
         /* Check if the buffer is done */
-        if (uart2Obj.rxProcessedSize >= rxSize)
+        if(uart2Obj.rxProcessedSize >= rxSize)
         {
             uart2Obj.rxBusyStatus = false;
 
@@ -426,7 +426,8 @@ void __attribute__((used)) UART2_RX_InterruptHandler(void)
             /* Disable the receive interrupt */
             IEC4CLR = _IEC4_U2RXIE_MASK;
 
-            if (uart2Obj.rxCallback != NULL)
+
+            if(uart2Obj.rxCallback != NULL)
             {
                 uintptr_t rxContext = uart2Obj.rxContext;
 
@@ -440,24 +441,24 @@ void __attribute__((used)) UART2_RX_InterruptHandler(void)
     }
 }
 
-void __attribute__((used)) UART2_TX_InterruptHandler(void)
+void __attribute__((used)) UART2_TX_InterruptHandler (void)
 {
-    if (uart2Obj.txBusyStatus == true)
+    if(uart2Obj.txBusyStatus == true)
     {
         size_t txSize = uart2Obj.txSize;
         size_t txProcessedSize = uart2Obj.txProcessedSize;
 
-        while (((U2STA & _U2STA_UTXBF_MASK) == 0U) && (txSize > txProcessedSize))
+        while(((U2STA & _U2STA_UTXBF_MASK) == 0U) && (txSize > txProcessedSize) )
         {
-            if ((U2MODE & (_U2MODE_PDSEL0_MASK | _U2MODE_PDSEL1_MASK)) == (_U2MODE_PDSEL0_MASK | _U2MODE_PDSEL1_MASK))
+            if (( U2MODE & (_U2MODE_PDSEL0_MASK | _U2MODE_PDSEL1_MASK)) == (_U2MODE_PDSEL0_MASK | _U2MODE_PDSEL1_MASK))
             {
                 /* 9-bit mode */
-                U2TXREG = ((uint16_t *)uart2Obj.txBuffer)[txProcessedSize];
+                U2TXREG = ((uint16_t*)uart2Obj.txBuffer)[txProcessedSize];
             }
             else
             {
                 /* 8-bit mode */
-                U2TXREG = ((uint8_t *)uart2Obj.txBuffer)[txProcessedSize];
+                U2TXREG = ((uint8_t*)uart2Obj.txBuffer)[txProcessedSize];
             }
             txProcessedSize++;
         }
@@ -468,14 +469,14 @@ void __attribute__((used)) UART2_TX_InterruptHandler(void)
         IFS4CLR = _IFS4_U2TXIF_MASK;
 
         /* Check if the buffer is done */
-        if (uart2Obj.txProcessedSize >= txSize)
+        if(uart2Obj.txProcessedSize >= txSize)
         {
             uart2Obj.txBusyStatus = false;
 
             /* Disable the transmit interrupt, to avoid calling ISR continuously */
             IEC4CLR = _IEC4_U2TXIE_MASK;
 
-            if (uart2Obj.txCallback != NULL)
+            if(uart2Obj.txCallback != NULL)
             {
                 uintptr_t txContext = uart2Obj.txContext;
 
@@ -490,11 +491,13 @@ void __attribute__((used)) UART2_TX_InterruptHandler(void)
     }
 }
 
-bool UART2_TransmitComplete(void)
+
+
+bool UART2_TransmitComplete( void )
 {
     bool transmitComplete = false;
 
-    if ((U2STA & _U2STA_TRMT_MASK) != 0U)
+    if((U2STA & _U2STA_TRMT_MASK) != 0U)
     {
         transmitComplete = true;
     }

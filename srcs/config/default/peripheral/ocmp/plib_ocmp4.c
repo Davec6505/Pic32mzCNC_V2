@@ -58,9 +58,9 @@ void OCMP4_Initialize (void)
     /*OCM         = 5        */
     /*OCTSEL       = 0        */
     /*OC32         = 0        */
-    /*SIDL         = true    */
+    /*SIDL         = false    */
 
-    OC4CON = 0x2005;
+    OC4CON = 0x5;
 
     OC4R = 200;
     OC4RS = 40;

@@ -1,20 +1,17 @@
 /*******************************************************************************
-  Data Type definition of Timer PLIB
+  Output Compare (OCMP) Peripheral Library Interface Header File
 
   Company:
     Microchip Technology Inc.
 
   File Name:
-    plib_tmr3.h
+    plib_ocmp3.h
 
   Summary:
-    Data Type definition of the Timer Peripheral Interface Plib.
+    OCMP PLIB Header File
 
   Description:
-    This file defines the Data Types for the Timer Plib.
-
-  Remarks:
-    None.
+    None
 
 *******************************************************************************/
 
@@ -41,63 +38,121 @@
 * THAT YOU HAVE PAID DIRECTLY TO MICROCHIP FOR THIS SOFTWARE.
 *******************************************************************************/
 
-#ifndef PLIB_TMR3_H
-#define PLIB_TMR3_H
+#ifndef PLIB_OCMP3_H
+#define PLIB_OCMP3_H
 
 #include <stddef.h>
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include "device.h"
-#include "plib_tmr_common.h"
+#include "plib_ocmp_common.h"
 
 // DOM-IGNORE-BEGIN
 #ifdef __cplusplus  // Provide C++ Compatibility
-
     extern "C" {
-
 #endif
 // DOM-IGNORE-END
 
-// *****************************************************************************
-// *****************************************************************************
-// Section: Data Types
-// *****************************************************************************
-// *****************************************************************************
 
 // *****************************************************************************
-// *****************************************************************************
-// Section: Interface Routines
+// Section: Interface
 // *****************************************************************************
 // *****************************************************************************
 
+/*************************** OCMP3 API ****************************************/
+// *****************************************************************************
+/* Function:
+   void OCMP3_Initialize (void)
+
+  Summary:
+    Initialization function OCMP3 peripheral
+
+  Description:
+    This function initializes the OCMP3 peripheral with user input
+	from the configurator.
+
+  Parameters:
+    void
+
+  Returns:
+    void
+*/
+void OCMP3_Initialize (void);
 
 // *****************************************************************************
-void TMR3_Initialize(void);
+/* Function:
+   void OCMP3_Enable (void)
 
-void TMR3_Start(void);
+  Summary:
+    Enable function OCMP3 peripheral
 
-void TMR3_Stop(void);
+  Description:
+    This function enables the OCMP3 peripheral
 
-void TMR3_PeriodSet(uint16_t period);
+  Parameters:
+    void
 
-uint16_t TMR3_PeriodGet(void);
+  Returns:
+    void
+*/
+void OCMP3_Enable (void);
 
-uint16_t TMR3_CounterGet(void);
+// *****************************************************************************
+/* Function:
+   void OCMP3_Disable (void)
 
-uint32_t TMR3_FrequencyGet(void);
+  Summary:
+    Disable function OCMP3 peripheral
 
-void TMR3_InterruptEnable(void);
+  Description:
+    This function disables the OCMP3 peripheral.
 
-void TMR3_InterruptDisable(void);
+  Parameters:
+    void
 
-void TMR3_CallbackRegister( TMR_CALLBACK callback_fn, uintptr_t context );
+  Returns:
+    void
+*/
+void OCMP3_Disable (void);
 
+
+void OCMP3_CompareValueSet (uint16_t value);
+
+uint16_t OCMP3_CompareValueGet (void);
+
+uint16_t OCMP3_CompareSecondaryValueGet (void);
+void OCMP3_CompareSecondaryValueSet (uint16_t value);
+
+// *****************************************************************************
+/* Function:
+  void OCMP3_CallbackRegister( OCMP_CALLBACK callback, uintptr_t context )
+
+  Summary:
+    Sets the callback function for a ocmp interrupt.
+
+  Description:
+    This function sets the callback function that will be called when the OCMP
+    conditions are met.
+
+  Precondition:
+    None.
+
+  Parameters:
+    *callback   - a pointer to the function to be called when value is reached.
+                  Use NULL to Un Register the compare callback
+
+    context     - a pointer to user defined data to be used when the callback
+                  function is called. NULL can be passed in if no data needed.
+
+  Returns:
+    void
+*/
+void OCMP3_CallbackRegister(OCMP_CALLBACK callback, uintptr_t context);
 
 // DOM-IGNORE-BEGIN
 #ifdef __cplusplus  // Provide C++ Compatibility
-
     }
 #endif
-// DOM-IGNORE-END
 
-#endif /* PLIB_TMR3_H */
+// DOM-IGNORE-END
+#endif // PLIB_OCMP3_H

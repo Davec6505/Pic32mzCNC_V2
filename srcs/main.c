@@ -55,7 +55,7 @@ int main(void)
 
   /* Initialize the application */
   APP_Initialize();
-
+  TMR1_Start();
   /* Main application loop */
   while (true)
   {
@@ -66,7 +66,7 @@ int main(void)
     /* GRBL_Tasks(); */ // Temporarily disabled to test direct UART handling
 
     /* Maintain the application's state machine. */
-     APP_Tasks();  // Temporarily disabled - causing system hang
+    APP_Tasks(); // Temporarily disabled - causing system hang
   }
 
   return EXIT_FAILURE;
