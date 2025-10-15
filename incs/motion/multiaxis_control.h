@@ -1,0 +1,104 @@
+#ifndef _MULTIAXIS_CONTROL_H
+#define _MULTIAXIS_CONTROL_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+// *****************************************************************************
+// Multi-Axis Constants
+// *****************************************************************************
+
+#define NUM_AXES 4 // X, Y, Z ,A
+
+typedef enum
+{
+    AXIS_X = 0,
+    AXIS_Y = 1,
+    AXIS_Z = 2,
+    AXIS_A = 3
+} axis_id_t;
+
+// *****************************************************************************
+// Public Multi-Axis API
+// *****************************************************************************
+
+/*! \brief Initialize multi-axis control subsystem
+ *
+ *  Initializes all axes (X, Y, Z) with their respective hardware modules.
+ *  Must be called before any motion commands.
+ */
+void MultiAxis_Initialize(void);
+
+/*! \brief Move single axis with S-curve profile
+ *
+ *  Executes jerk-limited motion on a single axis.
+ *
+ *  \param axis Axis to move (AXIS_X, AXIS_Y, or AXIS_Z)
+ *  \param steps Number of steps to move (absolute value)
+ *  \param forward true = forward (CW), false = reverse (CCW)
+ */
+void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward);
+
+/*! \brief Move multiple axes with coordinated S-curve profiles
+ *
+ *  Executes synchronized jerk-limited motion across multiple axes.
+ *  All axes use the same time-based S-curve profile for coordinated motion.
+ *
+ *  \param steps Array of steps for each axis [X, Y, Z]
+ *               Positive = forward, Negative = reverse, 0 = no motion
+ *
+ *  Example:
+ *    int32_t move[3] = {5000, 3000, 0};  // X=5000 fwd, Y=3000 fwd, Z=idle
+ *    MultiAxis_MoveCoordinated(move);
+ */
+void MultiAxis_MoveCoordinated(int32_t steps[NUM_AXES]);
+
+/*! \brief Check if any axis is moving
+ *
+ *  \return true if any axis is in motion, false if all idle
+ */
+bool MultiAxis_IsBusy(void);
+
+/*! \brief Check if specific axis is moving
+ *
+ *  \param axis Axis to check
+ *  \return true if axis is moving, false if idle
+ */
+bool MultiAxis_IsAxisBusy(axis_id_t axis);
+
+/*! \brief Emergency stop all axes
+ *
+ *  Immediately stops all axis motion.
+ */
+void MultiAxis_StopAll(void);
+
+/*! \brief Get current step count for an axis
+ *
+ *  \param axis Axis to query
+ *  \return Current step count
+ */
+uint32_t MultiAxis_GetStepCount(axis_id_t axis);
+
+// *****************************************************************************
+// Dynamic Direction Control
+// *****************************************************************************
+
+/*! \brief Set direction pin for specified axis
+ *
+ *  Uses function pointer lookup for dynamic axis-to-pin mapping.
+ *  Called internally or from G-code layer.
+ *
+ *  \param axis Axis to set direction for (AXIS_X, AXIS_Y, AXIS_Z)
+ */
+void MultiAxis_SetDirection(axis_id_t axis);
+
+/*! \brief Clear direction pin for specified axis
+ *
+ *  Uses function pointer lookup for dynamic axis-to-pin mapping.
+ *  Called internally or from G-code layer.
+ *
+ *  \param axis Axis to clear direction for (AXIS_X, AXIS_Y, AXIS_Z)
+ */
+void MultiAxis_ClearDirection(axis_id_t axis);
+
+#endif // _MULTIAXIS_CONTROL_H

@@ -1,15 +1,19 @@
 /*******************************************************************************
-  Application Layer - Hardware Test with Button Control
+  Application Layer - Multi-Axis Hardware Test with Button Control
 
   Responsibilities:
   - Button debouncing and detection (SW1/SW2)
   - LED indicators (power-on, heartbeat)
-  - Calls into stepper_control for motion execution
+  - Calls into multiaxis_control for coordinated motion
   - Main application state machine
+
+  Test patterns:
+  - SW1: Single axis motion (X-axis 5000 steps forward)
+  - SW2: Multi-axis diagonal motion (X+Y coordinated)
 *******************************************************************************/
 
 #include "app.h"
-#include "stepper_control.h"
+#include "multiaxis_control.h"
 #include "definitions.h"
 #include <stdbool.h>
 
@@ -31,8 +35,8 @@ void APP_Initialize(void)
 {
     appData.state = APP_STATE_INIT;
 
-    // Initialize stepper control subsystem
-    StepperControl_Initialize();
+    // Initialize multi-axis stepper control subsystem
+    MultiAxis_Initialize();
 
     // Power-on indicator
     LED2_Set();
@@ -55,26 +59,42 @@ void APP_Tasks(void)
 
     case APP_STATE_SERVICE_TASKS:
     {
-        // Check SW1 (forward motion) - active LOW
-        bool sw1_pressed = !SW1_Get(); // Active LOW
-        if (sw1_pressed && !sw1_was_pressed && !StepperControl_IsBusy())
+        // Check SW1 (single X-axis motion) - active LOW
+        bool sw1_pressed = !SW1_Get();
+        if (sw1_pressed && !sw1_was_pressed)
         {
-            // Request 5000 steps forward with default profile
-            StepperControl_MoveSteps(5000, true);
+            LED1_Toggle(); // DEBUG: Show button detected
+            if (!MultiAxis_IsBusy())
+            {
+                LED2_Toggle(); // DEBUG: Show not busy, starting move
+                // Single axis test: 5000 steps forward on X-axis only
+                MultiAxis_MoveSingleAxis(AXIS_X, 5000, true);
+            }
+            else
+            {
+                LED2_Set(); // DEBUG: Show blocked by IsBusy
+            }
         }
         sw1_was_pressed = sw1_pressed;
 
-        // Check SW2 (reverse motion) - active LOW
-        bool sw2_pressed = !SW2_Get(); // Active LOW;
-        if (sw2_pressed && !sw2_was_pressed && !StepperControl_IsBusy())
+        // Check SW2 (test different motion) - active LOW
+        bool sw2_pressed = !SW2_Get();
+        if (sw2_pressed && !sw2_was_pressed && !MultiAxis_IsBusy())
         {
-            // Request 5000 steps reverse with default profile
-            StepperControl_MoveSteps(5000, false);
+            // SW2: Different X-axis motion - 10000 steps forward
+            // (Y/Z hardware not wired yet, so only test X for now)
+            int32_t move[NUM_AXES] = {
+                5000, // X: 5000 steps
+                5000, // Y: 5000 steps
+                10000 // Z: 10000 steps
+            };
+            MultiAxis_MoveCoordinated(move);
+            //  MultiAxis_MoveSingleAxis(AXIS_X, 10000, true);
         }
         sw2_was_pressed = sw2_pressed;
 
         // Heartbeat LED when idle
-        if (!StepperControl_IsBusy())
+        if (!MultiAxis_IsBusy())
         {
             static uint32_t heartbeat_counter = 0;
             if (++heartbeat_counter > 500000)
