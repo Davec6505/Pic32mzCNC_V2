@@ -1,5 +1,5 @@
-../objs/app.o: ../srcs/app.c ../srcs/app.h \
- ../incs/config/default/definitions.h \
+../objs/motion/stepper_control.o: ../srcs/motion/stepper_control.c \
+ ../incs/motion/stepper_control.h ../incs/config/default/definitions.h \
  ../incs/config/default/peripheral/clk/plib_clk.h \
  ../incs/config/default/peripheral/gpio/plib_gpio.h \
  ../incs/config/default/device.h \
@@ -20,10 +20,9 @@
  ../incs/config/default/peripheral/tmr/plib_tmr2.h \
  ../incs/config/default/peripheral/tmr/plib_tmr3.h \
  ../incs/config/default/peripheral/tmr1/plib_tmr1.h \
- ../incs/config/default/peripheral/tmr1/plib_tmr1_common.h \
- ../srcs/stepper_control.h
+ ../incs/config/default/peripheral/tmr1/plib_tmr1_common.h
 
-../srcs/app.h:
+../incs/motion/stepper_control.h:
 
 ../incs/config/default/definitions.h:
 
@@ -68,5 +67,3 @@
 ../incs/config/default/peripheral/tmr1/plib_tmr1.h:
 
 ../incs/config/default/peripheral/tmr1/plib_tmr1_common.h:
-
-../srcs/stepper_control.h:
