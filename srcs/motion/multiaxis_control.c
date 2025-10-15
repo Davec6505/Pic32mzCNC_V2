@@ -61,7 +61,9 @@ typedef struct
 static void OCMP4_StepCounter_X(uintptr_t context);
 static void OCMP1_StepCounter_Y(uintptr_t context);
 static void OCMP5_StepCounter_Z(uintptr_t context);
+#ifdef ENABLE_AXIS_A
 static void OCMP3_StepCounter_A(uintptr_t context);
+#endif
 // Hardware configuration table
 static const axis_hardware_t axis_hw[NUM_AXES] = {
     // AXIS_X: OCMP4 + TMR2 (TESTED - working)
@@ -93,8 +95,7 @@ static const axis_hardware_t axis_hw[NUM_AXES] = {
         .OCMP_CallbackRegister = OCMP5_CallbackRegister,
         .TMR_Start = TMR3_Start,
         .TMR_Stop = TMR3_Stop,
-        .TMR_PeriodSet = TMR3_PeriodSet
-    },
+        .TMR_PeriodSet = TMR3_PeriodSet},
     // AXIS_A: OCMP3 + TMR1 (using X hardware for now until wired)
     {
         .OCMP_Enable = OCMP3_Enable,
@@ -104,10 +105,7 @@ static const axis_hardware_t axis_hw[NUM_AXES] = {
         .OCMP_CallbackRegister = OCMP3_CallbackRegister,
         .TMR_Start = TMR5_Start,
         .TMR_Stop = TMR5_Stop,
-        .TMR_PeriodSet = TMR5_PeriodSet
-    }
-};
-
+        .TMR_PeriodSet = TMR5_PeriodSet}};
 
 // *****************************************************************************
 // Direction Control (Dynamic Function Pointer Lookup)
@@ -120,22 +118,28 @@ static inline void diry_set_wrapper(void) { DirY_Set(); }
 static inline void diry_clear_wrapper(void) { DirY_Clear(); }
 static inline void dirz_set_wrapper(void) { DirZ_Set(); }
 static inline void dirz_clear_wrapper(void) { DirZ_Clear(); }
+#ifdef ENABLE_AXIS_A
 static inline void dira_set_wrapper(void) { DirA_Set(); }
 static inline void dira_clear_wrapper(void) { DirA_Clear(); }
+#endif
 
 // Direction pin control function pointer tables
 static void (*const dir_set_funcs[NUM_AXES])(void) = {
     dirx_set_wrapper, // AXIS_X
     diry_set_wrapper, // AXIS_Y
-    dirz_set_wrapper,  // AXIS_Z
-    dira_set_wrapper // AXIS_A
+    dirz_set_wrapper, // AXIS_Z
+    #ifdef ENABLE_AXIS_A
+    dira_set_wrapper,  // AXIS_A
+    #endif
 };
 
 static void (*const dir_clear_funcs[NUM_AXES])(void) = {
     dirx_clear_wrapper, // AXIS_X
     diry_clear_wrapper, // AXIS_Y
-    dirz_clear_wrapper,  // AXIS_Z
-    dira_clear_wrapper   // AXIS_A
+    dirz_clear_wrapper, // AXIS_Z
+    #ifdef ENABLE_AXIS_A
+    dira_clear_wrapper,  // AXIS_A  
+    #endif
 };
 
 /*! \brief Set direction for specified axis using dynamic lookup
@@ -390,12 +394,6 @@ static bool calculate_scurve_profile(axis_id_t axis, uint32_t distance)
 static void OCMP4_StepCounter_X(uintptr_t context)
 {
     axis_state[AXIS_X].step_count++;
-
-    // DEBUG: Blink LED2 every 1000 steps to confirm counting
-    if ((axis_state[AXIS_X].step_count % 1000) == 0)
-    {
-        LED2_Toggle();
-    }
 }
 
 static void OCMP1_StepCounter_Y(uintptr_t context)
@@ -407,6 +405,14 @@ static void OCMP5_StepCounter_Z(uintptr_t context)
 {
     axis_state[AXIS_Z].step_count++;
 }
+
+#ifdef ENABLE_AXIS_A    
+static void OCMP3_StepCounter_A(uintptr_t context)
+{
+    axis_state[AXIS_A].step_count++;
+}
+#endif
+
 
 // *****************************************************************************
 // TMR1 @ 1kHz - Multi-Axis S-CURVE STATE MACHINE
@@ -780,4 +786,195 @@ uint32_t MultiAxis_GetStepCount(axis_id_t axis)
     }
 
     return axis_state[axis].step_count;
+}
+
+/*******************************************************************************
+  Time-Based Vector Interpolation for Multi-Axis S-Curve Motion
+
+  Algorithm:
+  1. Find dominant axis (longest distance)
+  2. Calculate S-curve profile for dominant axis
+  3. Scale other axes' velocities to match dominant axis timing
+  4. All axes use same segment times, different velocities
+*******************************************************************************/
+
+typedef struct
+{
+    axis_id_t dominant_axis;             // Axis with longest distance
+    float total_move_time;               // Total time for move (from dominant axis)
+    float axis_velocity_scale[NUM_AXES]; // Velocity scaling factors
+} coordinated_move_t;
+
+static coordinated_move_t coord_move;
+
+/*! \brief Calculate coordinated multi-axis move with time synchronization
+ *
+ *  \param steps Array of target steps for each axis [X, Y, Z, A]
+ *
+ *  Algorithm:
+ *    1. Find dominant axis (max absolute steps)
+ *    2. Calculate S-curve profile for dominant axis → determines total time
+ *    3. Scale velocities of other axes: v_axis = (distance_axis / total_time)
+ *    4. All axes share same segment timing (t1-t7 from dominant axis)
+ */
+bool MultiAxis_CalculateCoordinatedMove(int32_t steps[NUM_AXES])
+{
+    assert(steps != NULL);
+
+    if (steps == NULL)
+    {
+        return false;
+    }
+
+    // Step 1: Find dominant axis (longest distance)
+    uint32_t max_steps = 0;
+    axis_id_t dominant = AXIS_X;
+
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        uint32_t abs_steps = (uint32_t)abs(steps[axis]);
+
+        if (abs_steps > max_steps)
+        {
+            max_steps = abs_steps;
+            dominant = axis;
+        }
+    }
+
+    if (max_steps == 0U)
+    {
+        return false; // No motion required
+    }
+
+    coord_move.dominant_axis = dominant;
+
+    // Step 2: Calculate S-curve profile for dominant axis
+    // This determines the total move time and segment times (t1-t7)
+    scurve_state_t *dominant_state = &axis_state[dominant];
+
+    if (!calculate_scurve_profile(dominant, max_steps))
+    {
+        return false;
+    }
+
+    // Calculate total move time from dominant axis S-curve
+    coord_move.total_move_time = dominant_state->t1_jerk_accel +
+                                 dominant_state->t2_const_accel +
+                                 dominant_state->t3_jerk_decel_accel +
+                                 dominant_state->t4_cruise +
+                                 dominant_state->t5_jerk_accel_decel +
+                                 dominant_state->t6_const_decel +
+                                 dominant_state->t7_jerk_decel_decel;
+
+    // Step 3: Calculate velocity scaling for subordinate axes
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        if (axis == dominant)
+        {
+            coord_move.axis_velocity_scale[axis] = 1.0f; // Dominant runs at full profile
+        }
+        else
+        {
+            uint32_t axis_steps = (uint32_t)abs(steps[axis]);
+
+            if (axis_steps == 0U)
+            {
+                coord_move.axis_velocity_scale[axis] = 0.0f; // Axis not moving
+            }
+            else
+            {
+                // Scale velocity so this axis completes in same time as dominant
+                // scale_factor = axis_distance / dominant_distance
+                coord_move.axis_velocity_scale[axis] =
+                    (float)axis_steps / (float)max_steps;
+            }
+        }
+    }
+
+    return true;
+}
+
+/*! \brief Execute coordinated move with synchronized timing
+ *
+ *  All axes:
+ *  - Share same segment times (t1-t7) from dominant axis
+ *  - Scale their velocities proportionally
+ *  - Finish simultaneously (coordinated motion)
+ */
+void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES])
+{
+    assert(steps != NULL);
+
+    if (!MultiAxis_CalculateCoordinatedMove(steps))
+    {
+        return; // Invalid move
+    }
+
+    // Get dominant axis profile (this determines timing for all axes)
+    scurve_state_t *dominant = &axis_state[coord_move.dominant_axis];
+
+    // Start all axes with synchronized profiles
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        if (coord_move.axis_velocity_scale[axis] == 0.0f)
+        {
+            continue; // Skip axes with no motion
+        }
+
+        scurve_state_t *s = &axis_state[axis];
+
+        // Copy segment times from dominant axis (ALL axes use same timing)
+        s->t1_jerk_accel = dominant->t1_jerk_accel;
+        s->t2_const_accel = dominant->t2_const_accel;
+        s->t3_jerk_decel_accel = dominant->t3_jerk_decel_accel;
+        s->t4_cruise = dominant->t4_cruise;
+        s->t5_jerk_accel_decel = dominant->t5_jerk_accel_decel;
+        s->t6_const_decel = dominant->t6_const_decel;
+        s->t7_jerk_decel_decel = dominant->t7_jerk_decel_decel;
+
+        // Scale velocities for this axis
+        float velocity_scale = coord_move.axis_velocity_scale[axis];
+
+        s->cruise_velocity = dominant->cruise_velocity * velocity_scale;
+        s->v_end_segment1 = dominant->v_end_segment1 * velocity_scale;
+        s->v_end_segment2 = dominant->v_end_segment2 * velocity_scale;
+        s->v_end_segment3 = dominant->v_end_segment3 * velocity_scale;
+        s->v_end_segment5 = dominant->v_end_segment5 * velocity_scale;
+        s->v_end_segment6 = dominant->v_end_segment6 * velocity_scale;
+
+        // Set step counts and direction
+        uint32_t abs_steps = (uint32_t)abs(steps[axis]);
+        s->total_steps = abs_steps;
+        s->step_count = 0U;
+        s->direction_forward = (steps[axis] > 0);
+
+        // Initialize state
+        s->current_segment = SEGMENT_JERK_ACCEL;
+        s->elapsed_time = 0.0f;
+        s->total_elapsed = 0.0f;
+        s->current_velocity = 0.0f;
+        s->current_accel = 0.0f;
+        s->active = true;
+
+        // Set direction and start hardware
+        if (s->direction_forward)
+        {
+            MultiAxis_SetDirection(axis);
+        }
+        else
+        {
+            MultiAxis_ClearDirection(axis);
+        }
+
+        // Start OCR with slow initial period
+        uint32_t initial_period = 65000U;
+        axis_hw[axis].TMR_PeriodSet(initial_period);
+        axis_hw[axis].OCMP_CompareValueSet(initial_period - OCMP_PULSE_WIDTH);
+        axis_hw[axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
+
+        axis_hw[axis].OCMP_Enable();
+        axis_hw[axis].TMR_Start();
+    }
+
+    LED1_Set(); // Indicate coordinated motion active
 }
