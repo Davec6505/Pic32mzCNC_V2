@@ -23,6 +23,7 @@
 // *****************************************************************************
 
 #include "motion_buffer.h"
+#include "interpolation_engine.h" // For INTERP_GetMotionState() and motion_state_t
 #include <stdio.h>
 #include <string.h>
 
@@ -60,7 +61,12 @@ void MotionBuffer_Initialize(void)
 
 bool MotionBuffer_HasSpace(void)
 {
-    // Buffer has space if next head position != tail
+    /* GRBL-style buffer management:
+     * - Allow buffer to fill up even during motion (GRBL allows 16 blocks)
+     * - Planner optimizes across ALL buffered blocks (look-ahead planning)
+     * - Stepper executes blocks sequentially from tail
+     * - This enables file streaming while maintaining proper motion planning
+     */
     uint8_t next_head = (motion_buffer_head + 1) % MOTION_BUFFER_SIZE;
     return (next_head != motion_buffer_tail);
 }

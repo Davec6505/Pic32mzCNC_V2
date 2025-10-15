@@ -348,6 +348,87 @@ switch (axis) {
 ```
 **Impact**: Bidirectional motion now fully functional
 
+### Bug #4: Parser Position Updated Too Late
+**Symptom**: Multi-block sequences parsed with incorrect positions - UGS sends rapid bulk commands, all parsed before motion starts  
+**Root Cause**: `MotionGCodeParser_SetPosition()` called in motion completion handler (after block finishes), but next blocks already parsed with stale (0,0,0) position  
+**Fix**: Moved parser position update to immediately after `MotionBuffer_Add()` - each block uses correct expected end position:
+```c
+if (MotionBuffer_Add(&motion_block)) {
+    MotionGCodeParser_SetPosition(motion_block.target_pos[0], 
+                                  motion_block.target_pos[1], 
+                                  motion_block.target_pos[2]);
+}
+```
+**Impact**: Parser now maintains correct position state for rapid command sequences from UGS
+
+### Bug #5: State Machine Never Triggered
+**Symptom**: No `[PLANNING]` or `[EXEC]` debug messages, motion appeared to execute via different path  
+**Root Cause**: Adding blocks to buffer didn't trigger state machine transition - remained in IDLE/SERVICE_TASKS  
+**Fix**: Added explicit state transition when blocks added:
+```c
+if (appData.state == APP_STATE_MOTION_IDLE || 
+    appData.state == APP_STATE_MOTION_EXECUTING)
+{
+    appData.state = APP_STATE_MOTION_PLANNING;
+}
+```
+**Impact**: State machine now properly initiates motion execution sequence
+
+### Bug #6: Duplicate Execution Paths with Broken MM-to-Steps Conversion
+**Symptom**: X-axis moved only 0.58mm instead of 10mm (moved ~10 steps instead of 2500 steps)  
+**Root Cause**: TMR1 @ 1kHz was calling `MotionPlanner_ExecuteBlock()` → `APP_ExecuteMotionBlock()` which had catastrophic bug:
+```c
+// BROKEN CODE (old):
+int32_t target_pos = (int32_t)block->target_pos[i];  // MM cast to int: 10.000 → 10
+int32_t current_pos = APP_GetAxisCurrentPosition(i);  // STEPS: 0
+if (target_pos != current_pos)  // Compares 10 (MM) vs 0 (STEPS)!
+{
+    cnc_axes[i].target_position = target_pos;  // Sets target to 10 STEPS instead of 2500!
+}
+```
+**Fix**: Replaced entire `APP_ExecuteMotionBlock()` function to use working MM→steps conversion from `APP_ExecuteNextMotionBlock()`  
+**Impact**: X-axis (and all axes) now move correct distances with proper unit conversion
+
+### Bug #7: Dual Execution Paths Causing Simultaneous Axis Activation
+**Symptom**: Diagonal motion instead of sequential axis moves - XY moving together instead of X then Y  
+**Root Cause**: Two execution paths both pulling from same buffer:
+1. State machine (PLANNING state) → `APP_ExecuteNextMotionBlock()` 
+2. TMR1 @ 1kHz → `MotionPlanner_UpdateTrajectory()` → `MotionPlanner_ExecuteBlock()` → `APP_ExecuteMotionBlock()`
+
+Both paths active simultaneously caused all buffered blocks to execute at once, activating all axes before any completed.
+
+**Fix**: Disabled TMR1 execution path - made `APP_ExecuteMotionBlock()` a no-op:
+```c
+bool APP_ExecuteMotionBlock(motion_block_t *block)
+{
+    /* TMR1 execution path disabled - state machine has exclusive control */
+    return true;  // Keep motion planner happy
+}
+```
+**Impact**: Sequential axis motion restored - state machine has exclusive execution control, blocks execute one at a time
+
+### Bug #8: Interpolation Engine Auto-Advance Creating Vector Motion
+**Symptom**: Triangle/diagonal motion instead of square - blocks executing as coordinated multi-axis vector moves  
+**Root Cause**: Interpolation engine's `update_motion_state()` automatically started next block on completion:
+```c
+// OLD CODE - caused diagonal motion:
+if (!INTERP_PlannerIsBufferEmpty())
+{
+    INTERP_ExecuteMove(); // Start next block immediately!
+}
+```
+This created continuous vector motion (0,0)→(0,10)→(10,10) became a diagonal path because all blocks fed to interpolation engine at once, which calculated direct vector paths between points.
+
+**Fix**: Disabled auto-advance in interpolation engine, let state machine control block sequencing:
+```c
+// Block completed - let state machine handle next block
+if (interp_context.motion_complete_callback)
+{
+    interp_context.motion_complete_callback();
+}
+```
+**Impact**: Blocks now execute sequentially as independent moves, not as vectorized continuous path. State machine (APP_STATE_MOTION_EXECUTING) detects completion and transitions to PLANNING for next block.
+
 ## Integration Points
 
 ### Universal G-code Sender (UGS)

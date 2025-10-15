@@ -1,5 +1,5 @@
-../objs/app.o: ../srcs/app.c ../incs/app.h \
- ../incs/config/default/definitions.h \
+../objs/motion_buffer.o: ../srcs/motion_buffer.c ../incs/motion_buffer.h \
+ ../incs/app.h ../incs/config/default/definitions.h \
  ../incs/config/default/peripheral/clk/plib_clk.h \
  ../incs/config/default/peripheral/gpio/plib_gpio.h \
  ../incs/config/default/device.h \
@@ -21,22 +21,9 @@
  ../incs/config/default/peripheral/tmr/plib_tmr3.h \
  ../incs/config/default/peripheral/tmr1/plib_tmr1.h \
  ../incs/config/default/peripheral/tmr1/plib_tmr1_common.h \
- ../incs/gcode_parser.h ../incs/grbl_serial.h ../incs/grbl_settings.h \
- ../incs/interpolation_engine.h ../incs/motion_profile.h \
- ../incs/speed_control.h ../incs/global.h \
- ../incs/config/default/peripheral/tmr/plib_tmr4.h \
- ../incs/motion_buffer.h ../incs/app.h ../incs/motion_gcode_parser.h \
- ../incs/gcode_parser.h ../incs/motion_planner.h ../incs/motion_buffer.h \
- ../incs/gcode_helpers.h \
- ../incs/config/default/peripheral/uart/plib_uart2.h \
- ../incs/config/default/peripheral/uart/plib_uart_common.h \
- ../incs/config/default/peripheral/coretimer/plib_coretimer.h \
- ../incs/config/default/peripheral/tmr1/plib_tmr1.h \
- ../incs/config/default/peripheral/tmr/plib_tmr2.h \
- ../incs/config/default/peripheral/tmr/plib_tmr4.h \
- ../incs/config/default/peripheral/ocmp/plib_ocmp1.h \
- ../incs/config/default/peripheral/ocmp/plib_ocmp4.h \
- ../incs/config/default/peripheral/ocmp/plib_ocmp5.h ../incs/utils.h
+ ../incs/interpolation_engine.h
+
+../incs/motion_buffer.h:
 
 ../incs/app.h:
 
@@ -84,52 +71,4 @@
 
 ../incs/config/default/peripheral/tmr1/plib_tmr1_common.h:
 
-../incs/gcode_parser.h:
-
-../incs/grbl_serial.h:
-
-../incs/grbl_settings.h:
-
 ../incs/interpolation_engine.h:
-
-../incs/motion_profile.h:
-
-../incs/speed_control.h:
-
-../incs/global.h:
-
-../incs/config/default/peripheral/tmr/plib_tmr4.h:
-
-../incs/motion_buffer.h:
-
-../incs/app.h:
-
-../incs/motion_gcode_parser.h:
-
-../incs/gcode_parser.h:
-
-../incs/motion_planner.h:
-
-../incs/motion_buffer.h:
-
-../incs/gcode_helpers.h:
-
-../incs/config/default/peripheral/uart/plib_uart2.h:
-
-../incs/config/default/peripheral/uart/plib_uart_common.h:
-
-../incs/config/default/peripheral/coretimer/plib_coretimer.h:
-
-../incs/config/default/peripheral/tmr1/plib_tmr1.h:
-
-../incs/config/default/peripheral/tmr/plib_tmr2.h:
-
-../incs/config/default/peripheral/tmr/plib_tmr4.h:
-
-../incs/config/default/peripheral/ocmp/plib_ocmp1.h:
-
-../incs/config/default/peripheral/ocmp/plib_ocmp4.h:
-
-../incs/config/default/peripheral/ocmp/plib_ocmp5.h:
-
-../incs/utils.h:

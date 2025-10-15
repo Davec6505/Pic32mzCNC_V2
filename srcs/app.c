@@ -150,6 +150,19 @@ static void APP_SendMotionOkResponse(void); // Helper for motion timing synchron
 // *****************************************************************************
 
 /******************************************************************************
+  Motion Complete Callback
+
+  Called by interpolation engine when motion completes.
+  Ensures UGS receives 'ok' response so it can send next command.
+ */
+static void APP_OnMotionComplete(void)
+{
+    // Motion completed - buffer is now empty, ready for next command
+    // Send ok response so UGS knows it can send the next command
+    APP_SendMotionOkResponse();
+}
+
+/******************************************************************************
   Function:
     void APP_Initialize ( void )
 
@@ -194,6 +207,10 @@ void APP_Initialize(void)
 
     /* Initialize motion profile system */
     MOTION_PROFILE_Initialize();
+
+    /* CRITICAL: Register motion complete callback for interpolation engine
+     * This ensures 'ok' is sent to UGS when motion completes */
+    INTERP_RegisterMotionCompleteCallback(APP_OnMotionComplete);
 
     /* Initialize the motion control system */
     APP_MotionSystemInit();
@@ -340,6 +357,9 @@ void APP_Tasks(void)
 
     case APP_STATE_MOTION_PLANNING:
     {
+        /* DEBUG: Confirm we're entering planning state */
+        APP_UARTPrint_blocking("[PLANNING]\r\n");
+
         /* Execute the next motion block */
         APP_ExecuteNextMotionBlock();
 
@@ -577,6 +597,12 @@ static void APP_ExecuteNextMotionBlock(void)
         return;
     }
 
+    /* DEBUG: Print block execution start */
+    char exec_msg[100];
+    snprintf(exec_msg, sizeof(exec_msg), "[EXEC] Block X=%.3f Y=%.3f Z=%.3f F=%.1f\r\n",
+             block->target_pos[0], block->target_pos[1], block->target_pos[2], block->feedrate);
+    APP_UARTPrint_blocking(exec_msg);
+
     /* Get steps per mm from GRBL settings (with fallback to defaults) */
     float steps_per_mm[3];
     steps_per_mm[0] = GRBL_GetSetting(SETTING_X_STEPS_PER_MM); // X-axis
@@ -602,6 +628,13 @@ static void APP_ExecuteNextMotionBlock(void)
         {
             /* Calculate number of steps to move (delta, not absolute position) */
             int32_t steps_to_move = abs(target_pos_steps - cnc_axes[i].current_position);
+
+            /* DEBUG: Print axis activation details */
+            char debug_msg[128];
+            snprintf(debug_msg, sizeof(debug_msg), "[AXIS%d] target_mm=%.3f curr_steps=%d target_steps=%d delta=%d\r\n",
+                     i, block->target_pos[i], cnc_axes[i].current_position, target_pos_steps, steps_to_move);
+            APP_UARTPrint_blocking(debug_msg);
+
             cnc_axes[i].target_position = steps_to_move; // Store delta for callback comparison
             cnc_axes[i].target_velocity = block->feedrate;
             cnc_axes[i].max_velocity = block->max_velocity > 0 ? block->max_velocity : DEFAULT_MAX_VELOCITY;
@@ -732,89 +765,25 @@ static void APP_ProcessLookAhead(void)
 
 bool APP_ExecuteMotionBlock(motion_block_t *block)
 {
-    if (block == NULL)
-    {
-        return false;
-    }
+    /* CRITICAL FIX (Bug #7): Disable TMR1 execution path - state machine handles execution
+     *
+     * This function is called by MotionPlanner_UpdateTrajectory() via TMR1 @ 1kHz
+     * The state machine (APP_STATE_MOTION_PLANNING) also calls APP_ExecuteNextMotionBlock()
+     * Having BOTH paths active causes all blocks to execute simultaneously (diagonal motion)
+     *
+     * SOLUTION: TMR1 path is now a NO-OP - state machine has exclusive execution control
+     *
+     * This was causing the diagonal motion bug where all axes activated at once because:
+     * 1. State machine adds block to buffer → transitions to PLANNING → calls APP_ExecuteNextMotionBlock()
+     * 2. TMR1 @ 1kHz also calling this function → was also calling APP_ExecuteNextMotionBlock()
+     * 3. Both paths pull from same buffer → activate all axes before any complete
+     * 4. Result: XY diagonal instead of sequential X then Y moves
+     */
 
-    /* Setup axes for movement with actual OCR hardware */
-    for (int i = 0; i < MAX_AXES; i++)
-    {
-        int32_t target_pos = (int32_t)block->target_pos[i];
-        int32_t current_pos = APP_GetAxisCurrentPosition(i);
-
-        /* Only move axis if target is different from current position */
-        if (target_pos != current_pos)
-        {
-            // Set axis parameters using getter/setter functions for clarity
-            cnc_axes[i].target_position = target_pos;
-            APP_SetAxisTargetVelocity(i, block->feedrate);
-            cnc_axes[i].max_velocity = block->max_velocity > 0 ? block->max_velocity : DEFAULT_MAX_VELOCITY;
-            cnc_axes[i].motion_state = AXIS_ACCEL;
-            APP_ResetAxisStepCount(i);
-
-            /* Set direction based on movement */
-            cnc_axes[i].direction_forward = (target_pos > current_pos);
-
-            /* Activate axis */
-            APP_SetAxisActiveState(i, true);
-
-            /* Calculate OCR period from velocity */
-            float target_velocity = APP_GetAxisTargetVelocity(i);
-            uint32_t period = MotionPlanner_CalculateOCRPeriod(target_velocity);
-
-            /* DRV8825 requires minimum 1.9µs pulse width - use 40 timer counts for safety */
-            const uint32_t OCMP_PULSE_WIDTH = 40;
-
-            /* Clamp period to 16-bit timer maximum (safety margin) */
-            if (period > 65485)
-            {
-                period = 65485;
-            }
-
-            /* Ensure period is greater than pulse width */
-            if (period <= OCMP_PULSE_WIDTH)
-            {
-                period = OCMP_PULSE_WIDTH + 10;
-            }
-
-            /* Configure OCR dual-compare mode - STANDARD PATTERN:
-             * TMRxPR = period (timer rollover)
-             * OCxR = OCMP_PULSE_WIDTH (rising edge - pulse start)
-             * OCxRS = period - OCMP_PULSE_WIDTH (falling edge - pulse end)
-             * Result: Pulse width = OCxRS - OCxR = 40 counts
-             */
-            switch (i)
-            {
-            case 0:                                                        // X-axis -> OCMP4 + TMR3
-                TMR3_PeriodSet(period);                                    // Set timer rollover
-                OCMP4_CompareValueSet(OCMP_PULSE_WIDTH);                   // Rising edge (fixed)
-                OCMP4_CompareSecondaryValueSet(period - OCMP_PULSE_WIDTH); // Falling edge (variable)
-                OCMP4_Enable();
-                TMR3_Start();
-                break;
-
-            case 1:                                                        // Y-axis -> OCMP1 + TMR2
-                TMR2_PeriodSet(period);                                    // Set timer rollover
-                OCMP1_CompareValueSet(OCMP_PULSE_WIDTH);                   // Rising edge (fixed)
-                OCMP1_CompareSecondaryValueSet(period - OCMP_PULSE_WIDTH); // Falling edge (variable)
-                OCMP1_Enable();
-                TMR2_Start();
-                break;
-
-            case 2:                                                        // Z-axis -> OCMP5 + TMR4
-                TMR4_PeriodSet(period);                                    // Set timer rollover
-                OCMP5_CompareValueSet(OCMP_PULSE_WIDTH);                   // Rising edge (fixed)
-                OCMP5_CompareSecondaryValueSet(period - OCMP_PULSE_WIDTH); // Falling edge (variable)
-                OCMP5_Enable();
-                TMR4_Start();
-                break;
-            }
-        }
-    }
-
+    /* TMR1 execution path disabled - return success to keep motion planner happy */
     return true;
 }
+
 static bool APP_IsBufferEmpty(void)
 {
     return MotionBuffer_IsEmpty();
@@ -1131,13 +1100,41 @@ static void APP_ProcessGCodeCommand(const char *command)
             motion_block_t move_block;
             if (MotionGCodeParser_ParseMove(command, &move_block))
             {
+                /* DEBUG: Print what's being added to buffer */
+                char add_msg[100];
+                snprintf(add_msg, sizeof(add_msg), "[ADD] X=%.3f Y=%.3f Z=%.3f F=%.1f\r\n",
+                         move_block.target_pos[0], move_block.target_pos[1], move_block.target_pos[2], move_block.feedrate);
+                APP_UARTPrint_blocking(add_msg);
+
                 MotionPlanner_CalculateDistance(&move_block);
                 if (MotionBuffer_Add(&move_block))
                 {
+                    /* CRITICAL: Update parser position immediately after queuing
+                     * This ensures subsequent commands use the correct starting position */
+                    MotionGCodeParser_SetPosition(move_block.target_pos[0],
+                                                  move_block.target_pos[1],
+                                                  move_block.target_pos[2]);
+
                     // Comment out this debug line:
                     // APP_UARTPrint_blocking("[BUFFER_ADD] head=X tail=Y");
                     MotionPlanner_ProcessBuffer();
-                    APP_SendMotionOkResponse();
+
+                    /* CRITICAL: Trigger state machine to start execution if not already executing
+                     * Fixed: Only trigger if IDLE or SERVICE_TASKS (not if already EXECUTING)
+                     * When already executing, the completion handler will transition to PLANNING for next block */
+                    if (appData.state == APP_STATE_MOTION_IDLE ||
+                        appData.state == APP_STATE_SERVICE_TASKS)
+                    {
+                        appData.state = APP_STATE_MOTION_PLANNING;
+                    }
+
+                    /* CRITICAL FIX (Bug #8): Don't send 'ok' immediately!
+                     * UGS was sending all commands in bulk because it got 'ok' before motion started.
+                     * This caused all blocks to buffer, then interpolation engine vectorized them.
+                     * NOW: Only send 'ok' when motion completes (via APP_OnMotionComplete callback).
+                     * This forces UGS to wait for each move to finish before sending next command.
+                     */
+                    // APP_SendMotionOkResponse(); // DISABLED - callback sends it when motion completes
                 }
                 else
                 {
@@ -1169,24 +1166,45 @@ static void APP_ProcessGCodeCommand(const char *command)
     case GCODE_G0:
     case GCODE_G1:
         // Motion commands - Check buffer space before adding new move
-        APP_UARTPrint_blocking("[GCODE] G0/G1 command received\r\n");
+        // APP_UARTPrint_blocking("[GCODE] G0/G1 command received\r\n");
 
         if (MotionBuffer_HasSpace())
         {
-            APP_UARTPrint_blocking("[GCODE] Buffer has space\r\n");
+            // APP_UARTPrint_blocking("[GCODE] Buffer has space\r\n");
             motion_block_t move_block;
             if (MotionGCodeParser_ParseMove(command, &move_block))
             {
-                APP_UARTPrint_blocking("[GCODE] Move parsed successfully\r\n");
+                /* DEBUG: Print what's being added to buffer */
+                char add_msg[100];
+                snprintf(add_msg, sizeof(add_msg), "[ADD] X=%.3f Y=%.3f Z=%.3f F=%.1f\r\n",
+                         move_block.target_pos[0], move_block.target_pos[1], move_block.target_pos[2], move_block.feedrate);
+                APP_UARTPrint_blocking(add_msg);
+
+                // APP_UARTPrint_blocking("[GCODE] Move parsed successfully\r\n");
                 // Calculate distance and duration for the motion block
                 MotionPlanner_CalculateDistance(&move_block);
 
                 if (MotionBuffer_Add(&move_block))
                 {
-                    APP_UARTPrint_blocking("[GCODE] Move added to buffer\r\n");
+                    /* CRITICAL: Update parser position immediately after queuing */
+                    MotionGCodeParser_SetPosition(move_block.target_pos[0],
+                                                  move_block.target_pos[1],
+                                                  move_block.target_pos[2]);
+
                     MotionPlanner_ProcessBuffer();
-                    APP_UARTPrint_blocking("[GCODE] Buffer processed\r\n");
-                    APP_SendMotionOkResponse(); // Use helper for proper timing
+
+                    /* CRITICAL: Trigger state machine if idle */
+                    if (appData.state == APP_STATE_MOTION_IDLE ||
+                        appData.state == APP_STATE_SERVICE_TASKS)
+                    {
+                        appData.state = APP_STATE_MOTION_PLANNING;
+                    }
+
+                    // APP_UARTPrint_blocking("[GCODE] Move added to buffer\r\n");
+                    // APP_UARTPrint_blocking("[GCODE] Buffer processed\r\n");
+
+                    /* CRITICAL FIX (Bug #8): Don't send 'ok' immediately - see G0 handler comment */
+                    // APP_SendMotionOkResponse(); // DISABLED - callback sends it when motion completes
                 }
                 else
                 {

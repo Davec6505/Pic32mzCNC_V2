@@ -302,8 +302,10 @@ bool INTERP_ExecuteMove(void)
         return false; // No blocks to execute
     }
 
-    // Optimize buffer before execution
-    INTERP_PlannerOptimizeBuffer();
+    // CRITICAL FIX (Bug #8): Disable buffer optimization to prevent vectorization
+    // The optimizer was creating continuous paths through multiple blocks (diagonal motion)
+    // For sequential single-axis moves, we want each block to execute independently
+    // INTERP_PlannerOptimizeBuffer(); // DISABLED
 
     // Set up motion parameters from planner block
     interp_context.motion.start_position = current_block->start_position;
@@ -835,10 +837,10 @@ bool INTERP_ConfigureStepperGPIO(void)
     // If not, replace with actual pin initialization code
 
     // Enable pins (set as output, initial state LOW)
-    GPIO_PinWrite(EnX_PIN, false);   // X-axis stepper driver DISABLE
-    GPIO_PinWrite(EnY_PIN, false);   // Y-axis stepper driver DISABLE
-    GPIO_PinWrite(EnZ_PIN, false);   // Z-axis stepper driver DISABLE
-  //  GPIO_PinWrite(EnA_PIN, false);   // A-axis stepper driver DISABLE (if used)
+    GPIO_PinWrite(EnX_PIN, false); // X-axis stepper driver DISABLE
+    GPIO_PinWrite(EnY_PIN, false); // Y-axis stepper driver DISABLE
+    GPIO_PinWrite(EnZ_PIN, false); // Z-axis stepper driver DISABLE
+                                   //  GPIO_PinWrite(EnA_PIN, false);   // A-axis stepper driver DISABLE (if used)
 
     // Step and direction pins (set as output, initial state LOW)
     // Replace StepX_PIN, DirX_PIN, etc. with your actual pin macros
@@ -887,8 +889,18 @@ void INTERP_Timer1Callback(uint32_t status, uintptr_t context)
     (void)status;  // Suppress unused parameter warning
     (void)context; // Suppress unused parameter warning
 
-    // Handle interpolation engine tasks
-    INTERP_Tasks();
+    /* CRITICAL FIX (Bug #8 - Final): Disable interpolation engine for sequential motion
+     *
+     * INTERP_Tasks() feeds blocks to interpolation engine which vectorizes them into
+     * continuous diagonal motion. For sequential single-axis testing, we need the state
+     * machine to have exclusive control.
+     *
+     * State machine (APP_STATE_MOTION_PLANNING → APP_ExecuteNextMotionBlock()) provides
+     * proper sequential execution: one block at a time, one axis at a time.
+     *
+     * Re-enable this when implementing coordinated multi-axis CNC tool paths.
+     */
+    // INTERP_Tasks(); // DISABLED - prevents vectorization
 
     // ALSO handle motion planner trajectory updates
     // This replaces the Core Timer approach now that Timer1 prescaler is fixed
@@ -1336,10 +1348,6 @@ static void update_motion_state(void)
             {
                 interp_context.motion_complete_callback();
             }
-
-            printf("All planner blocks completed in %.2f seconds (%.1f mm/min avg)\n",
-                   interp_context.motion.time_elapsed,
-                   (interp_context.motion.total_distance / interp_context.motion.time_elapsed) * 60.0f);
         }
     }
     else
