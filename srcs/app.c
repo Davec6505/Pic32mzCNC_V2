@@ -387,19 +387,6 @@ void APP_Tasks(void)
 
         if (all_axes_complete)
         {
-            /* DEBUG: Log final positions before reset */
-            char debug[128];
-            for (int i = 0; i < MAX_AXES; i++)
-            {
-                if (cnc_axes[i].step_count > 0) // Only log axes that moved
-                {
-                    sprintf(debug, "[COMPLETE] Axis %d: final_pos=%d step_count=%d target=%d\r\n",
-                            i, (int)cnc_axes[i].current_position, (int)cnc_axes[i].step_count,
-                            (int)cnc_axes[i].target_position);
-                    APP_UARTPrint_blocking(debug);
-                }
-            }
-
             /* Mark current buffer entry as processed */
             MotionBuffer_Complete();
 
@@ -580,7 +567,6 @@ static void APP_ExecuteNextMotionBlock(void)
 {
     if (APP_IsBufferEmpty())
     {
-        APP_UARTPrint_blocking("[EXEC] Buffer empty\r\n");
         return;
     }
 
@@ -588,11 +574,8 @@ static void APP_ExecuteNextMotionBlock(void)
 
     if (block == NULL)
     {
-        APP_UARTPrint_blocking("[EXEC] Block is NULL\r\n");
         return;
     }
-
-    APP_UARTPrint_blocking("[EXEC] Processing block\r\n");
 
     /* Get steps per mm from GRBL settings (with fallback to defaults) */
     float steps_per_mm[3];
@@ -608,23 +591,11 @@ static void APP_ExecuteNextMotionBlock(void)
     if (steps_per_mm[2] <= 0.0f || isnan(steps_per_mm[2]))
         steps_per_mm[2] = 250.0f;
 
-    char debug[200];
-    sprintf(debug, "[EXEC] Steps/mm: X=%.1f Y=%.1f Z=%.1f\r\n",
-            steps_per_mm[0], steps_per_mm[1], steps_per_mm[2]);
-    APP_UARTPrint_blocking(debug);
-    sprintf(debug, "[EXEC] Target pos: X=%.3f Y=%.3f Z=%.3f\r\n",
-            block->target_pos[0], block->target_pos[1], block->target_pos[2]);
-    APP_UARTPrint_blocking(debug);
-
     /* Setup axes for movement with OCR dual-compare mode */
     for (int i = 0; i < MAX_AXES; i++)
     {
         /* Convert target position from mm to steps */
         int32_t target_pos_steps = (int32_t)(block->target_pos[i] * steps_per_mm[i]);
-
-        sprintf(debug, "[EXEC] Axis %d: target=%d current=%d\r\n",
-                i, (int)target_pos_steps, (int)cnc_axes[i].current_position);
-        APP_UARTPrint_blocking(debug);
 
         /* Only move axis if target is different from current position */
         if (target_pos_steps != cnc_axes[i].current_position)
@@ -678,10 +649,6 @@ static void APP_ExecuteNextMotionBlock(void)
                 break;
             }
 
-            sprintf(debug, "[EXEC] Axis %d ACTIVE: dir=%s feedrate=%.1f steps=%d\r\n",
-                    i, cnc_axes[i].direction_forward ? "FWD" : "REV", block->feedrate, (int)steps_to_move);
-            APP_UARTPrint_blocking(debug);
-
             /* Calculate OCR period from velocity */
             uint32_t period = MotionPlanner_CalculateOCRPeriod(cnc_axes[i].target_velocity);
 
@@ -700,10 +667,6 @@ static void APP_ExecuteNextMotionBlock(void)
                 period = OCMP_PULSE_WIDTH + 10;
             }
 
-            sprintf(debug, "[EXEC] Axis %d OCR: period=%u pulse=%u\r\n",
-                    i, (unsigned int)period, (unsigned int)OCMP_PULSE_WIDTH);
-            APP_UARTPrint_blocking(debug);
-
             /* Configure OCR dual-compare mode - VERIFIED WORKING CONFIGURATION:
              * Proven ratio pattern from idle state test: OC4R=250, OC4RS=40, Period=300
              * This translates to: OCxR = (period - OCMP_PULSE_WIDTH), OCxRS = OCMP_PULSE_WIDTH
@@ -718,7 +681,6 @@ static void APP_ExecuteNextMotionBlock(void)
                 OCMP4_CompareSecondaryValueSet(OCMP_PULSE_WIDTH); // Falling edge (e.g., 40)
                 OCMP4_Enable();
                 TMR2_Start(); // CRITICAL: Restart timer for each move
-                APP_UARTPrint_blocking("[EXEC] X-axis OCMP4+TMR2 started\r\n");
                 break;
 
             case 1:                                               // Y-axis -> OCMP1 + TMR4 (per MCC)
@@ -728,7 +690,6 @@ static void APP_ExecuteNextMotionBlock(void)
                 OCMP1_CompareSecondaryValueSet(OCMP_PULSE_WIDTH); // Falling edge
                 OCMP1_Enable();
                 TMR4_Start(); // CRITICAL: Restart timer for each move
-                APP_UARTPrint_blocking("[EXEC] Y-axis OCMP1+TMR4 started\r\n");
                 break;
 
             case 2:                                               // Z-axis -> OCMP5 + TMR3 (per MCC)
@@ -738,13 +699,10 @@ static void APP_ExecuteNextMotionBlock(void)
                 OCMP5_CompareSecondaryValueSet(OCMP_PULSE_WIDTH); // Falling edge
                 OCMP5_Enable();
                 TMR3_Start(); // CRITICAL: Restart timer for each move
-                APP_UARTPrint_blocking("[EXEC] Z-axis OCMP5+TMR3 started\r\n");
                 break;
             }
         }
     }
-
-    APP_UARTPrint_blocking("[EXEC] Block execution complete\r\n");
 }
 
 /* TEMPORARILY COMMENTED FOR DEBUG - APP_CalculateTrajectory function
@@ -1484,26 +1442,6 @@ void APP_OCMP4_Callback(uintptr_t context)
         // Check if target reached
         if (cnc_axes[0].step_count >= cnc_axes[0].target_position)
         {
-            /* DEBUG: Log stop condition - reset flag when step_count was 0 */
-            static bool stop_logged = false;
-            static uint32_t last_step_count = 0;
-
-            if (last_step_count == 0 && cnc_axes[0].step_count > 0)
-            {
-                stop_logged = false; // New move started
-            }
-            last_step_count = cnc_axes[0].step_count;
-
-            if (!stop_logged)
-            {
-                char debug_msg[128];
-                sprintf(debug_msg, "[STOP] X: step_count=%d target=%d pos=%d\r\n",
-                        (int)cnc_axes[0].step_count, (int)cnc_axes[0].target_position,
-                        (int)cnc_axes[0].current_position);
-                APP_UARTPrint_blocking(debug_msg);
-                stop_logged = true; // Only log once per move
-            }
-
             // Stop X-axis (OCMP4 uses TMR2 per MCC)
             TMR2_Stop();
             OCMP4_Disable();
