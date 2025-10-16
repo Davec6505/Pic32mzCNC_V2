@@ -8,8 +8,8 @@
   - Main application state machine
 
   Test patterns:
-  - SW1: Move X-axis +50mm forward (12,500 steps @ 250 steps/mm)
-  - SW2: Move X-axis -50mm reverse (return to start)
+  - SW1: Move X and Y axes +50mm forward (coordinated move)
+  - SW2: Move X and Y axes -50mm reverse (return to start)
 *******************************************************************************/
 
 #include "app.h"
@@ -39,8 +39,9 @@ void APP_Initialize(void)
     // Initialize multi-axis stepper control subsystem
     MultiAxis_Initialize();
 
-    // Enable X-axis stepper driver (DRV8825 ENABLE pin active LOW)
+    // Enable X and Y axis stepper drivers (DRV8825 ENABLE pin active LOW)
     MultiAxis_EnableDriver(AXIS_X);
+    MultiAxis_EnableDriver(AXIS_Y);
 
     // Power-on indicator
     LED2_Set();
@@ -63,31 +64,47 @@ void APP_Tasks(void)
 
     case APP_STATE_SERVICE_TASKS:
     {
-        // Check SW1 (move X-axis +50mm forward) - active LOW
+        // Check SW1 (move X and Y axes +50mm forward) - active LOW
         bool sw1_pressed = !SW1_Get();
         if (sw1_pressed && !sw1_was_pressed)
         {
-            LED2_Toggle(); // DEBUG: Show button detected
+            LED2_Toggle(); // DEBUG: Show SW1 button press detected
             if (!MultiAxis_IsBusy())
             {
-                // Convert 50mm to steps (250 steps/mm = 12,500 steps)
-                int32_t steps_50mm = MotionMath_MMToSteps(50.0f, AXIS_X);
+                LED2_Toggle(); // DEBUG: Show we're starting motion
 
-                // Move X-axis forward 50mm at decent speed
-                MultiAxis_MoveSingleAxis(AXIS_X, steps_50mm, true);
+                // Convert 50mm to steps for both axes (250 steps/mm = 12,500 steps)
+                int32_t steps_x = MotionMath_MMToSteps(50.0f, AXIS_X);
+                int32_t steps_y = MotionMath_MMToSteps(50.0f, AXIS_Y);
+
+                // Create coordinated move array (X, Y, Z, A)
+                int32_t steps[NUM_AXES] = {steps_x, steps_y, 0, 0};
+
+                // Move both X and Y axes forward 50mm (coordinated)
+                MultiAxis_MoveCoordinated(steps);
             }
         }
         sw1_was_pressed = sw1_pressed;
 
-        // Check SW2 (move X-axis -50mm reverse) - active LOW
+        // Check SW2 (move X and Y axes -50mm reverse) - active LOW
         bool sw2_pressed = !SW2_Get();
-        if (sw2_pressed && !sw2_was_pressed && !MultiAxis_IsBusy())
+        if (sw2_pressed && !sw2_was_pressed)
         {
-            // Convert 50mm to steps (250 steps/mm = 12,500 steps)
-            int32_t steps_50mm = MotionMath_MMToSteps(50.0f, AXIS_X);
+            LED2_Toggle(); // DEBUG: Show SW2 button press detected
+            if (!MultiAxis_IsBusy())
+            {
+                LED2_Toggle(); // DEBUG: Show we're starting motion
 
-            // Move X-axis reverse 50mm to return to start position
-            MultiAxis_MoveSingleAxis(AXIS_X, steps_50mm, false);
+                // Convert 50mm to steps for both axes (250 steps/mm = 12,500 steps)
+                int32_t steps_x = MotionMath_MMToSteps(50.0f, AXIS_X);
+                int32_t steps_y = MotionMath_MMToSteps(50.0f, AXIS_Y);
+
+                // Create coordinated move array (negative for reverse)
+                int32_t steps[NUM_AXES] = {-steps_x, -steps_y, 0, 0};
+
+                // Move both X and Y axes reverse 50mm to return to start position
+                MultiAxis_MoveCoordinated(steps);
+            }
         }
         sw2_was_pressed = sw2_pressed;
 

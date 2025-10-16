@@ -59,35 +59,15 @@ typedef struct
 } axis_hardware_t;
 
 // Forward declarations for hardware functions
-static void OCMP4_StepCounter_X(uintptr_t context);
+static void OCMP5_StepCounter_X(uintptr_t context);
 static void OCMP1_StepCounter_Y(uintptr_t context);
-static void OCMP5_StepCounter_Z(uintptr_t context);
+static void OCMP4_StepCounter_Z(uintptr_t context);
 #ifdef ENABLE_AXIS_A
 static void OCMP3_StepCounter_A(uintptr_t context);
 #endif
 // Hardware configuration table
 static const axis_hardware_t axis_hw[NUM_AXES] = {
-    // AXIS_X: OCMP4 + TMR2 (TESTED - working)
-    {
-        .OCMP_Enable = OCMP4_Enable,
-        .OCMP_Disable = OCMP4_Disable,
-        .OCMP_CompareValueSet = OCMP4_CompareValueSet,
-        .OCMP_CompareSecondaryValueSet = OCMP4_CompareSecondaryValueSet,
-        .OCMP_CallbackRegister = OCMP4_CallbackRegister,
-        .TMR_Start = TMR2_Start,
-        .TMR_Stop = TMR2_Stop,
-        .TMR_PeriodSet = TMR2_PeriodSet},
-    // AXIS_Y: OCMP1 + TMR4 (using X hardware for now until wired)
-    {
-        .OCMP_Enable = OCMP1_Enable,
-        .OCMP_Disable = OCMP1_Disable,
-        .OCMP_CompareValueSet = OCMP1_CompareValueSet,
-        .OCMP_CompareSecondaryValueSet = OCMP1_CompareSecondaryValueSet,
-        .OCMP_CallbackRegister = OCMP1_CallbackRegister,
-        .TMR_Start = TMR4_Start,
-        .TMR_Stop = TMR4_Stop,
-        .TMR_PeriodSet = TMR4_PeriodSet},
-    // AXIS_Z: OCMP5 + TMR3 (using X hardware for now until wired)
+    // AXIS_X: OCMP5 + TMR3 (CORRECTED - per hardware wiring)
     {
         .OCMP_Enable = OCMP5_Enable,
         .OCMP_Disable = OCMP5_Disable,
@@ -97,7 +77,27 @@ static const axis_hardware_t axis_hw[NUM_AXES] = {
         .TMR_Start = TMR3_Start,
         .TMR_Stop = TMR3_Stop,
         .TMR_PeriodSet = TMR3_PeriodSet},
-    // AXIS_A: OCMP3 + TMR1 (using X hardware for now until wired)
+    // AXIS_Y: OCMP1 + TMR4 (CORRECT - per hardware wiring)
+    {
+        .OCMP_Enable = OCMP1_Enable,
+        .OCMP_Disable = OCMP1_Disable,
+        .OCMP_CompareValueSet = OCMP1_CompareValueSet,
+        .OCMP_CompareSecondaryValueSet = OCMP1_CompareSecondaryValueSet,
+        .OCMP_CallbackRegister = OCMP1_CallbackRegister,
+        .TMR_Start = TMR4_Start,
+        .TMR_Stop = TMR4_Stop,
+        .TMR_PeriodSet = TMR4_PeriodSet},
+    // AXIS_Z: OCMP4 + TMR2 (CORRECTED - per hardware wiring)
+    {
+        .OCMP_Enable = OCMP4_Enable,
+        .OCMP_Disable = OCMP4_Disable,
+        .OCMP_CompareValueSet = OCMP4_CompareValueSet,
+        .OCMP_CompareSecondaryValueSet = OCMP4_CompareSecondaryValueSet,
+        .OCMP_CallbackRegister = OCMP4_CallbackRegister,
+        .TMR_Start = TMR2_Start,
+        .TMR_Stop = TMR2_Stop,
+        .TMR_PeriodSet = TMR2_PeriodSet},
+    // AXIS_A: OCMP3 + TMR5 (CORRECT - per hardware wiring)
     {
         .OCMP_Enable = OCMP3_Enable,
         .OCMP_Disable = OCMP3_Disable,
@@ -559,7 +559,7 @@ static bool calculate_scurve_profile(axis_id_t axis, uint32_t distance)
 // OCR Interrupt Handlers (Step Counters)
 // *****************************************************************************/
 
-static void OCMP4_StepCounter_X(uintptr_t context)
+static void OCMP5_StepCounter_X(uintptr_t context)
 {
     axis_state[AXIS_X].step_count++;
 }
@@ -569,7 +569,7 @@ static void OCMP1_StepCounter_Y(uintptr_t context)
     axis_state[AXIS_Y].step_count++;
 }
 
-static void OCMP5_StepCounter_Z(uintptr_t context)
+static void OCMP4_StepCounter_Z(uintptr_t context)
 {
     axis_state[AXIS_Z].step_count++;
 }
@@ -773,9 +773,9 @@ void MultiAxis_Initialize(void)
     }
 
     // Register OCR callbacks
-    axis_hw[AXIS_X].OCMP_CallbackRegister(OCMP4_StepCounter_X, 0);
+    axis_hw[AXIS_X].OCMP_CallbackRegister(OCMP5_StepCounter_X, 0);
     axis_hw[AXIS_Y].OCMP_CallbackRegister(OCMP1_StepCounter_Y, 0);
-    axis_hw[AXIS_Z].OCMP_CallbackRegister(OCMP5_StepCounter_Z, 0);
+    axis_hw[AXIS_Z].OCMP_CallbackRegister(OCMP4_StepCounter_Z, 0);
 
     // Register TMR1 callback for multi-axis control
     TMR1_CallbackRegister(TMR1_MultiAxisControl, 0);
