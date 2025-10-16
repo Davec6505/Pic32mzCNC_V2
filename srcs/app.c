@@ -8,12 +8,13 @@
   - Main application state machine
 
   Test patterns:
-  - SW1: Single axis motion (X-axis 5000 steps forward)
-  - SW2: Multi-axis diagonal motion (X+Y coordinated)
+  - SW1: Move X-axis +50mm forward (12,500 steps @ 250 steps/mm)
+  - SW2: Move X-axis -50mm reverse (return to start)
 *******************************************************************************/
 
 #include "app.h"
 #include "multiaxis_control.h"
+#include "motion_math.h" // For MotionMath_MMToSteps()
 #include "definitions.h"
 #include <stdbool.h>
 
@@ -38,6 +39,9 @@ void APP_Initialize(void)
     // Initialize multi-axis stepper control subsystem
     MultiAxis_Initialize();
 
+    // Enable X-axis stepper driver (DRV8825 ENABLE pin active LOW)
+    MultiAxis_EnableDriver(AXIS_X);
+
     // Power-on indicator
     LED2_Set();
 
@@ -59,54 +63,38 @@ void APP_Tasks(void)
 
     case APP_STATE_SERVICE_TASKS:
     {
-        // Check SW1 (single X-axis motion) - active LOW
+        // Check SW1 (move X-axis +50mm forward) - active LOW
         bool sw1_pressed = !SW1_Get();
         if (sw1_pressed && !sw1_was_pressed)
         {
-            LED1_Toggle(); // DEBUG: Show button detected
+            LED2_Toggle(); // DEBUG: Show button detected
             if (!MultiAxis_IsBusy())
             {
-                LED2_Toggle(); // DEBUG: Show not busy, starting move
-                // Single axis test: 5000 steps forward on X-axis only
-                MultiAxis_MoveSingleAxis(AXIS_X, 5000, true);
-            }
-            else
-            {
-                LED2_Set(); // DEBUG: Show blocked by IsBusy
+                // Convert 50mm to steps (250 steps/mm = 12,500 steps)
+                int32_t steps_50mm = MotionMath_MMToSteps(50.0f, AXIS_X);
+
+                // Move X-axis forward 50mm at decent speed
+                MultiAxis_MoveSingleAxis(AXIS_X, steps_50mm, true);
             }
         }
         sw1_was_pressed = sw1_pressed;
 
-        // Check SW2 (test different motion) - active LOW
+        // Check SW2 (move X-axis -50mm reverse) - active LOW
         bool sw2_pressed = !SW2_Get();
         if (sw2_pressed && !sw2_was_pressed && !MultiAxis_IsBusy())
         {
-            // SW2: Different X-axis motion - 10000 steps forward
-            // (Y/Z hardware not wired yet, so only test X for now)
-            int32_t move[NUM_AXES] = {
-                5000, // X: 5000 steps
-                5000, // Y: 5000 steps
-                10000 // Z: 10000 steps
-            };
-            MultiAxis_MoveCoordinated(move);
-            //  MultiAxis_MoveSingleAxis(AXIS_X, 10000, true);
+            // Convert 50mm to steps (250 steps/mm = 12,500 steps)
+            int32_t steps_50mm = MotionMath_MMToSteps(50.0f, AXIS_X);
+
+            // Move X-axis reverse 50mm to return to start position
+            MultiAxis_MoveSingleAxis(AXIS_X, steps_50mm, false);
         }
         sw2_was_pressed = sw2_pressed;
 
-        // Heartbeat LED when idle
-        if (!MultiAxis_IsBusy())
-        {
-            static uint32_t heartbeat_counter = 0;
-            if (++heartbeat_counter > 500000)
-            {
-                LED1_Toggle();
-                heartbeat_counter = 0;
-            }
-        }
-        else
-        {
-            LED1_Set(); // Solid during motion
-        }
+        // LED1 heartbeat is handled by TMR1 interrupt (1Hz toggle in multiaxis_control.c)
+        // LED1 shows solid during motion (set in MultiAxis_MoveSingleAxis)
+
+        // LED2 shows motion activity (toggled by TMR1 when processing axes)
 
         break;
     }

@@ -603,8 +603,6 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
         if (!s->active || s->current_segment == SEGMENT_IDLE)
             continue;
 
-        LED2_Toggle(); // DEBUG: Show we have an active axis being processed
-
         // Get per-axis motion limits (cached for efficiency in interrupt context)
         float max_velocity = MotionMath_GetMaxVelocityStepsPerSec(axis);
         float max_accel = MotionMath_GetAccelStepsPerSec2(axis);
@@ -713,7 +711,6 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
             // CRITICAL: Stop timer then disable OCR
             axis_hw[axis].TMR_Stop();
             axis_hw[axis].OCMP_Disable();
-            LED2_Set(); // Indicate axis complete (for testing)
             // Clear state
             s->active = false;
             s->current_velocity = 0.0f;
@@ -763,7 +760,7 @@ void MultiAxis_Initialize(void)
 {
     // Initialize motion math settings (GRBL-compatible defaults)
     MotionMath_InitializeSettings();
-    
+
     // Initialize all axis states
     for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
     {
@@ -783,8 +780,6 @@ void MultiAxis_Initialize(void)
     // Register TMR1 callback for multi-axis control
     TMR1_CallbackRegister(TMR1_MultiAxisControl, 0);
     TMR1_Start();
-
-    LED2_Set(); // Indicate initialized
 }
 
 /*! \brief Execute single-axis motion with S-curve profile
@@ -838,9 +833,6 @@ void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward)
     s->step_count = 0U;
     s->direction_forward = forward;
     s->active = true;
-
-    LED1_Set();   // DEBUG: Show motion starting
-    LED2_Clear(); // DEBUG: Clear completion indicator
 
     // Set direction pin using dynamic lookup
     if (forward)
@@ -952,8 +944,6 @@ void MultiAxis_StopAll(void)
         MultiAxis_DisableDriver(axis);
     }
 
-    LED1_Clear();
-    LED2_Clear();
     // No global motion_running flag - each axis manages its own state
 }
 
@@ -986,14 +976,8 @@ uint32_t MultiAxis_GetStepCount(axis_id_t axis)
   4. All axes use same segment times, different velocities
 *******************************************************************************/
 
-typedef struct
-{
-    axis_id_t dominant_axis;             // Axis with longest distance
-    float total_move_time;               // Total time for move (from dominant axis)
-    float axis_velocity_scale[NUM_AXES]; // Velocity scaling factors
-} coordinated_move_t;
-
-static coordinated_move_t coord_move;
+// Use centralized type from motion_types.h
+static motion_coordinated_move_t coord_move;
 
 /*! \brief Calculate coordinated multi-axis move with time synchronization
  *
