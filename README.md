@@ -12,43 +12,47 @@ This is the **definitive direction** for a modern, modular CNC controller that e
 
 ## ⚡ Current Status (October 2025)
 
-**Branch:** `hardware-test` (Main development branch)
+**Branch:** `master` (Main development branch)
 
 ### ✅ Working Features
+- **Time-Synchronized Coordinated Motion**: Dominant axis determines timing, subordinate axes scale velocities for accurate multi-axis moves
 - **Multi-Axis S-Curve Control**: Per-axis independent state machines with 7-segment jerk-limited profiles
 - **Hardware Step Generation**: OCMP1/3/4/5 modules generate step pulses autonomously (no CPU interrupts per step)
 - **4-Axis Support**: X, Y, Z, and A axes with independent control
-- **Oscilloscope Verified**: Symmetric acceleration/deceleration profiles confirmed
+- **Centralized Hardware Configuration**: GT2 belt (80 steps/mm) on X/Y/A, leadscrew (1280 steps/mm) on Z
+- **Oscilloscope Verified**: Symmetric acceleration/deceleration profiles confirmed on all axes
 - **Perfect Restart**: Per-axis active flags enable reliable motion restart
 - **Dynamic Direction Control**: Function pointer tables for efficient GPIO management
 - **MISRA C Compliance**: Static assertions and runtime validation for safety-critical operation
 
 ### 🧪 Currently Testing
-- **X-Axis**: Fully operational with SW1 (5000 steps) and SW2 (10000 steps) button tests
-- **Y/Z/A Axes**: Hardware configured but not yet wired (temporary mapped to X hardware for testing)
+- **X/Y/Z Axes**: All mechanically operational with proper S-curve motion
+- **Coordinated Motion**: SW1/SW2 buttons trigger 50mm X+Y coordinated moves (forward/reverse)
+- **Distance Accuracy**: Timer clock (12.5MHz) and steps/mm calibrated correctly
 
 ### 🚧 Development Roadmap
 
 This project follows a **methodical validation approach** - each subsystem is perfected before moving to the next:
 
-#### Phase 1: Motion Perfection (Current Phase)
+#### Phase 1: Motion Perfection (Current Phase - Nearly Complete!)
 **Objective**: Achieve flawless stepper motor control with S-curve profiles
 
 - [x] Single-axis S-curve implementation
 - [x] Multi-axis hardware abstraction
 - [x] Per-axis state management
 - [x] Oscilloscope verification of motion profiles
-- [ ] Wire Y/Z/A axis hardware
-- [ ] SW1/SW2 button tests for various motion features:
-  - [ ] Single-axis incremental moves
-  - [ ] Multi-axis coordinated moves
-  - [ ] Acceleration/deceleration tuning
-  - [ ] Emergency stop behavior
-  - [ ] Direction reversal reliability
-- [ ] Coordinated multi-axis vector motion (time-based interpolation)
+- [x] Wire X/Y/Z axis hardware (all tested mechanically)
+- [x] Hardware configuration centralized (motion_types.h)
+- [x] Timer clock calibrated (12.5MHz)
+- [x] Steps/mm calculated (80 belt, 1280 leadscrew)
+- [x] SW1/SW2 button tests for coordinated motion:
+  - [x] Multi-axis coordinated moves (50mm X+Y forward/reverse)
+  - [x] Time-synchronized coordination (dominant axis determines timing)
+  - [x] Distance accuracy verified
+  - [x] Direction reversal reliability
 - [ ] Circular interpolation (G2/G3 arc motion)
 
-**Exit Criteria**: All axes move with symmetric S-curves, coordinated motion verified, zero issues with restarts or direction changes
+**Exit Criteria**: All axes move with symmetric S-curves, coordinated motion verified ✅, zero issues with restarts or direction changes ✅
 
 #### Phase 2: Limit Switches & Jogging
 **Objective**: Safe manual control and homing
@@ -175,11 +179,11 @@ make debug
 ### Hardware Button Tests (Current)
 
 ```c
-// SW1 - X-axis 5000 steps forward
-// Tests: Single-axis motion, restart behavior
+// SW1 - Coordinated X+Y 50mm forward
+// Tests: Time-synchronized coordinated motion, dominant axis timing
 
-// SW2 - X-axis 10000 steps forward  
-// Tests: Longer moves, S-curve profile verification
+// SW2 - Coordinated X+Y 50mm reverse  
+// Tests: Return to start position, bidirectional accuracy
 ```
 
 ### Future Testing Scripts
@@ -199,12 +203,12 @@ make debug
 
 ### Axis Assignments
 
-| Axis | OCR Module | Timer | Direction Pin | Step Pin | Status      |
-| ---- | ---------- | ----- | ------------- | -------- | ----------- |
-| X    | OCMP4      | TMR2  | DirX (GPIO)   | RC3      | ✅ Tested    |
-| Y    | OCMP1      | TMR4  | DirY (GPIO)   | RD0      | ⏸️ Not wired |
-| Z    | OCMP5      | TMR3  | DirZ (GPIO)   | RD4      | ⏸️ Not wired |
-| A    | OCMP3      | TMR5  | DirA (GPIO)   | RD2      | ⏸️ Not wired |
+| Axis | OCR Module | Timer | Direction Pin | Step Pin | Drive System | Steps/mm | Status      |
+| ---- | ---------- | ----- | ------------- | -------- | ------------ | -------- | ----------- |
+| X    | OCMP4      | TMR2  | DirX (GPIO)   | RC3      | GT2 Belt     | 80       | ✅ Tested    |
+| Y    | OCMP1      | TMR4  | DirY (GPIO)   | RD0      | GT2 Belt     | 80       | ✅ Tested    |
+| Z    | OCMP5      | TMR3  | DirZ (GPIO)   | RD4      | 2.5mm Lead   | 1280     | ✅ Tested    |
+| A    | OCMP3      | TMR5  | DirA (GPIO)   | RD2      | GT2 Belt     | 80       | ⏸️ Not wired |
 
 ### Limit Switches (Active Low)
 
@@ -227,8 +231,11 @@ void MultiAxis_Initialize(void);
 // Single-axis motion
 void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward);
 
-// Coordinated multi-axis motion
+// Coordinated multi-axis motion (simple - independent axes)
 void MultiAxis_MoveCoordinated(int32_t steps[NUM_AXES]);
+
+// Time-synchronized coordinated motion (RECOMMENDED)
+void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES]);
 
 // Motion status
 bool MultiAxis_IsBusy(void);                    // Any axis moving?
@@ -253,7 +260,27 @@ typedef enum {
 
 ## 🔬 S-Curve Profile Details
 
-### 7-Segment Profile
+### Time-Synchronized Coordinated Motion
+
+The `MultiAxis_ExecuteCoordinatedMove()` function ensures accurate multi-axis motion where all axes finish simultaneously:
+
+**Algorithm:**
+1. Find **dominant axis** (longest distance in steps)
+2. Calculate S-curve profile for dominant axis → determines **total_move_time**
+3. For subordinate axes: `velocity_scale = distance_axis / distance_dominant`
+4. All axes share **same segment times** (t1-t7) but with scaled velocities
+5. Result: All axes finish at same time with correct distances traveled
+
+**Example:**
+```c
+int32_t steps[NUM_AXES] = {4000, 2000, 0, 0};  // X=50mm, Y=25mm
+MultiAxis_ExecuteCoordinatedMove(steps);
+// X is dominant (4000 steps), determines total time = 3.0s
+// Y scales: velocity_scale = 2000/4000 = 0.5
+// Y moves at half X's velocity, both finish at 3.0s
+```
+
+### 7-Segment S-Curve Profile
 
 ```
 Velocity
@@ -277,12 +304,27 @@ Segments:
 7. Jerk-out (deceleration decreases to zero)
 ```
 
-### Motion Parameters
+### Hardware Configuration (motion_types.h)
 
 ```c
-#define DEFAULT_MAX_VELOCITY  5000.0f   // steps/sec
-#define DEFAULT_MAX_ACCEL     10000.0f  // steps/sec²
-#define DEFAULT_MAX_JERK      50000.0f  // steps/sec³
+// Timer and microstepping
+#define TMR_CLOCK_HZ 12500000UL          // 12.5 MHz (25MHz ÷ 2 prescaler)
+#define STEPPER_STEPS_PER_REV 200.0f     // 1.8° steppers
+#define MICROSTEPPING_MODE 16.0f         // 1/16 microstepping
+
+// Drive systems
+#define BELT_PITCH_MM 2.0f               // GT2 belt pitch
+#define PULLEY_TEETH 20.0f               // 20-tooth pulley
+#define SCREW_PITCH_MM 2.5f              // Leadscrew pitch
+
+// Calculated steps/mm
+#define STEPS_PER_MM_BELT 80.0f          // (200 × 16) / (20 × 2)
+#define STEPS_PER_MM_LEADSCREW 1280.0f   // (200 × 16) / 2.5
+
+// Motion limits (from motion_math.c)
+Max Rate:       1000 mm/min (X/Y/A), 500 mm/min (Z)
+Acceleration:   100 mm/sec² (X/Y/A), 50 mm/sec² (Z)
+Jerk Limit:     1000 mm/sec³ (all axes)
 ```
 
 ## 🐛 Known Issues & Solutions

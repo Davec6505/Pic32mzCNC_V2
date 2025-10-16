@@ -1,18 +1,23 @@
 # PIC32MZ CNC Motion Controller V2 - AI Coding Guide
 
-## ⚠️ CURRENT STATUS: Centralized Types + Motion Buffer Foundation (October 16, 2025)
+## ⚠️ CURRENT STATUS: Time-Synchronized Coordinated Motion (October 16, 2025)
 
-**Latest Progress**: Added centralized type system and ring buffer for G-code planning.
+**Latest Progress**: Implemented proper time-synchronized coordinated motion algorithm where dominant axis determines timing.
 
 **Current Working System** ✅:
-- **Button-driven testing**: SW1/SW2 trigger predefined motion patterns
+- **Button-driven testing**: SW1/SW2 trigger 50mm coordinated X+Y moves (forward/reverse)
 - **Multi-axis S-curve control**: TMR1 @ 1kHz drives 7-segment jerk-limited profiles per axis
 - **Hardware pulse generation**: OCR modules (OCMP1/4/5/3) generate step pulses independently
-- **X-axis VERIFIED**: Tested with oscilloscope - smooth S-curve motion profiles confirmed
-- **Y/Z/A axes ready**: Hardware configured, awaiting physical wiring
+- **All axes mechanically tested**: X, Y, Z all moving with proper S-curve profiles
+- **Time-synchronized coordination**: Dominant (longest) axis determines total time, subordinate axes scale velocities
+- **Hardware configuration**: GT2 belt (80 steps/mm) on X/Y/A, 2.5mm leadscrew (1280 steps/mm) on Z
+- **Timer clock verified**: 12.5MHz (25MHz peripheral clock with 1:2 prescaler)
 - **Motion buffer infrastructure**: Ring buffer with look-ahead planning API ready for G-code parser
 
 **Recent Additions** ✅:
+- ✅ **Time-synchronized algorithm**: `MultiAxis_ExecuteCoordinatedMove()` ensures accurate coordinated motion
+- ✅ **Hardware constants centralized**: TMR_CLOCK_HZ, STEPS_PER_MM_BELT, STEPS_PER_MM_LEADSCREW in motion_types.h
+- ✅ **Distance accuracy fixed**: Timer clock (12.5MHz) and steps/mm (80 belt, 1280 leadscrew) now correct
 - ✅ **motion_types.h**: Centralized type definitions (single source of truth)
 - ✅ **motion_buffer.c/h**: Ring buffer for look-ahead planning (16 blocks)
 - ✅ **Type system**: Eliminated all duplicate type definitions
@@ -134,7 +139,8 @@ The project uses **PowerShell scripts for hardware-in-the-loop testing**:
 // Multi-Axis Control API - Time-based S-curve profiles
 void MultiAxis_Initialize(void);  // Calls MotionMath_InitializeSettings()
 void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward);
-void MultiAxis_MoveCoordinated(int32_t steps[NUM_AXES]);
+void MultiAxis_MoveCoordinated(int32_t steps[NUM_AXES]);  // Simple version (independent axes)
+void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES]);  // Time-synchronized (RECOMMENDED)
 bool MultiAxis_IsBusy(void);  // Checks all axes independently
 void MultiAxis_EmergencyStop(void);
 
@@ -477,21 +483,27 @@ APP_SetPickAndPlaceMode(false);  // Restore normal limits
    MultiAxis_MoveSingleAxis(AXIS_X, 5000, true);  // 5000 steps forward
    ```
 
-2. **For G-code (mm-based)** - when parser is added:
+2. **For coordinated moves (RECOMMENDED)**:
+   ```c
+   int32_t steps[NUM_AXES] = {4000, 2000, 0, 0};  // X=50mm, Y=25mm (80 steps/mm)
+   MultiAxis_ExecuteCoordinatedMove(steps);  // Time-synchronized
+   ```
+
+3. **For G-code (mm-based)** - when parser is added:
    ```c
    // Parse "G1 X10 F1500"
    int32_t steps = MotionMath_MMToSteps(10.0f, AXIS_X);  // 10mm → 2500 steps
    MultiAxis_MoveSingleAxis(AXIS_X, steps, true);
    ```
 
-3. **Monitor completion**:
+4. **Monitor completion**:
    ```c
    while (MultiAxis_IsBusy()) { }  // Wait for all axes
    // or per-axis:
    while (MultiAxis_IsAxisBusy(AXIS_X)) { }
    ```
 
-4. **Edit button handlers** in `app.c` to test different patterns
+5. **Edit button handlers** in `app.c` to test different patterns
 
 ### Debugging Motion Issues
 1. Check TMR1 @ 1kHz callback: `TMR1_MultiAxisControl()` in `multiaxis_control.c`
@@ -506,6 +518,14 @@ APP_SetPickAndPlaceMode(false);  // Restore normal limits
 3. Test emergency stop functionality first (`MultiAxis_StopAll()`)
 4. Test single-axis moves before coordinated multi-axis moves
 5. X-axis is proven working, Y/Z/A axes configured but not physically wired yet
+
+### Testing Current System
+1. **Flash firmware** to PIC32MZ board (`bins/CS23.hex`)
+2. **Press SW1** to trigger X-axis single move (5000 steps forward)
+3. **Press SW2** to trigger coordinated 3-axis move (X/Y/Z)
+4. **Observe LED1** for heartbeat (1Hz idle) or solid (motion active)
+5. **Observe LED2** for power-on and axis processing activity
+6. **Use oscilloscope** to verify S-curve velocity profiles on step/dir pins
 
 ## Motion Math Integration (October 16, 2025)
 
