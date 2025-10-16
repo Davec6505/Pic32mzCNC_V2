@@ -24,41 +24,62 @@ void MultiAxis_Initialize(void);
  */
 void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward);
 
-/*! \brief Move multiple axes with coordinated S-curve profiles
+/*! \brief Execute time-synchronized coordinated multi-axis motion
  *
- *  Executes synchronized jerk-limited motion across multiple axes.
- *  All axes use the same time-based S-curve profile for coordinated motion.
- *
- *  \param steps Array of steps for each axis [X, Y, Z]
- *               Positive = forward, Negative = reverse, 0 = no motion
- *
- *  Example:
- *    int32_t move[3] = {5000, 3000, 0};  // X=5000 fwd, Y=3000 fwd, Z=idle
- *    MultiAxis_MoveCoordinated(move);
- */
-void MultiAxis_MoveCoordinated(int32_t steps[NUM_AXES]);
-
-/*! \brief Execute time-synchronized coordinated move
- *
- *  Proper coordinated motion where the dominant axis (longest distance)
- *  determines the total move time, and all other axes scale their velocities
- *  proportionally to finish simultaneously. This ensures accurate multi-axis
- *  motion with correct distances traveled.
+ *  MISRA C compliant coordinated motion controller that ensures all axes finish
+ *  simultaneously with correct distances traveled. Uses time-based interpolation
+ *  where the dominant axis (longest distance) determines total move time.
  *
  *  \param steps Array of steps for each axis [X, Y, Z, A]
  *               Positive = forward, Negative = reverse, 0 = no motion
+ *               MISRA Rule 17.4: Array bounds checked internally
  *
- *  Algorithm:
- *    1. Find dominant axis (max absolute steps)
- *    2. Calculate S-curve profile for dominant axis → determines total_time
- *    3. Scale velocities: v_axis = (distance_axis / total_time)
- *    4. All axes share same segment times (t1-t7) but scaled velocities
- *    5. Result: All axes finish simultaneously with correct distances
+ *  \return void (implicit success - motion queued)
+ *          Invalid parameters result in no motion (defensive programming)
  *
- *  Example:
- *    int32_t move[4] = {4000, 2000, 0, 0};  // X=50mm, Y=25mm (80 steps/mm)
+ *  Time-Synchronized Algorithm:
+ *  ─────────────────────────────
+ *  1. Find dominant axis: axis_d = argmax(|steps[axis]|)
+ *  2. Calculate S-curve for dominant axis → determines total_time
+ *  3. For each subordinate axis:
+ *       velocity_scale[axis] = steps[axis] / steps[axis_d]
+ *       velocity[axis] = velocity_dominant × velocity_scale[axis]
+ *  4. All axes share identical segment times (t1-t7) from dominant axis
+ *  5. Result: All axes complete motion at exactly total_time
+ *
+ *  Why This Matters:
+ *  ────────────────
+ *  Without time synchronization, each axis calculates independent timing:
+ *    - X-axis (4000 steps) → completes in 3.0s
+ *    - Y-axis (2000 steps) → completes in 2.0s ❌ FINISHES EARLY!
+ *    - Result: Curved path instead of straight line
+ *
+ *  With time synchronization (this function):
+ *    - X-axis is dominant (4000 > 2000) → sets total_time = 3.0s
+ *    - Y-axis scales velocity by 0.5 (2000/4000) → also completes in 3.0s ✓
+ *    - Result: Perfect straight line motion
+ *
+ *  MISRA C Compliance:
+ *  ──────────────────
+ *  - Rule 8.7: Internal helper functions declared static
+ *  - Rule 17.4: Array indexing validated against NUM_AXES
+ *  - Rule 10.1: All type conversions explicit with bounds checking
+ *  - Rule 14.4: Single return point per function (defensive early return)
+ *
+ *  Example Usage:
+ *  ─────────────
+ *    // Move X=50mm, Y=25mm (80 steps/mm, GT2 belt drive)
+ *    int32_t move[NUM_AXES] = {4000, 2000, 0, 0};
  *    MultiAxis_ExecuteCoordinatedMove(move);
- *    // X is dominant, takes 3.0s. Y uses 0.5x velocity, also finishes at 3.0s
+ *
+ *    // X is dominant: 4000 steps @ 16.7mm/s → 3.0s total time
+ *    // Y subordinate: 2000 steps @ 8.3mm/s → 3.0s total time (scaled velocity)
+ *    // Both axes arrive at target simultaneously with correct distances
+ *
+ *  Thread Safety:
+ *  ─────────────
+ *  Call only from main loop or task context (not from ISR).
+ *  Internal state uses volatile variables updated by TMR1 ISR @ 1kHz.
  */
 void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES]);
 

@@ -231,10 +231,7 @@ void MultiAxis_Initialize(void);
 // Single-axis motion
 void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward);
 
-// Coordinated multi-axis motion (simple - independent axes)
-void MultiAxis_MoveCoordinated(int32_t steps[NUM_AXES]);
-
-// Time-synchronized coordinated motion (RECOMMENDED)
+// Time-synchronized coordinated motion (ONLY method for multi-axis moves)
 void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES]);
 
 // Motion status

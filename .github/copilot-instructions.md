@@ -139,8 +139,7 @@ The project uses **PowerShell scripts for hardware-in-the-loop testing**:
 // Multi-Axis Control API - Time-based S-curve profiles
 void MultiAxis_Initialize(void);  // Calls MotionMath_InitializeSettings()
 void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward);
-void MultiAxis_MoveCoordinated(int32_t steps[NUM_AXES]);  // Simple version (independent axes)
-void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES]);  // Time-synchronized (RECOMMENDED)
+void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES]);  // Time-synchronized (ONLY coordinated motion function)
 bool MultiAxis_IsBusy(void);  // Checks all axes independently
 void MultiAxis_EmergencyStop(void);
 
@@ -483,10 +482,10 @@ APP_SetPickAndPlaceMode(false);  // Restore normal limits
    MultiAxis_MoveSingleAxis(AXIS_X, 5000, true);  // 5000 steps forward
    ```
 
-2. **For coordinated moves (RECOMMENDED)**:
+2. **For coordinated moves (ONLY METHOD)**:
    ```c
    int32_t steps[NUM_AXES] = {4000, 2000, 0, 0};  // X=50mm, Y=25mm (80 steps/mm)
-   MultiAxis_ExecuteCoordinatedMove(steps);  // Time-synchronized
+   MultiAxis_ExecuteCoordinatedMove(steps);  // Time-synchronized - ensures straight line motion
    ```
 
 3. **For G-code (mm-based)** - when parser is added:

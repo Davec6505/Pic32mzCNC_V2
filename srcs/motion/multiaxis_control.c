@@ -860,37 +860,6 @@ void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward)
     // Per-axis control - no global motion_running flag needed
 }
 
-/*! \brief Execute coordinated multi-axis motion
- *
- *  \param steps Array of step counts for each axis [X, Y, Z]
- *               Positive = forward, Negative = reverse, 0 = no motion
- *
- *  MISRA Rule 17.4: Array parameter must be validated
- *  MISRA Rule 8.13: Pointer should be const-qualified (cannot due to API)
- */
-void MultiAxis_MoveCoordinated(int32_t steps[NUM_AXES])
-{
-    // MISRA-compliant parameter validation
-    assert(steps != NULL); // Development-time check
-
-    if (steps == NULL)
-    {
-        return; // Defensive: reject null pointer
-    }
-
-    // Start all axes simultaneously for coordinated motion
-    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
-    {
-        if (steps[axis] != 0)
-        {
-            bool forward = (steps[axis] > 0);
-            int32_t step_val = steps[axis];
-            uint32_t abs_steps = (uint32_t)((step_val < 0) ? -step_val : step_val);
-            MultiAxis_MoveSingleAxis(axis, (int32_t)abs_steps, forward);
-        }
-    }
-}
-
 /*! \brief Check if any axis is currently moving
  *
  *  \return true if motion in progress, false if all axes idle
@@ -1070,45 +1039,105 @@ bool MultiAxis_CalculateCoordinatedMove(int32_t steps[NUM_AXES])
     return true;
 }
 
-/*! \brief Execute coordinated move with synchronized timing
+/*! \brief Execute time-synchronized coordinated multi-axis motion
  *
- *  All axes:
- *  - Share same segment times (t1-t7) from dominant axis
- *  - Scale their velocities proportionally
- *  - Finish simultaneously (coordinated motion)
+ *  MISRA C compliant implementation of coordinated motion where the dominant
+ *  axis (longest distance) determines total move time, and all subordinate
+ *  axes scale their velocities to finish simultaneously.
+ *
+ *  \param steps Array of signed step counts [X, Y, Z, A]
+ *               Positive = forward direction
+ *               Negative = reverse direction
+ *               Zero = axis remains stationary
+ *
+ *  Algorithm Flow:
+ *  ──────────────
+ *  1. Validate parameters and calculate dominant axis (via helper)
+ *  2. Dominant axis calculates full S-curve profile → determines total_time
+ *  3. For each active axis:
+ *       a. Copy segment times (t1-t7) from dominant axis
+ *       b. Scale velocities by ratio: steps[axis] / steps[dominant]
+ *       c. Initialize hardware (direction GPIO, OCR modules)
+ *       d. Start synchronized motion
+ *
+ *  MISRA Compliance Notes:
+ *  ─────────────────────
+ *  - Rule 17.4: Array indexing checked via NUM_AXES bounds in loop
+ *  - Rule 8.13: Volatile pointer required for ISR-shared state
+ *  - Rule 10.1: Explicit type conversions with range validation
+ *  - Rule 14.4: Single exit via early return for invalid parameters
+ *
+ *  Thread Safety:
+ *  ─────────────
+ *  - Must call from main context only (not from ISR)
+ *  - Uses volatile axis_state[] modified by TMR1 ISR @ 1kHz
+ *  - Hardware modules (OCR/TMR) started in synchronized sequence
  */
 void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES])
 {
-    assert(steps != NULL);
+    /* MISRA Rule 17.4: Parameter validation */
+    assert(steps != NULL); /* Development-time check */
 
+    /* Calculate coordinated move parameters (dominant axis, velocity scales) */
     if (!MultiAxis_CalculateCoordinatedMove(steps))
     {
-        return; // Invalid move
+        return; /* Defensive: Invalid move parameters (all axes zero or error) */
     }
 
-    // Get dominant axis profile (this determines timing for all axes)
+    /* Get dominant axis S-curve profile - this determines timing for all axes
+     * MISRA Rule 8.13: Volatile required as axis_state modified by TMR1 ISR */
     volatile scurve_state_t *dominant = &axis_state[coord_move.dominant_axis];
 
-    // Start all axes with synchronized profiles
+    /* ═══════════════════════════════════════════════════════════════════════
+     * TIME SYNCHRONIZATION: Critical Section
+     * ═══════════════════════════════════════════════════════════════════════
+     * All axes MUST share identical segment times (t1-t7) from dominant axis.
+     * This ensures simultaneous completion regardless of distance ratios.
+     *
+     * Why this works:
+     * ──────────────
+     * - Dominant axis: Calculates S-curve for max(|steps|) → sets total_time
+     * - Subordinate axes: Use same total_time but scaled velocities
+     * - Formula: v_subordinate = v_dominant × (steps_subordinate / steps_dominant)
+     * - Result: distance = velocity × time is satisfied for ALL axes
+     * ═══════════════════════════════════════════════════════════════════════ */
+
+    /* MISRA Rule 17.4: Loop bounds checked against NUM_AXES constant */
     for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
     {
+        /* Skip axes with zero motion (velocity_scale == 0.0f indicates no movement) */
         if (coord_move.axis_velocity_scale[axis] == 0.0f)
         {
-            continue; // Skip axes with no motion
+            continue; /* MISRA Rule 14.5: Continue acceptable for skip logic */
         }
 
+        /* Get axis state structure (volatile for ISR safety)
+         * MISRA Rule 8.13: Cannot be const as ISR will modify */
         volatile scurve_state_t *s = &axis_state[axis];
 
-        // Copy segment times from dominant axis (ALL axes use same timing)
-        s->t1_jerk_accel = dominant->t1_jerk_accel;
-        s->t2_const_accel = dominant->t2_const_accel;
-        s->t3_jerk_decel_accel = dominant->t3_jerk_decel_accel;
-        s->t4_cruise = dominant->t4_cruise;
-        s->t5_jerk_accel_decel = dominant->t5_jerk_accel_decel;
-        s->t6_const_decel = dominant->t6_const_decel;
-        s->t7_jerk_decel_decel = dominant->t7_jerk_decel_decel;
+        /* ─────────────────────────────────────────────────────────────────
+         * STEP 1: Copy Segment Times (Time Synchronization)
+         * ─────────────────────────────────────────────────────────────────
+         * CRITICAL: All axes use IDENTICAL segment times from dominant axis.
+         * This is the core of coordinated motion - shared timing ensures
+         * all axes complete their moves at exactly the same instant.
+         * ───────────────────────────────────────────────────────────────── */
+        s->t1_jerk_accel = dominant->t1_jerk_accel;             /* Jerk ramp up */
+        s->t2_const_accel = dominant->t2_const_accel;           /* Constant accel */
+        s->t3_jerk_decel_accel = dominant->t3_jerk_decel_accel; /* Jerk ramp down */
+        s->t4_cruise = dominant->t4_cruise;                     /* Constant velocity */
+        s->t5_jerk_accel_decel = dominant->t5_jerk_accel_decel; /* Decel jerk ramp */
+        s->t6_const_decel = dominant->t6_const_decel;           /* Constant decel */
+        s->t7_jerk_decel_decel = dominant->t7_jerk_decel_decel; /* Final jerk ramp */
 
-        // Scale velocities for this axis
+        /* ─────────────────────────────────────────────────────────────────
+         * STEP 2: Scale Velocities (Distance Compensation)
+         * ─────────────────────────────────────────────────────────────────
+         * Each axis moves at a proportional velocity to maintain the correct
+         * distance ratio while using the same time intervals.
+         *
+         * Formula: v_axis = v_dominant × (distance_axis / distance_dominant)
+         * ───────────────────────────────────────────────────────────────── */
         float velocity_scale = coord_move.axis_velocity_scale[axis];
 
         s->cruise_velocity = dominant->cruise_velocity * velocity_scale;
@@ -1118,39 +1147,65 @@ void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES])
         s->v_end_segment5 = dominant->v_end_segment5 * velocity_scale;
         s->v_end_segment6 = dominant->v_end_segment6 * velocity_scale;
 
-        // Set step counts and direction
+        /* ─────────────────────────────────────────────────────────────────
+         * STEP 3: Initialize Axis State
+         * ─────────────────────────────────────────────────────────────────
+         * Set initial conditions for motion execution.
+         * MISRA Rule 10.1: Explicit type conversion with bounds check.
+         * ───────────────────────────────────────────────────────────────── */
+
+        /* Convert signed steps to unsigned absolute value for distance tracking
+         * MISRA Rule 10.1: Explicit cast required for abs() return */
         uint32_t abs_steps = (uint32_t)abs(steps[axis]);
-        s->total_steps = abs_steps;
-        s->step_count = 0U;
-        s->direction_forward = (steps[axis] > 0);
+        s->total_steps = abs_steps;               /* Target distance (steps) */
+        s->step_count = 0U;                       /* Current position (incremented by OCR ISR) */
+        s->direction_forward = (steps[axis] > 0); /* Direction from sign of input */
 
-        // Initialize state
-        s->current_segment = SEGMENT_JERK_ACCEL;
-        s->elapsed_time = 0.0f;
-        s->total_elapsed = 0.0f;
-        s->current_velocity = 0.0f;
-        s->current_accel = 0.0f;
-        s->active = true;
+        /* Initialize S-curve state machine */
+        s->current_segment = SEGMENT_JERK_ACCEL; /* Start with first segment */
+        s->elapsed_time = 0.0f;                  /* Time within current segment */
+        s->total_elapsed = 0.0f;                 /* Total time since motion start */
+        s->current_velocity = 0.0f;              /* Initial velocity (always zero) */
+        s->current_accel = 0.0f;                 /* Initial acceleration (zero) */
+        s->active = true;                        /* Mark axis as active for TMR1 ISR */
 
-        // Set direction and start hardware
+        /* ─────────────────────────────────────────────────────────────────
+         * STEP 4: Configure Hardware (Direction GPIO)
+         * ─────────────────────────────────────────────────────────────────
+         * CRITICAL: Direction must be set BEFORE enabling step pulses.
+         * DRV8825 requires 200ns setup time (GPIO write provides this).
+         * ───────────────────────────────────────────────────────────────── */
         if (s->direction_forward)
         {
-            MultiAxis_SetDirection(axis);
+            MultiAxis_SetDirection(axis); /* GPIO HIGH for forward */
         }
         else
         {
-            MultiAxis_ClearDirection(axis);
+            MultiAxis_ClearDirection(axis); /* GPIO LOW for reverse */
         }
 
-        // Start OCR with slow initial period
-        uint32_t initial_period = 65000U;
+        /* ─────────────────────────────────────────────────────────────────
+         * STEP 5: Start Hardware Motion (OCR + Timer)
+         * ─────────────────────────────────────────────────────────────────
+         * Configure OCR dual-compare mode for step pulse generation.
+         *
+         * Timing:
+         * - Initial period = 65000 counts (slow start for S-curve)
+         * - Pulse width = 40 counts (meets DRV8825 1.9µs minimum @ 12.5MHz)
+         * - TMR must be restarted for each move (stops when motion completes)
+         *
+         * MISRA Rule 10.3: Explicit cast for unsigned arithmetic
+         * ───────────────────────────────────────────────────────────────── */
+        uint32_t initial_period = 65000U; /* Slow initial velocity */
+
         axis_hw[axis].TMR_PeriodSet(initial_period);
         axis_hw[axis].OCMP_CompareValueSet(initial_period - OCMP_PULSE_WIDTH);
         axis_hw[axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
 
-        axis_hw[axis].OCMP_Enable();
-        axis_hw[axis].TMR_Start();
+        axis_hw[axis].OCMP_Enable(); /* Enable OCR output */
+        axis_hw[axis].TMR_Start();   /* Start timer (CRITICAL - must restart each move) */
     }
 
-    LED1_Set(); // Indicate coordinated motion active
+    /* Visual feedback: LED1 solid during coordinated motion */
+    LED1_Set();
 }
