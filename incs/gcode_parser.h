@@ -233,23 +233,6 @@ extern "C"
     bool GCode_ParseLine(const char *line, parsed_move_t *move);
 
     /**
-     * @brief Parse G-command tokens (G0, G1, G2, G3, G90, G91, etc.)
-     *
-     * @param tokenized_line Tokenized G-code line
-     * @param move Output parsed move structure
-     * @return true if parse successful
-     */
-    bool GCode_ParseGCommand(const gcode_line_t *tokenized_line, parsed_move_t *move);
-
-    /**
-     * @brief Parse M-command tokens (M3, M5, M8, M9, etc.)
-     *
-     * @param tokenized_line Tokenized G-code line
-     * @return true if parse successful
-     */
-    bool GCode_ParseMCommand(const gcode_line_t *tokenized_line);
-
-    /**
      * @brief Parse $-command tokens ($$, $H, $X, $100=250, etc.)
      *
      * @param tokenized_line Tokenized G-code line

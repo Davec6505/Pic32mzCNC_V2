@@ -186,8 +186,29 @@ bool GCode_BufferLine(char *line, size_t line_size)
 }
 
 //=============================================================================
-// TOKENIZATION (SPLIT INTO STRING ARRAY)
+// TOKENIZATION (SPLIT INTO STRING ARRAY - GRBL COMPLIANT)
 //=============================================================================
+
+/**
+ * @brief Check if character is a valid GRBL word letter
+ *
+ * Valid letters: G, M, X, Y, Z, A, B, C, I, J, K, F, S, T, P, L, N, R, D, H
+ *
+ * @param c Character to check
+ * @return true if valid word letter
+ */
+static bool is_word_letter(char c)
+{
+    char upper = (char)toupper((int)c);
+    return (upper == 'G' || upper == 'M' ||
+            upper == 'X' || upper == 'Y' || upper == 'Z' ||
+            upper == 'A' || upper == 'B' || upper == 'C' ||
+            upper == 'I' || upper == 'J' || upper == 'K' ||
+            upper == 'F' || upper == 'S' || upper == 'T' ||
+            upper == 'P' || upper == 'L' || upper == 'N' ||
+            upper == 'R' || upper == 'D' || upper == 'H' ||
+            upper == '$');
+}
 
 bool GCode_TokenizeLine(const char *line, gcode_line_t *tokenized_line)
 {
@@ -220,35 +241,82 @@ bool GCode_TokenizeLine(const char *line, gcode_line_t *tokenized_line)
         *comment = '\0';
     }
 
-    /* Tokenize on whitespace */
+    /* GRBL-compliant tokenization: Split on letters
+     *
+     * Examples:
+     *   "G0 X50 F100"    → ["G0", "X50", "F100"]
+     *   "G0X50F100"      → ["G0", "X50", "F100"]
+     *   "G92G0X50F50M10" → ["G92", "G0", "X50", "F50", "M10"]
+     *   "G1 X10.5Y20.3"  → ["G1", "X10.5", "Y20.3"]
+     */
     uint8_t token_count = 0;
-    const char *delimiters = " \t\r\n";
-    char *token = strtok(work_buffer, delimiters);
+    size_t i = 0;
+    size_t len = strlen(work_buffer);
 
-    while (token != NULL && token_count < GCODE_MAX_TOKENS)
+    while (i < len && token_count < GCODE_MAX_TOKENS)
     {
-        /* Skip empty tokens */
-        if (strlen(token) > 0)
+        /* Skip whitespace */
+        while (i < len && (work_buffer[i] == ' ' || work_buffer[i] == '\t'))
         {
-            /* Convert to uppercase for consistency */
-            size_t len = strlen(token);
-            if (len >= GCODE_MAX_TOKEN_LENGTH)
+            i++;
+        }
+
+        if (i >= len)
+            break;
+
+        /* Check if this is a word letter (start of token) */
+        if (is_word_letter(work_buffer[i]))
+        {
+            /* Start new token */
+            size_t token_idx = 0;
+
+            /* Add the letter */
+            tokenized_line->tokens[token_count][token_idx++] = (char)toupper((int)work_buffer[i]);
+            i++;
+
+            /* Collect following digits, decimal point, minus sign */
+            while (i < len && token_idx < (GCODE_MAX_TOKEN_LENGTH - 1))
+            {
+                char c = work_buffer[i];
+
+                /* Valid number characters */
+                if (isdigit((int)c) || c == '.' || c == '-' || c == '+')
+                {
+                    tokenized_line->tokens[token_count][token_idx++] = c;
+                    i++;
+                }
+                /* Stop at next letter or whitespace */
+                else if (is_word_letter(c) || c == ' ' || c == '\t')
+                {
+                    break;
+                }
+                /* Invalid character */
+                else
+                {
+                    snprintf(last_error, sizeof(last_error),
+                             "Invalid character '%c' at position %zu", c, i);
+                    return false;
+                }
+            }
+
+            /* Null-terminate token */
+            tokenized_line->tokens[token_count][token_idx] = '\0';
+
+            /* Check token length */
+            if (token_idx >= GCODE_MAX_TOKEN_LENGTH)
             {
                 snprintf(last_error, sizeof(last_error),
-                         "Token too long: %s", token);
+                         "Token too long at position %zu", i);
                 return false;
             }
 
-            for (size_t i = 0; i < len; i++)
-            {
-                tokenized_line->tokens[token_count][i] = (char)toupper((int)token[i]);
-            }
-            tokenized_line->tokens[token_count][len] = '\0';
-
             token_count++;
         }
-
-        token = strtok(NULL, delimiters);
+        else
+        {
+            /* Skip invalid characters (shouldn't happen after comment stripping) */
+            i++;
+        }
     }
 
     tokenized_line->token_count = token_count;
@@ -311,7 +379,7 @@ bool GCode_FindToken(const gcode_line_t *tokenized_line, char letter, float *val
 }
 
 //=============================================================================
-// PARSING (HIGH-LEVEL)
+// PARSING (HIGH-LEVEL - COMPREHENSIVE ALL-TOKEN PROCESSING)
 //=============================================================================
 
 bool GCode_ParseLine(const char *line, parsed_move_t *move)
@@ -332,187 +400,229 @@ bool GCode_ParseLine(const char *line, parsed_move_t *move)
         return false;
     }
 
-    /* Identify command type from first token */
-    char first_char = tokenized_line.tokens[0][0];
+    /* COMPREHENSIVE TOKEN PROCESSING
+     *
+     * GRBL allows multiple commands on one line, e.g.:
+     *   "G90 G21 G0 X50 Y20 F1500"
+     *   "G92G0X50F50M10G93"
+     *
+     * We process ALL tokens and categorize by type:
+     *   - G-codes (motion, modal, coordinate system)
+     *   - M-codes (spindle, coolant, program control)
+     *   - Parameters (X, Y, Z, A, F, S, etc.)
+     *   - System commands ($)
+     *
+     * Modal commands update state, motion commands generate moves.
+     */
 
-    if (first_char == 'G')
+    bool has_motion_command = false;
+    bool has_system_command = false;
+    bool has_m_command = false;
+    uint8_t motion_g_code = modal_state.motion_mode; /* Default to modal */
+
+    /* First pass: Process all G-codes and identify motion command */
+    for (uint8_t i = 0; i < tokenized_line.token_count; i++)
     {
-        return GCode_ParseGCommand(&tokenized_line, move);
+        char letter = tokenized_line.tokens[i][0];
+
+        if (letter == 'G')
+        {
+            float g_value;
+            if (!GCode_ExtractTokenValue(tokenized_line.tokens[i], &g_value))
+            {
+                snprintf(last_error, sizeof(last_error),
+                         "Invalid G-code: %s", tokenized_line.tokens[i]);
+                return false;
+            }
+
+            uint8_t g_code = (uint8_t)g_value;
+
+            /* Classify G-code type */
+            if (g_code == 0 || g_code == 1 || g_code == 2 || g_code == 3)
+            {
+                /* Motion commands */
+                has_motion_command = true;
+                motion_g_code = g_code;
+                modal_state.motion_mode = g_code;
+            }
+            else if (g_code == 90 || g_code == 91)
+            {
+                /* Distance mode */
+                modal_state.absolute_mode = (g_code == 90);
+            }
+            else if (g_code == 20 || g_code == 21)
+            {
+                /* Units */
+                modal_state.metric_mode = (g_code == 21);
+            }
+            else if (g_code == 17 || g_code == 18 || g_code == 19)
+            {
+                /* Plane selection */
+                modal_state.plane = g_code;
+            }
+            else if (g_code == 92)
+            {
+                /* Coordinate system offset */
+                /* TODO: Implement G92 */
+                UGS_Printf(">> G92 (coordinate offset)\r\n");
+            }
+            else if (g_code == 93 || g_code == 94)
+            {
+                /* Feed rate mode */
+                /* TODO: Implement inverse time mode */
+                UGS_Printf(">> G%d (feed rate mode)\r\n", g_code);
+            }
+            else
+            {
+                snprintf(last_error, sizeof(last_error),
+                         "Unsupported G-code: G%d", g_code);
+                return false;
+            }
+        }
+        else if (letter == 'M')
+        {
+            has_m_command = true;
+        }
+        else if (letter == '$')
+        {
+            has_system_command = true;
+        }
     }
-    else if (first_char == 'M')
-    {
-        return GCode_ParseMCommand(&tokenized_line);
-    }
-    else if (first_char == '$')
+
+    /* Handle system commands (take priority) */
+    if (has_system_command)
     {
         return GCode_ParseSystemCommand(&tokenized_line);
     }
-    else
-    {
-        snprintf(last_error, sizeof(last_error),
-                 "Unknown command: %s", tokenized_line.tokens[0]);
-        return false;
-    }
-}
 
-//=============================================================================
-// G-COMMAND PARSING (G0, G1, G2, G3, G90, G91, etc.)
-//=============================================================================
-
-bool GCode_ParseGCommand(const gcode_line_t *tokenized_line, parsed_move_t *move)
-{
-    if (tokenized_line == NULL || move == NULL)
+    /* Second pass: Extract parameters (X, Y, Z, A, F, S, etc.) */
+    for (uint8_t i = 0; i < tokenized_line.token_count; i++)
     {
-        return false;
-    }
+        char letter = tokenized_line.tokens[i][0];
+        float value;
 
-    /* Extract G-code number (e.g., "G1" → 1) */
-    float g_value;
-    if (!GCode_ExtractTokenValue(tokenized_line->tokens[0], &g_value))
-    {
-        snprintf(last_error, sizeof(last_error),
-                 "Invalid G-code: %s", tokenized_line->tokens[0]);
-        return false;
-    }
-
-    uint8_t g_code = (uint8_t)g_value;
-
-    /* Handle modal commands (G90/G91/G20/G21) */
-    if (g_code == 90)
-    {
-        modal_state.absolute_mode = true;
-        UGS_Print(">> G90 Absolute Mode\r\n");
-        return true; /* Modal only, no motion */
-    }
-    if (g_code == 91)
-    {
-        modal_state.absolute_mode = false;
-        UGS_Print(">> G91 Relative Mode\r\n");
-        return true; /* Modal only, no motion */
-    }
-    if (g_code == 21)
-    {
-        modal_state.metric_mode = true;
-        UGS_Print(">> G21 Metric (mm)\r\n");
-        return true; /* Modal only, no motion */
-    }
-    if (g_code == 20)
-    {
-        modal_state.metric_mode = false;
-        UGS_Print(">> G20 Imperial (inches)\r\n");
-        return true; /* Modal only, no motion */
-    }
-
-    /* Handle motion commands (G0, G1) */
-    if (g_code == 0 || g_code == 1)
-    {
-        modal_state.motion_mode = g_code;
-
-        /* Extract axis coordinates */
-        float x_val, y_val, z_val, a_val, f_val;
-
-        if (GCode_FindToken(tokenized_line, 'X', &x_val))
+        if (!GCode_ExtractTokenValue(tokenized_line.tokens[i], &value))
         {
-            move->target[AXIS_X] = x_val;
+            /* Skip tokens without values (already processed G/M codes) */
+            continue;
+        }
+
+        switch (letter)
+        {
+        case 'X':
+            move->target[AXIS_X] = value;
             move->axis_words[AXIS_X] = true;
-        }
-        if (GCode_FindToken(tokenized_line, 'Y', &y_val))
-        {
-            move->target[AXIS_Y] = y_val;
+            break;
+
+        case 'Y':
+            move->target[AXIS_Y] = value;
             move->axis_words[AXIS_Y] = true;
-        }
-        if (GCode_FindToken(tokenized_line, 'Z', &z_val))
-        {
-            move->target[AXIS_Z] = z_val;
+            break;
+
+        case 'Z':
+            move->target[AXIS_Z] = value;
             move->axis_words[AXIS_Z] = true;
-        }
-        if (GCode_FindToken(tokenized_line, 'A', &a_val))
-        {
-            move->target[AXIS_A] = a_val;
+            break;
+
+        case 'A':
+            move->target[AXIS_A] = value;
             move->axis_words[AXIS_A] = true;
-        }
+            break;
 
-        /* Extract feedrate */
-        if (GCode_FindToken(tokenized_line, 'F', &f_val))
+        case 'F':
+            modal_state.feedrate = value;
+            break;
+
+        case 'S':
+            modal_state.spindle_speed = value;
+            break;
+
+        case 'I':
+        case 'J':
+        case 'K':
+            /* Arc parameters (for G2/G3) */
+            /* TODO: Implement arc support */
+            break;
+
+        case 'P':
+        case 'L':
+            /* Dwell time or loop count */
+            /* TODO: Implement dwell (G4) */
+            break;
+
+        case 'N':
+            /* Line number (ignore) */
+            break;
+
+        default:
+            /* Already processed or unknown */
+            break;
+        }
+    }
+
+    /* Process M-commands (execute immediately) */
+    if (has_m_command)
+    {
+        for (uint8_t i = 0; i < tokenized_line.token_count; i++)
         {
-            modal_state.feedrate = f_val;
-        }
+            if (tokenized_line.tokens[i][0] == 'M')
+            {
+                float m_value;
+                if (GCode_ExtractTokenValue(tokenized_line.tokens[i], &m_value))
+                {
+                    uint8_t m_code = (uint8_t)m_value;
 
-        /* Set move properties */
+                    switch (m_code)
+                    {
+                    case 3:
+                        UGS_Print(">> M3 Spindle CW\r\n");
+                        /* TODO: Implement spindle control */
+                        break;
+                    case 4:
+                        UGS_Print(">> M4 Spindle CCW\r\n");
+                        break;
+                    case 5:
+                        UGS_Print(">> M5 Spindle Off\r\n");
+                        break;
+                    case 7:
+                        UGS_Print(">> M7 Mist Coolant On\r\n");
+                        break;
+                    case 8:
+                        UGS_Print(">> M8 Flood Coolant On\r\n");
+                        break;
+                    case 9:
+                        UGS_Print(">> M9 Coolant Off\r\n");
+                        break;
+                    default:
+                        UGS_Printf(">> M%d (unsupported)\r\n", m_code);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Generate motion block if needed */
+    if (has_motion_command ||
+        move->axis_words[AXIS_X] || move->axis_words[AXIS_Y] ||
+        move->axis_words[AXIS_Z] || move->axis_words[AXIS_A])
+    {
+        move->motion_mode = motion_g_code;
         move->feedrate = modal_state.feedrate;
         move->absolute_mode = modal_state.absolute_mode;
-        move->motion_mode = g_code;
 
-        /* Check if any axis specified */
+        /* Validate motion */
         if (!move->axis_words[AXIS_X] && !move->axis_words[AXIS_Y] &&
             !move->axis_words[AXIS_Z] && !move->axis_words[AXIS_A])
         {
-            snprintf(last_error, sizeof(last_error), "No axis specified");
-            return false;
+            /* No axes specified - this is valid for modal operation */
+            /* Use previous position (will be handled by motion buffer) */
         }
 
-        return true; /* Move ready for motion buffer */
+        return true; /* Motion ready */
     }
 
-    /* Unsupported G-code */
-    snprintf(last_error, sizeof(last_error), "Unsupported G-code: G%d", g_code);
-    return false;
-}
-
-//=============================================================================
-// M-COMMAND PARSING (M3, M5, M8, M9, etc.)
-//=============================================================================
-
-bool GCode_ParseMCommand(const gcode_line_t *tokenized_line)
-{
-    if (tokenized_line == NULL)
-    {
-        return false;
-    }
-
-    /* Extract M-code number */
-    float m_value;
-    if (!GCode_ExtractTokenValue(tokenized_line->tokens[0], &m_value))
-    {
-        snprintf(last_error, sizeof(last_error),
-                 "Invalid M-code: %s", tokenized_line->tokens[0]);
-        return false;
-    }
-
-    uint8_t m_code = (uint8_t)m_value;
-
-    switch (m_code)
-    {
-    case 3:
-        /* M3 - Spindle CW */
-        UGS_Print(">> M3 Spindle CW\r\n");
-        /* TODO: Implement spindle control */
-        break;
-
-    case 5:
-        /* M5 - Spindle off */
-        UGS_Print(">> M5 Spindle Off\r\n");
-        /* TODO: Implement spindle control */
-        break;
-
-    case 8:
-        /* M8 - Coolant on */
-        UGS_Print(">> M8 Coolant On\r\n");
-        /* TODO: Implement coolant control */
-        break;
-
-    case 9:
-        /* M9 - Coolant off */
-        UGS_Print(">> M9 Coolant Off\r\n");
-        /* TODO: Implement coolant control */
-        break;
-
-    default:
-        snprintf(last_error, sizeof(last_error),
-                 "Unsupported M-code: M%d", m_code);
-        return false;
-    }
-
+    /* No motion, but modal state updated */
     return true;
 }
 
