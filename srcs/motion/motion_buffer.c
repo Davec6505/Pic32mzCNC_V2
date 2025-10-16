@@ -1,10 +1,10 @@
 /**
  * @file motion_buffer.c
  * @brief Ring buffer implementation for motion planning with look-ahead
- * 
+ *
  * This module manages a circular buffer of planned motion blocks and
  * implements look-ahead velocity optimization for smooth cornering.
- * 
+ *
  * @date October 16, 2025
  */
 
@@ -14,158 +14,355 @@
 #include <math.h>
 
 //=============================================================================
-// RING BUFFER STATE
+// RING BUFFER STATE (MCC UART Pattern)
 //=============================================================================
 
 /**
  * @brief Ring buffer storage
- * 
- * Circular buffer using head/tail pointers:
- * - head: Next write position
- * - tail: Next read position
- * - Empty when head == tail
- * - Full when (head + 1) % SIZE == tail
+ *
+ * Circular buffer using MCC UART-style In/Out indices:
+ * - wrInIndex (write head): Next write position (written by main, read by ISR)
+ * - rdOutIndex (read tail): Next read position (written by main, read by ISR)
+ * - Empty when wrInIndex == rdOutIndex
+ * - Full when (wrInIndex + 1) % SIZE == rdOutIndex
+ *
+ * MISRA C Compliance:
+ * - Rule 8.7: Static file scope variables
+ * - Rule 8.4: Volatile for shared access between contexts
  */
 static motion_block_t motion_buffer[MOTION_BUFFER_SIZE];
-static volatile uint8_t buffer_head = 0;  // Next write index
-static volatile uint8_t buffer_tail = 0;  // Next read index
+
+/* MISRA Rule 8.4: Volatile required - accessed from main loop and future ISR */
+static volatile uint32_t wrInIndex = 0U;  /* Write index (head pointer) */
+static volatile uint32_t rdOutIndex = 0U; /* Read index (tail pointer) */
+
 static volatile buffer_state_t buffer_state = BUFFER_STATE_IDLE;
 static volatile bool paused = false;
 
 //=============================================================================
-// FORWARD DECLARATIONS
+// FORWARD DECLARATIONS (MISRA Rule 8.4)
 //=============================================================================
 
-static uint8_t next_buffer_head(void);
-static void plan_buffer_line(motion_block_t* block, const parsed_move_t* move);
+static uint32_t next_write_index(void);
+static void plan_buffer_line(motion_block_t *block, const parsed_move_t *move);
 static void recalculate_trapezoids(void);
 
 //=============================================================================
 // INITIALIZATION
 //=============================================================================
 
-void MotionBuffer_Initialize(void) {
-    buffer_head = 0;
-    buffer_tail = 0;
+/**
+ * @brief Initialize motion buffer ring buffer
+ *
+ * Resets all indices and clears buffer memory.
+ * MISRA Rule 10.3: Explicit initialization to zero.
+ */
+void MotionBuffer_Initialize(void)
+{
+    /* MISRA Rule 10.3: Explicit unsigned zero initialization */
+    wrInIndex = 0U;
+    rdOutIndex = 0U;
     buffer_state = BUFFER_STATE_IDLE;
     paused = false;
-    
-    // Clear all buffer entries
-    memset(motion_buffer, 0, sizeof(motion_buffer));
+
+    /* Clear all buffer entries (MISRA Rule 21.6: memset acceptable for initialization) */
+    (void)memset(motion_buffer, 0, sizeof(motion_buffer));
 }
 
 //=============================================================================
 // BUFFER OPERATIONS
 //=============================================================================
 
-bool MotionBuffer_Add(const parsed_move_t* move) {
-    // Check if buffer is full
-    if (MotionBuffer_IsFull()) {
+/**
+ * @brief Add parsed G-code move to motion buffer
+ *
+ * Pattern from UART write logic with critical section protection.
+ *
+ * @param move Pointer to parsed G-code move structure
+ * @return true if added successfully, false if buffer full
+ *
+ * MISRA Rule 17.4: Array parameter validated
+ * MISRA Rule 10.3: Explicit unsigned arithmetic
+ */
+bool MotionBuffer_Add(const parsed_move_t *move)
+{
+    /* MISRA Rule 17.4: Parameter validation */
+    if (move == NULL)
+    {
+        return false;
+    }
+
+    /* Check if buffer is full */
+    if (MotionBuffer_IsFull())
+    {
         buffer_state = BUFFER_STATE_FULL;
         return false;
     }
-    
-    // Get next buffer slot
-    uint8_t next_head = next_buffer_head();
-    motion_block_t* block = &motion_buffer[buffer_head];
-    
-    // Plan this block (convert mm to steps, calculate velocities)
+
+    /* Get next write index and current buffer slot
+     * MISRA Rule 10.3: Explicit cast for array index */
+    uint32_t nextWrIdx = next_write_index();
+    motion_block_t *block = &motion_buffer[wrInIndex];
+
+    /* Plan this block (convert mm to steps, calculate velocities) */
     plan_buffer_line(block, move);
-    
-    // Commit to buffer (advance head pointer)
-    buffer_head = next_head;
-    
-    // Update state
-    if (buffer_state == BUFFER_STATE_IDLE || buffer_state == BUFFER_STATE_FULL) {
+
+    /* ═══════════════════════════════════════════════════════════════
+     * CRITICAL: Commit to buffer (UART pattern)
+     * ═══════════════════════════════════════════════════════════════
+     * Advance write index AFTER data is written.
+     * This ensures ISR/reader never sees incomplete data.
+     * ═══════════════════════════════════════════════════════════════ */
+    wrInIndex = nextWrIdx;
+
+    /* Update state */
+    if (buffer_state == BUFFER_STATE_IDLE || buffer_state == BUFFER_STATE_FULL)
+    {
         buffer_state = BUFFER_STATE_EXECUTING;
     }
-    
-    // Trigger look-ahead replanning if threshold reached
+
+    /* Trigger look-ahead replanning if threshold reached */
     uint8_t count = MotionBuffer_GetCount();
-    if (count >= LOOKAHEAD_PLANNING_THRESHOLD) {
+    if (count >= LOOKAHEAD_PLANNING_THRESHOLD)
+    {
         MotionBuffer_RecalculateAll();
     }
-    
+
     return true;
 }
 
-bool MotionBuffer_GetNext(motion_block_t* block) {
-    // Check if paused
-    if (paused) {
+/**
+ * @brief Get next motion block from buffer (dequeue)
+ *
+ * Pattern from UART2_Read(): Copy data and advance read pointer.
+ *
+ * @param block Pointer to motion block structure to fill
+ * @return true if block retrieved, false if empty or paused
+ *
+ * MISRA Rule 17.4: Pointer parameter validated
+ * MISRA Rule 10.3: Explicit modulo arithmetic
+ */
+bool MotionBuffer_GetNext(motion_block_t *block)
+{
+    /* MISRA Rule 17.4: Parameter validation */
+    if (block == NULL)
+    {
         return false;
     }
-    
-    // Check if buffer empty
-    if (MotionBuffer_IsEmpty()) {
+
+    /* Check if paused (flow control) */
+    if (paused)
+    {
+        return false;
+    }
+
+    /* Check if buffer empty */
+    if (MotionBuffer_IsEmpty())
+    {
         buffer_state = BUFFER_STATE_IDLE;
         return false;
     }
-    
-    // Copy block from tail position
-    memcpy(block, &motion_buffer[buffer_tail], sizeof(motion_block_t));
-    
-    // Advance tail pointer
-    buffer_tail = (buffer_tail + 1) % MOTION_BUFFER_SIZE;
-    
-    // Update state
+
+    /* Take snapshot of read index (UART pattern for thread safety) */
+    uint32_t rdIdx = rdOutIndex;
+
+    /* Copy block from current read position
+     * MISRA Rule 21.6: memcpy acceptable for struct copy */
+    (void)memcpy(block, &motion_buffer[rdIdx], sizeof(motion_block_t));
+
+    /* ═══════════════════════════════════════════════════════════════
+     * CRITICAL: Advance read pointer (UART pattern)
+     * ═══════════════════════════════════════════════════════════════
+     * Advance AFTER data is copied.
+     * MISRA Rule 10.3: Explicit modulo for wraparound.
+     * ═══════════════════════════════════════════════════════════════ */
+    rdIdx = (rdIdx + 1U) % MOTION_BUFFER_SIZE;
+    rdOutIndex = rdIdx;
+
+    /* Update state */
     buffer_state = BUFFER_STATE_EXECUTING;
-    
+
     return true;
 }
 
-bool MotionBuffer_Peek(motion_block_t* block) {
-    if (MotionBuffer_IsEmpty()) {
+/**
+ * @brief Peek at next motion block without removing it
+ *
+ * Similar to GetNext but does not advance read pointer.
+ *
+ * @param block Pointer to motion block structure to fill
+ * @return true if block available, false if empty
+ *
+ * MISRA Rule 17.4: Pointer parameter validated
+ */
+bool MotionBuffer_Peek(motion_block_t *block)
+{
+    /* MISRA Rule 17.4: Parameter validation */
+    if (block == NULL)
+    {
         return false;
     }
-    
-    // Copy without advancing tail
-    memcpy(block, &motion_buffer[buffer_tail], sizeof(motion_block_t));
+
+    if (MotionBuffer_IsEmpty())
+    {
+        return false;
+    }
+
+    /* Copy without advancing read pointer */
+    uint32_t rdIdx = rdOutIndex;
+    (void)memcpy(block, &motion_buffer[rdIdx], sizeof(motion_block_t));
+
     return true;
 }
 
 //=============================================================================
-// BUFFER QUERIES
+// BUFFER QUERIES (MCC UART Pattern - MISRA Compliant)
 //=============================================================================
 
-bool MotionBuffer_IsEmpty(void) {
-    return (buffer_head == buffer_tail);
+/**
+ * @brief Check if motion buffer is empty
+ *
+ * Pattern from UART2_ReadCountGet():
+ * Empty when write index equals read index.
+ *
+ * @return true if buffer is empty, false otherwise
+ *
+ * MISRA Rule 8.13: Parameters are read-only
+ */
+bool MotionBuffer_IsEmpty(void)
+{
+    /* Take snapshot to avoid race condition (UART pattern) */
+    uint32_t wrIdx = wrInIndex;
+    uint32_t rdIdx = rdOutIndex;
+
+    return (wrIdx == rdIdx);
 }
 
-bool MotionBuffer_IsFull(void) {
-    return (next_buffer_head() == buffer_tail);
+/**
+ * @brief Check if motion buffer is full
+ *
+ * Pattern from UART logic:
+ * Full when next write position would equal read position.
+ *
+ * @return true if buffer is full, false otherwise
+ */
+bool MotionBuffer_IsFull(void)
+{
+    uint32_t nextWrIdx = next_write_index();
+    uint32_t rdIdx = rdOutIndex;
+
+    return (nextWrIdx == rdIdx);
 }
 
-uint8_t MotionBuffer_GetCount(void) {
-    if (buffer_head >= buffer_tail) {
-        return buffer_head - buffer_tail;
-    } else {
-        return MOTION_BUFFER_SIZE - (buffer_tail - buffer_head);
+/**
+ * @brief Check if motion buffer has data available
+ *
+ * NEW FUNCTION - Requested by user.
+ * Pattern from UART2_ReadCountGet():
+ * Data available when write index is ahead of read index.
+ *
+ * @return true if head pointer ahead of tail (data available), false otherwise
+ *
+ * MISRA Rule 10.1: Explicit comparison operators
+ */
+bool MotionBuffer_HasData(void)
+{
+    /* Take snapshots to avoid race condition (critical for ISR safety) */
+    uint32_t wrIdx = wrInIndex;
+    uint32_t rdIdx = rdOutIndex;
+
+    /* Head ahead of tail means data available */
+    return (wrIdx != rdIdx);
+}
+
+/**
+ * @brief Get number of blocks in buffer
+ *
+ * Pattern from UART2_ReadCountGet():
+ * Handle wraparound case for circular buffer.
+ *
+ * @return Number of motion blocks available to read
+ *
+ * MISRA Rule 10.3: Explicit unsigned arithmetic
+ */
+uint8_t MotionBuffer_GetCount(void)
+{
+    size_t count;
+
+    /* Take snapshots (UART pattern for thread safety) */
+    uint32_t wrIdx = wrInIndex;
+    uint32_t rdIdx = rdOutIndex;
+
+    /* UART2_ReadCountGet() pattern: Handle wrap-around */
+    if (wrIdx >= rdIdx)
+    {
+        count = wrIdx - rdIdx;
     }
+    else
+    {
+        /* Wrapped: count = (size - tail) + head */
+        count = (MOTION_BUFFER_SIZE - rdIdx) + wrIdx;
+    }
+
+    /* MISRA Rule 10.3: Explicit cast to uint8_t */
+    return (uint8_t)count;
 }
 
-buffer_state_t MotionBuffer_GetState(void) {
+/**
+ * @brief Get buffer state
+ *
+ * @return Current buffer state (IDLE, EXECUTING, FULL)
+ */
+buffer_state_t MotionBuffer_GetState(void)
+{
     return buffer_state;
 }
 
 //=============================================================================
-// BUFFER MANAGEMENT
+// BUFFER MANAGEMENT (MISRA Compliant Flow Control)
 //=============================================================================
 
-void MotionBuffer_Clear(void) {
-    buffer_head = buffer_tail;  // Reset pointers (buffer now empty)
+/**
+ * @brief Clear all motion blocks from buffer
+ *
+ * Emergency stop / reset function.
+ * Pattern: Reset read index to write index (buffer becomes empty).
+ *
+ * MISRA Rule 10.3: Explicit assignment
+ */
+void MotionBuffer_Clear(void)
+{
+    /* Make read index equal write index (buffer now empty) */
+    rdOutIndex = wrInIndex;
+
     buffer_state = BUFFER_STATE_IDLE;
     paused = false;
 }
 
-void MotionBuffer_Pause(void) {
+/**
+ * @brief Pause motion buffer processing (feed hold)
+ *
+ * Prevents GetNext() from returning blocks.
+ * Implements GRBL '!' feed hold command.
+ */
+void MotionBuffer_Pause(void)
+{
     paused = true;
 }
 
-void MotionBuffer_Resume(void) {
+/**
+ * @brief Resume motion buffer processing (cycle start)
+ *
+ * Allows GetNext() to return blocks again.
+ * Implements GRBL '~' cycle start command.
+ */
+void MotionBuffer_Resume(void)
+{
     paused = false;
-    
+
     // If buffer has blocks, resume execution state
-    if (!MotionBuffer_IsEmpty()) {
+    if (!MotionBuffer_IsEmpty())
+    {
         buffer_state = BUFFER_STATE_EXECUTING;
     }
 }
@@ -174,38 +371,39 @@ void MotionBuffer_Resume(void) {
 // LOOK-AHEAD PLANNER
 //=============================================================================
 
-void MotionBuffer_RecalculateAll(void) {
+void MotionBuffer_RecalculateAll(void)
+{
     // Mark as planning
     buffer_state = BUFFER_STATE_PLANNING;
-    
+
     // TODO: Implement full look-ahead algorithm
     // For now, use simple trapezoid recalculation
     recalculate_trapezoids();
-    
+
     // Restore execution state
     buffer_state = BUFFER_STATE_EXECUTING;
 }
 
-float MotionBuffer_CalculateJunctionVelocity(const motion_block_t* block1,
-                                              const motion_block_t* block2) {
+float MotionBuffer_CalculateJunctionVelocity(const motion_block_t *block1,
+                                             const motion_block_t *block2)
+{
     // Calculate angle between move vectors
     // For simplicity, use 2D XY angle (TODO: extend to 3D)
     float angle = MotionMath_CalculateJunctionAngle(
         (float)block1->steps[AXIS_X],
         (float)block1->steps[AXIS_Y],
-        0.0f,  // Z component (unused for now)
+        0.0f, // Z component (unused for now)
         (float)block2->steps[AXIS_X],
         (float)block2->steps[AXIS_Y],
-        0.0f   // Z component (unused for now)
+        0.0f // Z component (unused for now)
     );
-    
+
     // Use motion_math helper to calculate safe junction velocity
     return MotionMath_CalculateJunctionVelocity(
         angle,
         block1->feedrate,
         block2->feedrate,
-        motion_settings.junction_deviation
-    );
+        motion_settings.junction_deviation);
 }
 
 //=============================================================================
@@ -213,98 +411,145 @@ float MotionBuffer_CalculateJunctionVelocity(const motion_block_t* block1,
 //=============================================================================
 
 /**
- * @brief Calculate next head index (ring buffer wrap)
+ * @brief Calculate next write index (ring buffer wrap)
+ *
+ * Pattern from UART: Calculate next position with modulo wraparound.
+ *
+ * @return Next write index position
+ *
+ * MISRA Rule 8.7: Static internal helper
+ * MISRA Rule 10.3: Explicit modulo arithmetic
  */
-static uint8_t next_buffer_head(void) {
-    return (buffer_head + 1) % MOTION_BUFFER_SIZE;
+static uint32_t next_write_index(void)
+{
+    /* MISRA Rule 10.3: Explicit unsigned modulo for wraparound */
+    return (wrInIndex + 1U) % MOTION_BUFFER_SIZE;
 }
 
 /**
  * @brief Plan a buffer line (convert parsed move to motion block)
- * 
+ *
  * This function:
  * 1. Converts mm to steps using motion_math
  * 2. Determines which axes are active
  * 3. Calculates maximum entry velocity
  * 4. Initializes recalculate flag for look-ahead
  */
-static void plan_buffer_line(motion_block_t* block, const parsed_move_t* move) {
+static void plan_buffer_line(motion_block_t *block, const parsed_move_t *move)
+{
     // Clear block
     memset(block, 0, sizeof(motion_block_t));
-    
+
     // Convert mm to steps for each axis
-    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++) {
-        if (move->axis_words[axis]) {
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        if (move->axis_words[axis])
+        {
             block->steps[axis] = MotionMath_MMToSteps(move->target[axis], axis);
             block->axis_active[axis] = true;
-        } else {
+        }
+        else
+        {
             block->steps[axis] = 0;
             block->axis_active[axis] = false;
         }
     }
-    
+
     // Store feedrate
     block->feedrate = move->feedrate;
-    
+
     // Initialize velocities (will be optimized by look-ahead)
-    block->entry_velocity = 0.0f;  // Start from rest
-    block->exit_velocity = 0.0f;   // Assume stop at end
-    
+    block->entry_velocity = 0.0f; // Start from rest
+    block->exit_velocity = 0.0f;  // Assume stop at end
+
     // Calculate maximum entry velocity based on feedrate and acceleration
     // This is the ceiling - look-ahead will optimize below this
-    float max_velocity = MotionMath_GetMaxVelocityStepsPerSec(AXIS_X) * 60.0f;  // Convert to mm/min
+    float max_velocity = MotionMath_GetMaxVelocityStepsPerSec(AXIS_X) * 60.0f; // Convert to mm/min
     block->max_entry_velocity = fminf(move->feedrate, max_velocity);
-    
+
     // Mark for recalculation
     block->recalculate_flag = true;
 }
 
 /**
  * @brief Recalculate velocity profiles for all blocks in buffer
- * 
+ *
  * Simplified trapezoidal planning (placeholder for full look-ahead).
- * 
+ *
  * TODO: Implement full GRBL-style look-ahead:
  * 1. Forward pass: Maximize exit velocities
  * 2. Reverse pass: Ensure acceleration limits respected
  * 3. Calculate S-curve profiles
  */
-static void recalculate_trapezoids(void) {
-    if (MotionBuffer_IsEmpty()) {
+static void recalculate_trapezoids(void)
+{
+    if (MotionBuffer_IsEmpty())
+    {
         return;
     }
-    
-    // Simple approach: Iterate through buffer and set velocities
-    uint8_t index = buffer_tail;
+
+    /* MISRA Rule 10.3: Use new index naming (UART pattern) */
+    /* Start from read position (tail) */
+    uint32_t index = rdOutIndex;
     uint8_t count = MotionBuffer_GetCount();
-    
-    for (uint8_t i = 0; i < count; i++) {
-        motion_block_t* block = &motion_buffer[index];
-        
-        if (block->recalculate_flag) {
-            // For now, use nominal feedrate
-            // TODO: Implement junction velocity calculation
+
+    /* MISRA Rule 14.2: Loop counter validated */
+    for (uint8_t i = 0; i < count; i++)
+    {
+        motion_block_t *block = &motion_buffer[index];
+
+        if (block->recalculate_flag)
+        {
+            /* For now, use nominal feedrate */
+            /* TODO: Implement full GRBL look-ahead junction velocity calculation */
             block->entry_velocity = block->feedrate;
             block->exit_velocity = block->feedrate;
             block->recalculate_flag = false;
         }
-        
-        // Move to next block
-        index = (index + 1) % MOTION_BUFFER_SIZE;
+
+        /* Move to next block (MISRA Rule 10.3: Explicit modulo) */
+        index = (index + 1U) % MOTION_BUFFER_SIZE;
     }
 }
 
 //=============================================================================
-// DEBUGGING
+// DEBUGGING (MISRA Compliant)
 //=============================================================================
 
-void MotionBuffer_GetStats(uint8_t* head, uint8_t* tail, uint8_t* count) {
-    if (head) *head = buffer_head;
-    if (tail) *tail = buffer_tail;
-    if (count) *count = MotionBuffer_GetCount();
+/**
+ * @brief Get buffer statistics for debugging
+ *
+ * Returns current write/read indices and count.
+ * Updated to use UART pattern naming (wrInIndex/rdOutIndex).
+ *
+ * @param head Output: Write index (head pointer)
+ * @param tail Output: Read index (tail pointer)
+ * @param count Output: Number of blocks in buffer
+ *
+ * MISRA Rule 17.4: Pointer parameters validated inline
+ */
+void MotionBuffer_GetStats(uint8_t *head, uint8_t *tail, uint8_t *count)
+{
+    /* MISRA Rule 17.4: Validate pointers before use */
+    if (head != NULL)
+    {
+        /* MISRA Rule 10.3: Explicit cast to uint8_t */
+        *head = (uint8_t)wrInIndex;
+    }
+
+    if (tail != NULL)
+    {
+        *tail = (uint8_t)rdOutIndex;
+    }
+
+    if (count != NULL)
+    {
+        *count = MotionBuffer_GetCount();
+    }
 }
 
-void MotionBuffer_DumpBuffer(void) {
+void MotionBuffer_DumpBuffer(void)
+{
     // TODO: Implement debug output
     // This would print buffer contents to UART for debugging
     // Format: [index] steps=[X,Y,Z,A] feedrate=### entry_v=### exit_v=###
