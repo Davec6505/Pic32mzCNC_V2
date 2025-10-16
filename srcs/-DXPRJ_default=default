@@ -1,5 +1,5 @@
 ../objs/motion/multiaxis_control.o: ../srcs/motion/multiaxis_control.c \
- ../incs/motion/multiaxis_control.h \
+ ../incs/motion/multiaxis_control.h ../incs/motion/motion_math.h \
  ../incs/config/default/peripheral/gpio/plib_gpio.h \
  ../incs/config/default/device.h \
  ../incs/config/default/toolchain_specifics.h \
@@ -25,6 +25,8 @@
  ../incs/config/default/peripheral/tmr1/plib_tmr1_common.h
 
 ../incs/motion/multiaxis_control.h:
+
+../incs/motion/motion_math.h:
 
 ../incs/config/default/peripheral/gpio/plib_gpio.h:
 

@@ -16,6 +16,7 @@
 *******************************************************************************/
 
 #include "motion/multiaxis_control.h"
+#include "motion/motion_math.h"
 #include "config/default/peripheral/gpio/plib_gpio.h"
 
 #include "definitions.h"
@@ -341,12 +342,12 @@ void MultiAxis_ClearDirection(axis_id_t axis)
 }
 
 // *****************************************************************************
-// S-Curve Motion Parameters (shared across axes)
+// S-Curve Motion Parameters
 // *****************************************************************************/
 
-static float max_velocity = 5000.0f; // steps/sec
-static float max_accel = 10000.0f;   // steps/sec²
-static float max_jerk = 50000.0f;    // steps/sec³
+// NOTE: Max velocity, acceleration, and jerk are now retrieved per-axis
+// from motion_math settings. This allows per-axis tuning (e.g., Z slower than XY).
+// Legacy hardcoded values removed in favor of MotionMath_Get*() functions.
 
 #define OCMP_PULSE_WIDTH 40
 #define UPDATE_FREQ_HZ 1000.0f
@@ -437,6 +438,12 @@ static bool calculate_scurve_profile(axis_id_t axis, uint32_t distance)
 {
     volatile scurve_state_t *s = &axis_state[axis];
     float d_total = (float)distance;
+
+    // Get per-axis motion limits from motion_math settings
+    // This supports per-axis tuning (e.g., Z slower than XY)
+    float max_velocity = MotionMath_GetMaxVelocityStepsPerSec(axis);
+    float max_accel = MotionMath_GetAccelStepsPerSec2(axis);
+    float max_jerk = MotionMath_GetJerkStepsPerSec3(axis);
 
     float t_jerk = max_accel / max_jerk;
     float v_jerk = 0.5f * max_accel * t_jerk;
@@ -598,6 +605,11 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
 
         LED2_Toggle(); // DEBUG: Show we have an active axis being processed
 
+        // Get per-axis motion limits (cached for efficiency in interrupt context)
+        float max_velocity = MotionMath_GetMaxVelocityStepsPerSec(axis);
+        float max_accel = MotionMath_GetAccelStepsPerSec2(axis);
+        float max_jerk = MotionMath_GetJerkStepsPerSec3(axis);
+
         s->elapsed_time += UPDATE_PERIOD_SEC;
         s->total_elapsed += UPDATE_PERIOD_SEC;
 
@@ -749,6 +761,9 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
 
 void MultiAxis_Initialize(void)
 {
+    // Initialize motion math settings (GRBL-compatible defaults)
+    MotionMath_InitializeSettings();
+    
     // Initialize all axis states
     for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
     {

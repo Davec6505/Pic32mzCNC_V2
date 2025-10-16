@@ -1,21 +1,52 @@
 # PIC32MZ CNC Motion Controller V2 - AI Coding Guide
 
-## ⚠️ CURRENT BRANCH: hardware-test (Multi-Axis S-Curve Development)
+## ⚠️ CURRENT STATUS: Clean Multi-Axis S-Curve Foundation (October 16, 2025)
 
-**Status**: Multi-axis S-curve control WORKING ✅ (October 2025)
-- Per-axis independent state management implemented
-- X-axis tested and verified with oscilloscope
-- Y/Z/A axes ready (hardware not yet wired)
+**Major Reset**: Removed all G-code parser and motion planner complexity to establish stable foundation.
+
+**Current Working System** ✅:
+- **Button-driven testing**: SW1/SW2 trigger predefined motion patterns
+- **Multi-axis S-curve control**: TMR1 @ 1kHz drives 7-segment jerk-limited profiles per axis
+- **Hardware pulse generation**: OCR modules (OCMP1/4/5) generate step pulses independently
+- **X-axis VERIFIED**: Tested with oscilloscope - smooth S-curve motion profiles confirmed
+- **Y/Z/A axes ready**: Hardware configured, awaiting physical wiring
+
+**What Was Removed**:
+- ❌ G-code parser (`gcode_parser.c`, `motion_gcode_parser.c`)
+- ❌ Motion planner (`motion_planner.c`)
+- ❌ Motion buffer (`motion_buffer.c`)
+- ❌ GRBL serial interface (`grbl_serial.c`)
+- ❌ All UGS compatibility layers
+
+**Current File Structure**:
+```
+srcs/
+  ├── main.c                        // Entry point, SYS_Initialize, main loop
+  ├── app.c                         // Button handling, LED indicators, test patterns
+  └── motion/
+      ├── multiaxis_control.c       // Time-based S-curve interpolation (1169 lines)
+      ├── motion_math.c             // Kinematics & GRBL settings (733 lines)
+      └── stepper_control.c         // Legacy single-axis reference (unused)
+
+incs/motion/
+  ├── multiaxis_control.h           // Multi-axis API, axis definitions
+  ├── motion_math.h                 // Unit conversions, look-ahead support (483 lines)
+  └── stepper_control.h             // Legacy reference
+```
+
+**Design Philosophy**:
+- **Time-based interpolation** (NOT Bresenham step counting)
+- **Hardware-accelerated pulse generation** (OCR modules, no software interrupts)
+- **Per-axis motion limits** (Z can be slower than XY)
+- **Centralized settings** (motion_math.c for GRBL $100-$133)
+- **Separation of concerns** (math library vs motion control)
 
 **TODO - NEXT PRIORITY**: 
-🎯 **Implement coordinated circular interpolation (G2/G3 arc motion)**
-- Decision needed: Vector-based interpolation method for multi-axis arcs
-- Options to evaluate:
-  1. Time-based velocity scaling (all axes synchronized to dominant axis timing)
-  2. Chord-based linearization with coordinated S-curve segments
-  3. Native parametric arc with synchronized angular velocity
-- Consider: Hardware OCR generates linear step pulses, arc must be synthesized via coordinated velocity profiles
-- Goal: Smooth circular motion with proper feedrate control and S-curve acceleration/deceleration
+🎯 **Re-implement G-code parser on top of stable multi-axis foundation**
+- Start with basic linear moves (G0/G1)
+- Add motion buffer for look-ahead planning
+- Implement GRBL serial protocol (using motion_math settings)
+- Eventually add G2/G3 arc interpolation
 
 ## Architecture Overview
 
@@ -46,12 +77,13 @@ TMR1 (1kHz) → Multi-Axis S-Curve State Machine
 
 | File | Purpose | Critical Patterns |
 |------|---------|------------------|
-| `srcs/main.c` | Entry point, TMR1 callback setup | Always call `APP_Initialize()` before `TMR1_Start()` |
-| `srcs/app.c` | Button-based testing, initialization | Simple test interface: SW1/SW2 trigger single-axis moves |
-| `srcs/motion/multiaxis_control.c` | **Multi-axis S-curve engine** | 773 lines: Per-axis state, hardware abstraction, MISRA compliance |
-| `incs/motion/multiaxis_control.h` | **Multi-axis API** | 88 lines: 4-axis support (X/Y/Z/A), dynamic direction control |
-| `srcs/motion/stepper_control.c` | **Legacy single-axis reference** | PROVEN baseline implementation (kept for reference) |
-| `incs/app.h` | Main system interface | Extensive getter/setter API documentation |
+| `srcs/main.c` | Entry point, system initialization | Calls `SYS_Initialize()` → `APP_Initialize()` → infinite loop |
+| `srcs/app.c` | Button-based testing, LED indicators | SW1/SW2 trigger predefined motion via `multiaxis_control` API |
+| `srcs/motion/multiaxis_control.c` | **Time-based S-curve interpolation** | 1169 lines: 7-segment profiles, TMR1 @ 1kHz, per-axis limits from motion_math |
+| `incs/motion/multiaxis_control.h` | **Multi-axis API** | 4-axis support (X/Y/Z/A), coordinated/single-axis moves, driver enable control |
+| `srcs/motion/motion_math.c` | **Kinematics & settings library** | 733 lines: Unit conversions, GRBL settings, look-ahead helpers, time-based calculations |
+| `incs/motion/motion_math.h` | **Motion math API** | 483 lines: Settings management, velocity calculations, junction planning, S-curve timing |
+| `srcs/motion/stepper_control.c` | **Legacy single-axis reference** | UNUSED - kept for reference only |
 
 ## Development Workflow
 
@@ -90,11 +122,11 @@ The project uses **PowerShell scripts for hardware-in-the-loop testing**:
 ## Code Patterns & Conventions
 
 ### Modular API Design
-**Current (October 2025)**: Per-axis control with hardware abstraction:
+**Current (October 2025)**: Time-based interpolation with centralized settings:
 
 ```c
-// Multi-Axis Control API - Independent per-axis S-curve profiles
-void MultiAxis_Initialize(void);
+// Multi-Axis Control API - Time-based S-curve profiles
+void MultiAxis_Initialize(void);  // Calls MotionMath_InitializeSettings()
 void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward);
 void MultiAxis_MoveCoordinated(int32_t steps[NUM_AXES]);
 bool MultiAxis_IsBusy(void);  // Checks all axes independently
@@ -106,19 +138,43 @@ void MultiAxis_ClearDirection(axis_id_t axis);
 
 // Per-axis state query
 bool MultiAxis_IsAxisBusy(axis_id_t axis);
-int32_t MultiAxis_GetStepCount(axis_id_t axis);
+uint32_t MultiAxis_GetStepCount(axis_id_t axis);
+
+// Motion Math API - Kinematics & Settings
+void MotionMath_InitializeSettings(void);  // Load GRBL defaults
+float MotionMath_GetMaxVelocityStepsPerSec(axis_id_t axis);
+float MotionMath_GetAccelStepsPerSec2(axis_id_t axis);
+float MotionMath_GetJerkStepsPerSec3(axis_id_t axis);
+
+// Unit conversions (for future G-code parser)
+int32_t MotionMath_MMToSteps(float mm, axis_id_t axis);
+float MotionMath_StepsToMM(int32_t steps, axis_id_t axis);
+uint32_t MotionMath_FeedrateToOCRPeriod(float feedrate_mm_min, axis_id_t axis);
+
+// Look-ahead planning (for future motion buffer)
+float MotionMath_CalculateJunctionVelocity(...);
+float MotionMath_CalculateJunctionAngle(...);
+bool MotionMath_CalculateSCurveTiming(...);
 ```
 
-### Hardware Abstraction Pattern
-Use getter/setter functions for hardware access (never direct global access):
+### Motion Math Settings Pattern
+**GRBL v1.1f Compatibility**: Centralized settings in motion_math module
 
 ```c
-// CORRECT: Use hardware abstraction
-int32_t pos = APP_GetAxisCurrentPosition(AXIS_X);
-APP_SetAxisCurrentPosition(AXIS_X, new_position);
+// Default settings (loaded by MotionMath_InitializeSettings)
+motion_settings.steps_per_mm[AXIS_X] = 250.0f;    // $100: Steps per mm
+motion_settings.max_rate[AXIS_X] = 5000.0f;       // $110: Max rate (mm/min)
+motion_settings.acceleration[AXIS_X] = 500.0f;    // $120: Acceleration (mm/sec²)
+motion_settings.max_travel[AXIS_X] = 300.0f;      // $130: Max travel (mm)
+motion_settings.junction_deviation = 0.01f;       // $11: Junction deviation
+motion_settings.jerk_limit = 5000.0f;             // Jerk limit (mm/sec³)
 
-// INCORRECT: Direct hardware access  
-cnc_axes[AXIS_X].current_position = new_position; // DON'T DO THIS
+// CORRECT: Use motion_math for conversions
+int32_t steps = MotionMath_MMToSteps(10.0f, AXIS_X);  // 10mm → 2500 steps
+float max_vel = MotionMath_GetMaxVelocityStepsPerSec(AXIS_X);  // 5000mm/min → steps/sec
+
+// INCORRECT: Don't hardcode motion parameters
+static float max_velocity = 5000.0f;  // ❌ Use motion_math instead!
 ```
 
 ### OCR Hardware Integration
@@ -277,17 +333,44 @@ High    Low   High   1/32 step
 - **Protection resistor**: 1.5kΩ in series allows safe connection to logic supply
 - Our system can monitor this pin for real-time error detection
 
-### GRBL Settings Pattern
-Full GRBL v1.1f compliance with UGS integration:
+### Time-Based Interpolation Architecture
+**CRITICAL**: This system uses **time-based velocity interpolation**, NOT Bresenham step counting!
 
 ```c
-// Standard GRBL settings ($100-$132):
-$100-$102 = Steps per mm (X,Y,Z)
-$110-$112 = Max rates (mm/min)  
-$120-$122 = Acceleration (mm/sec²)
-$130-$132 = Max travel (mm)
-$11 = Junction deviation
-$20/$21 = Soft/hard limits enable
+// How it works (TMR1 @ 1kHz):
+TMR1_MultiAxisControl() {
+    // Get per-axis motion limits from motion_math
+    float max_velocity = MotionMath_GetMaxVelocityStepsPerSec(axis);
+    float max_accel = MotionMath_GetAccelStepsPerSec2(axis);
+    float max_jerk = MotionMath_GetJerkStepsPerSec3(axis);
+    
+    // Update S-curve velocity profile every 1ms
+    velocity = calculate_scurve_velocity(time_elapsed, max_accel, max_jerk);
+    
+    // Convert velocity to OCR period for hardware pulse generation
+    OCR_period = 1MHz / velocity_steps_sec;
+    
+    // All axes finish at SAME TIME (coordinated via dominant axis)
+}
+```
+
+**Key Differences from Bresenham**:
+- ✅ **Velocity-driven**: OCR hardware generates pulses at calculated rates
+- ✅ **Time-synchronized**: All axes finish simultaneously (coordinated moves)
+- ✅ **Per-axis limits**: Z can have different acceleration than XY
+- ❌ **NOT step counting**: No error accumulation or step ratios
+
+### GRBL Settings Pattern
+Full GRBL v1.1f compliance (ready for G-code parser):
+
+```c
+// Standard GRBL settings ($100-$133):
+$100-$103 = Steps per mm (X,Y,Z,A)
+$110-$113 = Max rates (mm/min)  
+$120-$123 = Acceleration (mm/sec²)
+$130-$133 = Max travel (mm)
+$11 = Junction deviation (for look-ahead)
+$12 = Arc tolerance (for G2/G3)
 ```
 
 ### S-Curve Motion Profiles
@@ -348,120 +431,20 @@ APP_SetPickAndPlaceMode(true);   // Mask Z minimum limit
 APP_SetPickAndPlaceMode(false);  // Restore normal limits
 ```
 
-## Critical Bugs Fixed (October 2025)
-
-### Bug #1: Status Report Steps/mm Mismatch
-**Symptom**: Motion appeared to stop at 62.5% of target (e.g., 6.25mm instead of 10mm)  
-**Root Cause**: `gcode_helpers.c` used hardcoded 400 steps/mm for status conversion while motion execution used 250 steps/mm  
-**Fix**: Changed `GCodeHelpers_GetCurrentPositionFromSteps()` fallback from 400 to 250 steps/mm  
-**Impact**: Status reports now accurately reflect actual machine position
-
-### Bug #2: Missing Timer Restart
-**Symptom**: First move worked, second move failed (no motion, position stuck)  
-**Root Cause**: OCR callbacks stopped timers (TMR2/3/4) on completion, but motion execution didn't restart them  
-**Fix**: Added `TMR2_Start()`, `TMR3_Start()`, `TMR4_Start()` calls in `APP_ExecuteMotionBlock()` for each axis  
-**Impact**: Multi-move sequences now work correctly; timers restart for each new move
-
-### Bug #3: Missing Direction Pin Control
-**Symptom**: Reverse motion didn't execute (position stayed at target)  
-**Root Cause**: Direction GPIO pins (DirX/Y/Z) were never set by motion execution code  
-**Fix**: Added direction pin control before OCR enable:
-```c
-switch (axis) {
-    case 0: cnc_axes[0].direction_forward ? DirX_Set() : DirX_Clear(); break;
-    case 1: cnc_axes[1].direction_forward ? DirY_Set() : DirY_Clear(); break;
-    case 2: cnc_axes[2].direction_forward ? DirZ_Set() : DirZ_Clear(); break;
-}
-```
-**Impact**: Bidirectional motion now fully functional
-
-### Bug #4: Parser Position Updated Too Late
-**Symptom**: Multi-block sequences parsed with incorrect positions - UGS sends rapid bulk commands, all parsed before motion starts  
-**Root Cause**: `MotionGCodeParser_SetPosition()` called in motion completion handler (after block finishes), but next blocks already parsed with stale (0,0,0) position  
-**Fix**: Moved parser position update to immediately after `MotionBuffer_Add()` - each block uses correct expected end position:
-```c
-if (MotionBuffer_Add(&motion_block)) {
-    MotionGCodeParser_SetPosition(motion_block.target_pos[0], 
-                                  motion_block.target_pos[1], 
-                                  motion_block.target_pos[2]);
-}
-```
-**Impact**: Parser now maintains correct position state for rapid command sequences from UGS
-
-### Bug #5: State Machine Never Triggered
-**Symptom**: No `[PLANNING]` or `[EXEC]` debug messages, motion appeared to execute via different path  
-**Root Cause**: Adding blocks to buffer didn't trigger state machine transition - remained in IDLE/SERVICE_TASKS  
-**Fix**: Added explicit state transition when blocks added:
-```c
-if (appData.state == APP_STATE_MOTION_IDLE || 
-    appData.state == APP_STATE_MOTION_EXECUTING)
-{
-    appData.state = APP_STATE_MOTION_PLANNING;
-}
-```
-**Impact**: State machine now properly initiates motion execution sequence
-
-### Bug #6: Duplicate Execution Paths with Broken MM-to-Steps Conversion
-**Symptom**: X-axis moved only 0.58mm instead of 10mm (moved ~10 steps instead of 2500 steps)  
-**Root Cause**: TMR1 @ 1kHz was calling `MotionPlanner_ExecuteBlock()` → `APP_ExecuteMotionBlock()` which had catastrophic bug:
-```c
-// BROKEN CODE (old):
-int32_t target_pos = (int32_t)block->target_pos[i];  // MM cast to int: 10.000 → 10
-int32_t current_pos = APP_GetAxisCurrentPosition(i);  // STEPS: 0
-if (target_pos != current_pos)  // Compares 10 (MM) vs 0 (STEPS)!
-{
-    cnc_axes[i].target_position = target_pos;  // Sets target to 10 STEPS instead of 2500!
-}
-```
-**Fix**: Replaced entire `APP_ExecuteMotionBlock()` function to use working MM→steps conversion from `APP_ExecuteNextMotionBlock()`  
-**Impact**: X-axis (and all axes) now move correct distances with proper unit conversion
-
-### Bug #7: Dual Execution Paths Causing Simultaneous Axis Activation
-**Symptom**: Diagonal motion instead of sequential axis moves - XY moving together instead of X then Y  
-**Root Cause**: Two execution paths both pulling from same buffer:
-1. State machine (PLANNING state) → `APP_ExecuteNextMotionBlock()` 
-2. TMR1 @ 1kHz → `MotionPlanner_UpdateTrajectory()` → `MotionPlanner_ExecuteBlock()` → `APP_ExecuteMotionBlock()`
-
-Both paths active simultaneously caused all buffered blocks to execute at once, activating all axes before any completed.
-
-**Fix**: Disabled TMR1 execution path - made `APP_ExecuteMotionBlock()` a no-op:
-```c
-bool APP_ExecuteMotionBlock(motion_block_t *block)
-{
-    /* TMR1 execution path disabled - state machine has exclusive control */
-    return true;  // Keep motion planner happy
-}
-```
-**Impact**: Sequential axis motion restored - state machine has exclusive execution control, blocks execute one at a time
-
-### Bug #8: Interpolation Engine Auto-Advance Creating Vector Motion
-**Symptom**: Triangle/diagonal motion instead of square - blocks executing as coordinated multi-axis vector moves  
-**Root Cause**: Interpolation engine's `update_motion_state()` automatically started next block on completion:
-```c
-// OLD CODE - caused diagonal motion:
-if (!INTERP_PlannerIsBufferEmpty())
-{
-    INTERP_ExecuteMove(); // Start next block immediately!
-}
-```
-This created continuous vector motion (0,0)→(0,10)→(10,10) became a diagonal path because all blocks fed to interpolation engine at once, which calculated direct vector paths between points.
-
-**Fix**: Disabled auto-advance in interpolation engine, let state machine control block sequencing:
-```c
-// Block completed - let state machine handle next block
-if (interp_context.motion_complete_callback)
-{
-    interp_context.motion_complete_callback();
-}
-```
-**Impact**: Blocks now execute sequentially as independent moves, not as vectorized continuous path. State machine (APP_STATE_MOTION_EXECUTING) detects completion and transitions to PLANNING for next block.
-
 ## Integration Points
 
-### Universal G-code Sender (UGS)
-- **Protocol**: GRBL v1.1f compatible responses ("ok", "error", status reports)
-- **Real-time commands**: Feed hold (?), cycle start (~), reset (Ctrl-X)
-- **Arc support**: Native G2/G3 processing (no linearization required)
+### Hardware Testing Current Capabilities
+- **SW1 button**: Triggers X-axis single move (5000 steps forward)
+- **SW2 button**: Triggers coordinated 3-axis move (X=5000, Y=5000, Z=10000)
+- **LED1**: Heartbeat @ 1Hz when idle, solid during motion (driven by TMR1 callback)
+- **LED2**: Power-on indicator, toggles when axis processing occurs
+- **X-axis verified**: Oscilloscope confirms smooth S-curve velocity profiles
+- **Y/Z/A axes ready**: Hardware configured, awaiting physical wiring
+
+### Future Integration Points (To Be Re-implemented)
+- **Universal G-code Sender (UGS)**: GRBL v1.1f protocol compatibility
+- **Serial Protocol**: Real-time commands (feed hold, cycle start, reset)
+- **Arc Support**: Native G2/G3 processing (requires interpolation engine)
 
 ### Cross-Platform Build  
 - **Windows**: PowerShell-based testing, MPLAB X IDE v6.25
@@ -474,24 +457,110 @@ if (interp_context.motion_complete_callback)
 
 ## Common Tasks
 
+### Testing Current System
+1. **Flash firmware** to PIC32MZ board (`bins/CS23.hex`)
+2. **Press SW1** to trigger X-axis single move (5000 steps forward)
+3. **Press SW2** to trigger coordinated 3-axis move (X/Y/Z)
+4. **Observe LED1** for heartbeat (1Hz idle) or solid (motion active)
+5. **Observe LED2** for power-on and axis processing activity
+6. **Use oscilloscope** to verify S-curve velocity profiles on step/dir pins
+
 ### Adding New Motion Commands
-1. Call `MultiAxis_MoveSingleAxis()` for individual axis moves
-2. Call `MultiAxis_MoveCoordinated()` for synchronized multi-axis moves
-3. Monitor completion with `MultiAxis_IsBusy()` or per-axis `MultiAxis_IsAxisBusy()`
-4. Use hardware abstraction via `APP_GetAxisCurrentPosition()` / `APP_SetAxisCurrentPosition()`
+1. **For testing (steps-based)**:
+   ```c
+   MultiAxis_MoveSingleAxis(AXIS_X, 5000, true);  // 5000 steps forward
+   ```
+
+2. **For G-code (mm-based)** - when parser is added:
+   ```c
+   // Parse "G1 X10 F1500"
+   int32_t steps = MotionMath_MMToSteps(10.0f, AXIS_X);  // 10mm → 2500 steps
+   MultiAxis_MoveSingleAxis(AXIS_X, steps, true);
+   ```
+
+3. **Monitor completion**:
+   ```c
+   while (MultiAxis_IsBusy()) { }  // Wait for all axes
+   // or per-axis:
+   while (MultiAxis_IsAxisBusy(AXIS_X)) { }
+   ```
+
+4. **Edit button handlers** in `app.c` to test different patterns
 
 ### Debugging Motion Issues
-1. Use `motion_debug_analysis.ps1` for real-time monitoring
-2. Check OCR interrupt callbacks in `multiaxis_control.c` (OCMP4/1/5/3_StepCounter)
-3. Verify S-curve profile calculations with oscilloscope
+1. Check TMR1 @ 1kHz callback: `TMR1_MultiAxisControl()` in `multiaxis_control.c`
+2. Check OCR interrupt callbacks: `OCMP4_StepCounter_X()`, `OCMP1_StepCounter_Y()`, `OCMP5_StepCounter_Z()`
+3. Verify S-curve profile calculations with oscilloscope (expect symmetric velocity ramps)
 4. Monitor per-axis `active` flags and `step_count` values
-5. Check TMR1 @ 1kHz callback: `TMR1_MultiAxisControl()`
+5. Verify LED1 heartbeat confirms TMR1 is running @ 1Hz
 
 ### Hardware Testing
-1. **Always** test with limit switches connected
-2. Use conservative velocities for initial testing (max_velocity = 5000 steps/sec)
-3. Verify OCR period calculations with oscilloscope (expect symmetric S-curve)
-4. Test emergency stop functionality first
-5. Test single-axis moves before coordinated multi-axis moves
+1. **Always** use conservative velocities for initial testing (max_velocity = 5000 steps/sec)
+2. Verify OCR period calculations with oscilloscope (expect symmetric S-curve)
+3. Test emergency stop functionality first (`MultiAxis_StopAll()`)
+4. Test single-axis moves before coordinated multi-axis moves
+5. X-axis is proven working, Y/Z/A axes configured but not physically wired yet
+
+## Motion Math Integration (October 16, 2025)
+
+### Architecture Overview
+The motion system now uses a **two-layer architecture**:
+
+1. **Motion Math Layer** (`motion_math.c/h`):
+   - Centralized GRBL settings storage
+   - Unit conversions (mm ↔ steps, mm/min ↔ steps/sec)
+   - Look-ahead planning helpers (junction velocity, S-curve timing)
+   - Pure functions (no side effects, easy to test)
+
+2. **Motion Control Layer** (`multiaxis_control.c/h`):
+   - Time-based S-curve interpolation (7 segments)
+   - Per-axis state machines (TMR1 @ 1kHz)
+   - Hardware OCR pulse generation
+   - Gets motion limits from motion_math
+
+### Integration Points
+
+**Initialization**:
+```c
+void MultiAxis_Initialize(void) {
+    MotionMath_InitializeSettings();  // Load GRBL defaults
+    // ... register callbacks, start TMR1
+}
+```
+
+**Per-Axis Motion Limits**:
+```c
+// In calculate_scurve_profile() and TMR1_MultiAxisControl():
+float max_velocity = MotionMath_GetMaxVelocityStepsPerSec(axis);
+float max_accel = MotionMath_GetAccelStepsPerSec2(axis);
+float max_jerk = MotionMath_GetJerkStepsPerSec3(axis);
+```
+
+**Default Settings** (Conservative for Testing):
+```c
+Steps/mm:     250 (all axes) - GT2 belt with 1/16 microstepping
+Max Rate:     5000 mm/min (X/Y/A), 2000 mm/min (Z)
+Acceleration: 500 mm/sec² (X/Y/A), 200 mm/sec² (Z)
+Max Travel:   300mm (X/Y), 100mm (Z), 360° (A)
+Junction Dev: 0.01mm - Tight corners for accuracy
+Jerk Limit:   5000 mm/sec³ - Smooth S-curve transitions
+```
+
+### Benefits of This Architecture
+
+1. ✅ **Per-axis tuning**: Z can be slower/more precise than XY
+2. ✅ **GRBL compatibility**: Settings use standard $100-$133 format
+3. ✅ **Testability**: Motion math is pure functions (easy unit tests)
+4. ✅ **Separation of concerns**: Math library vs real-time control
+5. ✅ **Ready for G-code**: Conversion functions already in place
+6. ✅ **Look-ahead ready**: Junction velocity helpers for future planner
+
+### Critical Design Principles
+
+⚠️ **Time-based interpolation** - NOT Bresenham step counting  
+⚠️ **Hardware pulse generation** - OCR modules, no software step interrupts  
+⚠️ **Coordinated motion** - All axes synchronized to dominant axis TIME  
+⚠️ **Per-axis limits** - Each axis has independent velocity/accel/jerk  
+⚠️ **Centralized settings** - motion_math is single source of truth
 
 Remember: This is a **safety-critical real-time system**. Always validate motion commands and maintain proper error handling in interrupt contexts.
