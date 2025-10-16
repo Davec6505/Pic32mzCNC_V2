@@ -27,14 +27,20 @@
 #define PI 3.14159265359f
 #define EPSILON 1e-6f // Floating point comparison tolerance
 
-// OCR hardware constraints (PIC32MZ @ 1MHz timer clock)
-#define TMR_CLOCK_HZ 1000000UL // 1MHz = 1µs per tick
-#define OCR_MAX_PERIOD 65485   // 16-bit timer with safety margin
+// OCR hardware constraints (PIC32MZ timer configuration)
+// TMR_CLOCK_HZ defined in motion_types.h (12.5 MHz = 25 MHz ÷ 2 prescaler)
+#define OCR_MAX_PERIOD 65485 // 16-bit timer with safety margin
 
 // DRV8825 stepper driver constraints
-#define DRV8825_MAX_STEP_RATE_HZ 250000UL      // 250 kHz maximum step frequency
-#define DRV8825_MIN_PERIOD_US 4                // Minimum 4µs per step (1/250kHz = 4µs)
-#define OCR_MIN_PERIOD (DRV8825_MIN_PERIOD_US) // Timer counts @ 1MHz = 4 counts minimum
+// DRV8825 stepper driver constraints
+#define DRV8825_MAX_STEP_RATE_HZ 250000UL                                                // 250 kHz maximum step frequency
+#define DRV8825_MIN_PERIOD_US 4.0f                                                       // Minimum 4µs per step (1/250kHz = 4µs)
+#define OCR_MIN_PERIOD ((uint32_t)(DRV8825_MIN_PERIOD_US * (TMR_CLOCK_HZ / 1000000.0f))) // 50 counts @ 12.5MHz
+
+// Hardware configuration constants defined in motion_types.h (single source of truth):
+//   TMR_CLOCK_HZ, STEPPER_STEPS_PER_REV, MICROSTEPPING_MODE
+//   BELT_PITCH_MM, PULLEY_TEETH, SCREW_PITCH_MM
+//   STEPS_PER_MM_BELT, STEPS_PER_MM_LEADSCREW
 
 // *****************************************************************************
 // Global Settings Instance
@@ -94,14 +100,32 @@ void MotionMath_InitializeSettings(void)
 
 void MotionMath_LoadDefaultSettings(void)
 {
-    // $100-$103: Steps per mm (1.8° stepper, 1/16 microstepping, GT2 belt 20T pulley)
-    // Formula: (steps_per_rev * microsteps) / (pulley_teeth * belt_pitch_mm)
-    // = (200 * 16) / (20 * 2) = 80 steps/mm
-    // OR for leadscrew: (200 * 16) / 8mm_lead = 400 steps/mm
-    motion_settings.steps_per_mm[AXIS_X] = 250.0f; // Typical for GT2 belt
-    motion_settings.steps_per_mm[AXIS_Y] = 250.0f;
-    motion_settings.steps_per_mm[AXIS_Z] = 250.0f; // May need 400+ for leadscrew
-    motion_settings.steps_per_mm[AXIS_A] = 250.0f; // Rotary axis (steps/degree if configured)
+    // $100-$103: Steps per mm (calculated from hardware configuration)
+    //
+    // Current configuration:
+    //   1.8° stepper (200 steps/rev), 1/16 microstepping
+    //
+    //   Timing Belt (X/Y/A axes):
+    //     Formula: (steps_per_rev * microsteps) / (pulley_teeth * belt_pitch_mm)
+    //     Example with GT2 belt: (200 * 16) / (20 * 2) = 80 steps/mm
+    //     Example with GT3 belt: (200 * 16) / (20 * 3) = 53.3 steps/mm
+    //     Example with GT5 belt: (200 * 16) / (20 * 5) = 32 steps/mm
+    //
+    //   Leadscrew (Z axis):
+    //     Formula: (steps_per_rev * microsteps) / screw_pitch_mm
+    //     Example with 2.5mm pitch: (200 * 16) / 2.5 = 1280 steps/mm
+    //     Example with 5mm pitch:   (200 * 16) / 5.0 = 640 steps/mm
+    //     Example with 8mm pitch:   (200 * 16) / 8.0 = 400 steps/mm
+    //
+    // To change: Edit defines at top of file:
+    //   STEPPER_STEPS_PER_REV, MICROSTEPPING_MODE
+    //   BELT_PITCH_MM, PULLEY_TEETH (for belt drives)
+    //   SCREW_PITCH_MM (for leadscrew drives)
+
+    motion_settings.steps_per_mm[AXIS_X] = STEPS_PER_MM_BELT;      // Belt-driven (X axis)
+    motion_settings.steps_per_mm[AXIS_Y] = STEPS_PER_MM_BELT;      // Belt-driven (Y axis)
+    motion_settings.steps_per_mm[AXIS_Z] = STEPS_PER_MM_LEADSCREW; // Leadscrew-driven (Z axis)
+    motion_settings.steps_per_mm[AXIS_A] = STEPS_PER_MM_BELT;      // Belt-driven (A axis) or configure as steps/degree
 
     // $110-$113: Max rate (mm/min) - Balanced for smooth accurate motion
     motion_settings.max_rate[AXIS_X] = 1000.0f;

@@ -21,6 +21,58 @@
 #include <stdbool.h>
 
 //=============================================================================
+// HARDWARE CONFIGURATION CONSTANTS
+//=============================================================================
+
+/**
+ * @brief Timer clock frequency for OCR modules (TMR2/3/4/5)
+ *
+ * Configuration from MCC:
+ * - Peripheral clock: 25 MHz
+ * - Prescaler: 1:2
+ * - Effective frequency: 12.5 MHz (80ns per tick)
+ *
+ * This constant is used for calculating OCR periods for step pulse generation.
+ */
+#define TMR_CLOCK_HZ 12500000UL // 12.5 MHz (25 MHz ÷ 2 prescaler)
+
+/**
+ * @brief Stepper motor configuration
+ */
+#define STEPPER_STEPS_PER_REV 200.0f // 1.8° stepper = 200 steps/revolution (0.9° = 400)
+#define MICROSTEPPING_MODE 16.0f     // DRV8825 microstepping: 1, 2, 4, 8, 16, 32
+
+/**
+ * @brief Timing belt drive configuration
+ *
+ * Common belt types and pitches:
+ *   GT2: 2mm pitch (most common for 3D printers/CNC)
+ *   GT3: 3mm pitch (higher torque)
+ *   GT5: 5mm pitch (even higher torque)
+ *   HTD 3mm: 3mm pitch (High Torque Drive)
+ *   HTD 5mm: 5mm pitch (High Torque Drive)
+ */
+#define BELT_PITCH_MM 2.0f // Belt pitch in mm (2.0 for GT2, 3.0 for GT3, 5.0 for GT5/HTD5)
+#define PULLEY_TEETH 20.0f // Number of teeth on pulley (16, 20, 24, etc.)
+
+/**
+ * @brief Leadscrew/ballscrew configuration
+ *
+ * Common pitches: 2mm, 2.5mm, 5mm, 8mm
+ * Imperial: 0.5" (12.7mm), 0.25" (6.35mm)
+ */
+#define SCREW_PITCH_MM 2.5f // Leadscrew pitch in mm (distance per revolution)
+
+/**
+ * @brief Calculate steps per mm for different drive systems
+ *
+ * Belt drive: (steps_per_rev * microstepping) / (pulley_teeth * belt_pitch_mm)
+ * Leadscrew:  (steps_per_rev * microstepping) / screw_pitch_mm
+ */
+#define STEPS_PER_MM_BELT ((STEPPER_STEPS_PER_REV * MICROSTEPPING_MODE) / (PULLEY_TEETH * BELT_PITCH_MM))
+#define STEPS_PER_MM_LEADSCREW ((STEPPER_STEPS_PER_REV * MICROSTEPPING_MODE) / SCREW_PITCH_MM)
+
+//=============================================================================
 // AXIS DEFINITIONS
 //=============================================================================
 

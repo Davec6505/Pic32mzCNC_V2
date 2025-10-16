@@ -62,35 +62,35 @@
 // *****************************************************************************
 
 
-/*** Macros for EnZ pin ***/
-#define EnZ_Set()               (LATASET = (1U<<5))
-#define EnZ_Clear()             (LATACLR = (1U<<5))
-#define EnZ_Toggle()            (LATAINV= (1U<<5))
-#define EnZ_OutputEnable()      (TRISACLR = (1U<<5))
-#define EnZ_InputEnable()       (TRISASET = (1U<<5))
-#define EnZ_Get()               ((PORTA >> 5) & 0x1U)
-#define EnZ_GetLatch()          ((LATA >> 5) & 0x1U)
-#define EnZ_PIN                  GPIO_PIN_RA5
+/*** Macros for DirZ pin ***/
+#define DirZ_Set()               (LATGSET = (1U<<15))
+#define DirZ_Clear()             (LATGCLR = (1U<<15))
+#define DirZ_Toggle()            (LATGINV= (1U<<15))
+#define DirZ_OutputEnable()      (TRISGCLR = (1U<<15))
+#define DirZ_InputEnable()       (TRISGSET = (1U<<15))
+#define DirZ_Get()               ((PORTG >> 15) & 0x1U)
+#define DirZ_GetLatch()          ((LATG >> 15) & 0x1U)
+#define DirZ_PIN                  GPIO_PIN_RG15
 
-/*** Macros for EnY pin ***/
-#define EnY_Set()               (LATESET = (1U<<5))
-#define EnY_Clear()             (LATECLR = (1U<<5))
-#define EnY_Toggle()            (LATEINV= (1U<<5))
-#define EnY_OutputEnable()      (TRISECLR = (1U<<5))
-#define EnY_InputEnable()       (TRISESET = (1U<<5))
-#define EnY_Get()               ((PORTE >> 5) & 0x1U)
-#define EnY_GetLatch()          ((LATE >> 5) & 0x1U)
-#define EnY_PIN                  GPIO_PIN_RE5
+/*** Macros for EnA pin ***/
+#define EnA_Set()               (LATASET = (1U<<5))
+#define EnA_Clear()             (LATACLR = (1U<<5))
+#define EnA_Toggle()            (LATAINV= (1U<<5))
+#define EnA_OutputEnable()      (TRISACLR = (1U<<5))
+#define EnA_InputEnable()       (TRISASET = (1U<<5))
+#define EnA_Get()               ((PORTA >> 5) & 0x1U)
+#define EnA_GetLatch()          ((LATA >> 5) & 0x1U)
+#define EnA_PIN                  GPIO_PIN_RA5
 
-/*** Macros for EnX pin ***/
-#define EnX_Set()               (LATESET = (1U<<6))
-#define EnX_Clear()             (LATECLR = (1U<<6))
-#define EnX_Toggle()            (LATEINV= (1U<<6))
-#define EnX_OutputEnable()      (TRISECLR = (1U<<6))
-#define EnX_InputEnable()       (TRISESET = (1U<<6))
-#define EnX_Get()               ((PORTE >> 6) & 0x1U)
-#define EnX_GetLatch()          ((LATE >> 6) & 0x1U)
-#define EnX_PIN                  GPIO_PIN_RE6
+/*** Macros for DirA pin ***/
+#define DirA_Set()               (LATESET = (1U<<5))
+#define DirA_Clear()             (LATECLR = (1U<<5))
+#define DirA_Toggle()            (LATEINV= (1U<<5))
+#define DirA_OutputEnable()      (TRISECLR = (1U<<5))
+#define DirA_InputEnable()       (TRISESET = (1U<<5))
+#define DirA_Get()               ((PORTE >> 5) & 0x1U)
+#define DirA_GetLatch()          ((LATE >> 5) & 0x1U)
+#define DirA_PIN                  GPIO_PIN_RE5
 
 /*** Macros for LED1 pin ***/
 #define LED1_Set()               (LATESET = (1U<<7))
@@ -112,15 +112,15 @@
 #define SW1_GetLatch()          ((LATC >> 3) & 0x1U)
 #define SW1_PIN                  GPIO_PIN_RC3
 
-/*** Macros for DirZ pin ***/
-#define DirZ_Set()               (LATGSET = (1U<<9))
-#define DirZ_Clear()             (LATGCLR = (1U<<9))
-#define DirZ_Toggle()            (LATGINV= (1U<<9))
-#define DirZ_OutputEnable()      (TRISGCLR = (1U<<9))
-#define DirZ_InputEnable()       (TRISGSET = (1U<<9))
-#define DirZ_Get()               ((PORTG >> 9) & 0x1U)
-#define DirZ_GetLatch()          ((LATG >> 9) & 0x1U)
-#define DirZ_PIN                  GPIO_PIN_RG9
+/*** Macros for EnY pin ***/
+#define EnY_Set()               (LATGSET = (1U<<9))
+#define EnY_Clear()             (LATGCLR = (1U<<9))
+#define EnY_Toggle()            (LATGINV= (1U<<9))
+#define EnY_OutputEnable()      (TRISGCLR = (1U<<9))
+#define EnY_InputEnable()       (TRISGSET = (1U<<9))
+#define EnY_Get()               ((PORTG >> 9) & 0x1U)
+#define EnY_GetLatch()          ((LATG >> 9) & 0x1U)
+#define EnY_PIN                  GPIO_PIN_RG9
 
 /*** Macros for LIMIT_A_PIN pin ***/
 #define LIMIT_A_PIN_Set()               (LATBSET = (1U<<1))
@@ -202,6 +202,26 @@
 #define PulseA_GetLatch()          ((LATF >> 1) & 0x1U)
 #define PulseA_PIN                  GPIO_PIN_RF1
 
+/*** Macros for EnX pin ***/
+#define EnX_Set()               (LATGSET = (1U<<14))
+#define EnX_Clear()             (LATGCLR = (1U<<14))
+#define EnX_Toggle()            (LATGINV= (1U<<14))
+#define EnX_OutputEnable()      (TRISGCLR = (1U<<14))
+#define EnX_InputEnable()       (TRISGSET = (1U<<14))
+#define EnX_Get()               ((PORTG >> 14) & 0x1U)
+#define EnX_GetLatch()          ((LATG >> 14) & 0x1U)
+#define EnX_PIN                  GPIO_PIN_RG14
+
+/*** Macros for DirX pin ***/
+#define DirX_Set()               (LATGSET = (1U<<12))
+#define DirX_Clear()             (LATGCLR = (1U<<12))
+#define DirX_Toggle()            (LATGINV= (1U<<12))
+#define DirX_OutputEnable()      (TRISGCLR = (1U<<12))
+#define DirX_InputEnable()       (TRISGSET = (1U<<12))
+#define DirX_Get()               ((PORTG >> 12) & 0x1U)
+#define DirX_GetLatch()          ((LATG >> 12) & 0x1U)
+#define DirX_PIN                  GPIO_PIN_RG12
+
 /*** Macros for DirY pin ***/
 #define DirY_Set()               (LATESET = (1U<<2))
 #define DirY_Clear()             (LATECLR = (1U<<2))
@@ -212,15 +232,15 @@
 #define DirY_GetLatch()          ((LATE >> 2) & 0x1U)
 #define DirY_PIN                  GPIO_PIN_RE2
 
-/*** Macros for DirX pin ***/
-#define DirX_Set()               (LATESET = (1U<<4))
-#define DirX_Clear()             (LATECLR = (1U<<4))
-#define DirX_Toggle()            (LATEINV= (1U<<4))
-#define DirX_OutputEnable()      (TRISECLR = (1U<<4))
-#define DirX_InputEnable()       (TRISESET = (1U<<4))
-#define DirX_Get()               ((PORTE >> 4) & 0x1U)
-#define DirX_GetLatch()          ((LATE >> 4) & 0x1U)
-#define DirX_PIN                  GPIO_PIN_RE4
+/*** Macros for EnZ pin ***/
+#define EnZ_Set()               (LATESET = (1U<<4))
+#define EnZ_Clear()             (LATECLR = (1U<<4))
+#define EnZ_Toggle()            (LATEINV= (1U<<4))
+#define EnZ_OutputEnable()      (TRISECLR = (1U<<4))
+#define EnZ_InputEnable()       (TRISESET = (1U<<4))
+#define EnZ_Get()               ((PORTE >> 4) & 0x1U)
+#define EnZ_GetLatch()          ((LATE >> 4) & 0x1U)
+#define EnZ_PIN                  GPIO_PIN_RE4
 
 
 // *****************************************************************************

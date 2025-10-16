@@ -1,7 +1,7 @@
 #ifndef _MULTIAXIS_CONTROL_H
 #define _MULTIAXIS_CONTROL_H
 
-#include "motion_types.h"  // Centralized type definitions
+#include "motion_types.h" // Centralized type definitions
 
 // *****************************************************************************
 // Public Multi-Axis API
@@ -37,6 +37,30 @@ void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward);
  *    MultiAxis_MoveCoordinated(move);
  */
 void MultiAxis_MoveCoordinated(int32_t steps[NUM_AXES]);
+
+/*! \brief Execute time-synchronized coordinated move
+ *
+ *  Proper coordinated motion where the dominant axis (longest distance)
+ *  determines the total move time, and all other axes scale their velocities
+ *  proportionally to finish simultaneously. This ensures accurate multi-axis
+ *  motion with correct distances traveled.
+ *
+ *  \param steps Array of steps for each axis [X, Y, Z, A]
+ *               Positive = forward, Negative = reverse, 0 = no motion
+ *
+ *  Algorithm:
+ *    1. Find dominant axis (max absolute steps)
+ *    2. Calculate S-curve profile for dominant axis → determines total_time
+ *    3. Scale velocities: v_axis = (distance_axis / total_time)
+ *    4. All axes share same segment times (t1-t7) but scaled velocities
+ *    5. Result: All axes finish simultaneously with correct distances
+ *
+ *  Example:
+ *    int32_t move[4] = {4000, 2000, 0, 0};  // X=50mm, Y=25mm (80 steps/mm)
+ *    MultiAxis_ExecuteCoordinatedMove(move);
+ *    // X is dominant, takes 3.0s. Y uses 0.5x velocity, also finishes at 3.0s
+ */
+void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES]);
 
 /*! \brief Check if any axis is moving
  *

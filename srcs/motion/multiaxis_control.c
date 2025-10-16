@@ -45,6 +45,8 @@ STATIC_ASSERT(NUM_AXES == 4, num_axes_must_be_four);
 // Hardware Configuration
 // *****************************************************************************/
 
+// Timer clock frequency defined in motion_types.h (12.5 MHz = 25 MHz ÷ 2 prescaler)
+
 // OCR/Timer assignments per PIC32MZ hardware
 typedef struct
 {
@@ -733,7 +735,9 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
         // Update OCR hardware for this axis (only if still active)
         if (s->active && s->current_velocity > 1.0f)
         {
-            uint32_t period = (uint32_t)(1000000.0f / s->current_velocity);
+            // Calculate OCR period: Timer_Clock / steps_per_sec
+            // Example @ 25MHz: 25000000 / 1000 steps/sec = 25000 counts
+            uint32_t period = (uint32_t)((float)TMR_CLOCK_HZ / s->current_velocity);
 
             if (period > 65485)
                 period = 65485;

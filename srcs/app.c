@@ -80,8 +80,8 @@ void APP_Tasks(void)
                 // Create coordinated move array (X, Y, Z, A)
                 int32_t steps[NUM_AXES] = {steps_x, steps_y, 0, 0};
 
-                // Move both X and Y axes forward 50mm (coordinated)
-                MultiAxis_MoveCoordinated(steps);
+                // Move both X and Y axes forward 50mm (time-synchronized coordinated motion)
+                MultiAxis_ExecuteCoordinatedMove(steps);
             }
         }
         sw1_was_pressed = sw1_pressed;
@@ -102,8 +102,8 @@ void APP_Tasks(void)
                 // Create coordinated move array (negative for reverse)
                 int32_t steps[NUM_AXES] = {-steps_x, -steps_y, 0, 0};
 
-                // Move both X and Y axes reverse 50mm to return to start position
-                MultiAxis_MoveCoordinated(steps);
+                // Move both X and Y axes reverse 50mm (time-synchronized coordinated motion)
+                MultiAxis_ExecuteCoordinatedMove(steps);
             }
         }
         sw2_was_pressed = sw2_pressed;
