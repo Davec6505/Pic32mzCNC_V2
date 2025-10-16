@@ -1,22 +1,7 @@
 #ifndef _MULTIAXIS_CONTROL_H
 #define _MULTIAXIS_CONTROL_H
 
-#include <stdint.h>
-#include <stdbool.h>
-
-// *****************************************************************************
-// Multi-Axis Constants
-// *****************************************************************************
-
-#define NUM_AXES 4 // X, Y, Z ,A
-
-typedef enum
-{
-    AXIS_X = 0,
-    AXIS_Y = 1,
-    AXIS_Z = 2,
-    AXIS_A = 3
-} axis_id_t;
+#include "motion_types.h"  // Centralized type definitions
 
 // *****************************************************************************
 // Public Multi-Axis API
