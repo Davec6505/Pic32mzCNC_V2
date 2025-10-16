@@ -107,10 +107,170 @@ static const axis_hardware_t axis_hw[NUM_AXES] = {
         .TMR_Stop = TMR5_Stop,
         .TMR_PeriodSet = TMR5_PeriodSet}};
 
-// *****************************************************************************
-// Direction Control (Dynamic Function Pointer Lookup)
+// ******************************************************************************
+// Drive Control Pin Macros (Dynamic Function Pointer Lookup)
 // *****************************************************************************/
+// Wrapper functions for direction pin macros (macros can't be used as function pointers)
+static inline void enx_set_wrapper(void) { EnX_Set(); }
+static inline void enx_clear_wrapper(void) { EnX_Clear(); }
+static inline bool enx_get_wrapper(void) { return EnX_Get(); }
+static inline void eny_set_wrapper(void) { EnY_Set(); }
+static inline void eny_clear_wrapper(void) { EnY_Clear(); }
+static inline bool eny_get_wrapper(void) { return EnY_Get(); }
+static inline void enz_set_wrapper(void) { EnZ_Set(); }
+static inline void enz_clear_wrapper(void) { EnZ_Clear(); }
+static inline bool enz_get_wrapper(void) { return EnZ_Get(); }
+#ifdef ENABLE_AXIS_A
+static inline void ena_set_wrapper(void) { EnA_Set(); }
+static inline void ena_clear_wrapper(void) { EnA_Clear(); }
+static inline bool ena_get_wrapper(void) { return EnA_Get(); }
+#endif
 
+static void (*const en_set_funcs[NUM_AXES])(void) = {
+    enx_set_wrapper, // AXIS_X
+    eny_set_wrapper, // AXIS_Y
+    enz_set_wrapper, // AXIS_Z
+#ifdef ENABLE_AXIS_A
+    ena_set_wrapper, // AXIS_A
+#endif
+};
+
+static void (*const en_clear_funcs[NUM_AXES])(void) = {
+    enx_clear_wrapper, // AXIS_X
+    eny_clear_wrapper, // AXIS_Y
+    enz_clear_wrapper, // AXIS_Z
+#ifdef ENABLE_AXIS_A
+    ena_clear_wrapper, // AXIS_A
+#endif
+};
+
+static bool (*const en_get_funcs[NUM_AXES])(void) = {
+    enx_get_wrapper, // AXIS_X
+    eny_get_wrapper, // AXIS_Y
+    enz_get_wrapper, // AXIS_Z
+#ifdef ENABLE_AXIS_A
+    ena_get_wrapper, // AXIS_A
+#endif
+};
+
+// *****************************************************************************
+// Driver Enable State Tracking
+// *****************************************************************************
+static volatile bool driver_enabled[NUM_AXES] = {false, false, false, false};
+
+/*! \brief Enable stepper driver for specified axis using dynamic lookup
+ *
+ *  DRV8825 ENABLE pin is ACTIVE LOW:
+ *    - LOW = Driver enabled (motor powered, torque applied)
+ *    - HIGH = Driver disabled (motor unpowered, high-Z state)
+ *
+ *  This function makes the ENABLE pin LOW to activate the driver.
+ *
+ *  \param axis Axis identifier (AXIS_X, AXIS_Y, AXIS_Z, AXIS_A)
+ *
+ *  MISRA Rule 17.4: Bounds checking before array access
+ *  MISRA Rule 1.3: Validate function pointer before call
+ */
+void MultiAxis_EnableDriver(axis_id_t axis)
+{
+    assert(axis < NUM_AXES); // Development-time check
+
+    if (axis >= NUM_AXES || en_clear_funcs[axis] == NULL)
+    {
+        return; // Production safety check
+    }
+
+    if (!driver_enabled[axis]) // Only enable if currently disabled
+    {
+        en_clear_funcs[axis](); // ACTIVE LOW: Clear = Enable (pin goes LOW)
+        driver_enabled[axis] = true;
+    }
+}
+
+/*! \brief Disable stepper driver for specified axis using dynamic lookup
+ *
+ *  DRV8825 ENABLE pin is ACTIVE LOW:
+ *    - LOW = Driver enabled (motor powered, torque applied)
+ *    - HIGH = Driver disabled (motor unpowered, high-Z state)
+ *
+ *  This function makes the ENABLE pin HIGH to deactivate the driver.
+ *
+ *  \param axis Axis identifier (AXIS_X, AXIS_Y, AXIS_Z, AXIS_A)
+ *
+ *  MISRA Rule 17.4: Bounds checking before array access
+ *  MISRA Rule 1.3: Validate function pointer before call
+ */
+void MultiAxis_DisableDriver(axis_id_t axis)
+{
+    assert(axis < NUM_AXES);
+
+    if (axis >= NUM_AXES || en_set_funcs[axis] == NULL)
+    {
+        return;
+    }
+
+    if (driver_enabled[axis]) // Only disable if currently enabled
+    {
+        en_set_funcs[axis](); // ACTIVE LOW: Set = Disable (pin goes HIGH)
+        driver_enabled[axis] = false;
+    }
+}
+
+/*! \brief Check if stepper driver is enabled for specified axis
+ *
+ *  Returns the software-tracked enable state (fast, no GPIO read).
+ *
+ *  \param axis Axis identifier (AXIS_X, AXIS_Y, AXIS_Z, AXIS_A)
+ *  \return true if driver is enabled, false if disabled (LOGICAL STATE)
+ *
+ *  MISRA Rule 17.4: Bounds checking before array access
+ */
+bool MultiAxis_IsDriverEnabled(axis_id_t axis)
+{
+    assert(axis < NUM_AXES);
+
+    if (axis >= NUM_AXES)
+        return false;
+
+    return driver_enabled[axis];
+}
+
+/*! \brief Read enable pin GPIO state for specified axis
+ *
+ *  Reads the actual hardware pin state (for debugging/verification).
+ *
+ *  ⚠️ Returns RAW electrical state, not logical enabled/disabled!
+ *  DRV8825 ENABLE is ACTIVE LOW:
+ *    - Returns false (LOW) when driver is ENABLED  ✅
+ *    - Returns true (HIGH) when driver is DISABLED ❌
+ *
+ *  For logical state, use MultiAxis_IsDriverEnabled() instead.
+ *
+ *  \param axis Axis identifier (AXIS_X, AXIS_Y, AXIS_Z, AXIS_A)
+ *  \return Raw GPIO pin state (true = HIGH, false = LOW)
+ *
+ *  MISRA Rule 17.4: Bounds checking before array access
+ *  MISRA Rule 1.3: Validate function pointer before call
+ */
+
+bool MultiAxis_ReadEnablePin(axis_id_t axis)
+{
+    // Defensive programming: validate parameters
+    assert(axis < NUM_AXES);            // Development-time check
+    assert(en_get_funcs[axis] != NULL); // Verify function pointer valid
+
+    if ((axis < NUM_AXES) && (en_get_funcs[axis] != NULL))
+    {
+        return en_get_funcs[axis]();
+    }
+
+    return false; // Default return value
+}
+
+// *****************************************************************************
+// Direction pin control Pin Macros (Dynamic Function Pointer Lookup)
+// *****************************************************************************/
+// *****************************************************************************/
 // Wrapper functions for direction pin macros (macros can't be used as function pointers)
 static inline void dirx_set_wrapper(void) { DirX_Set(); }
 static inline void dirx_clear_wrapper(void) { DirX_Clear(); }
@@ -128,18 +288,18 @@ static void (*const dir_set_funcs[NUM_AXES])(void) = {
     dirx_set_wrapper, // AXIS_X
     diry_set_wrapper, // AXIS_Y
     dirz_set_wrapper, // AXIS_Z
-    #ifdef ENABLE_AXIS_A
-    dira_set_wrapper,  // AXIS_A
-    #endif
+#ifdef ENABLE_AXIS_A
+    dira_set_wrapper, // AXIS_A
+#endif
 };
 
 static void (*const dir_clear_funcs[NUM_AXES])(void) = {
     dirx_clear_wrapper, // AXIS_X
     diry_clear_wrapper, // AXIS_Y
     dirz_clear_wrapper, // AXIS_Z
-    #ifdef ENABLE_AXIS_A
-    dira_clear_wrapper,  // AXIS_A  
-    #endif
+#ifdef ENABLE_AXIS_A
+    dira_clear_wrapper, // AXIS_A
+#endif
 };
 
 /*! \brief Set direction for specified axis using dynamic lookup
@@ -244,11 +404,12 @@ typedef struct
 
 } scurve_state_t;
 
-static scurve_state_t axis_state[NUM_AXES];
+// Per-axis state (accessed from main code AND TMR1 interrupt @ 1kHz)
+static volatile scurve_state_t axis_state[NUM_AXES];
 
 // *****************************************************************************
 // Math Helpers
-// *****************************************************************************/
+// *****************************************************************************
 
 static float cbrt_approx(float x)
 {
@@ -274,7 +435,7 @@ static float cbrt_approx(float x)
 
 static bool calculate_scurve_profile(axis_id_t axis, uint32_t distance)
 {
-    scurve_state_t *s = &axis_state[axis];
+    volatile scurve_state_t *s = &axis_state[axis];
     float d_total = (float)distance;
 
     float t_jerk = max_accel / max_jerk;
@@ -406,13 +567,12 @@ static void OCMP5_StepCounter_Z(uintptr_t context)
     axis_state[AXIS_Z].step_count++;
 }
 
-#ifdef ENABLE_AXIS_A    
+#ifdef ENABLE_AXIS_A
 static void OCMP3_StepCounter_A(uintptr_t context)
 {
     axis_state[AXIS_A].step_count++;
 }
 #endif
-
 
 // *****************************************************************************
 // TMR1 @ 1kHz - Multi-Axis S-CURVE STATE MACHINE
@@ -431,7 +591,7 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
     // Update all active axes
     for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
     {
-        scurve_state_t *s = &axis_state[axis];
+        volatile scurve_state_t *s = &axis_state[axis];
 
         if (!s->active || s->current_segment == SEGMENT_IDLE)
             continue;
@@ -595,6 +755,9 @@ void MultiAxis_Initialize(void)
         axis_state[axis].current_segment = SEGMENT_IDLE;
         axis_state[axis].step_count = 0;
         axis_state[axis].active = false;
+
+        // Disable all drivers on startup (safe default)
+        MultiAxis_DisableDriver(axis);
     }
 
     // Register OCR callbacks
@@ -630,7 +793,7 @@ void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward)
         return; // Defensive: reject invalid axis
     }
 
-    scurve_state_t *s = &axis_state[axis];
+    volatile scurve_state_t *s = &axis_state[axis];
 
     assert(s != NULL); // Verify pointer validity
 
@@ -644,6 +807,9 @@ void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward)
     // Ensure hardware is stopped before restarting
     axis_hw[axis].OCMP_Disable();
     axis_hw[axis].TMR_Stop();
+
+    // Enable driver before motion (DRV8825 active-low enable)
+    MultiAxis_EnableDriver(axis);
 
     // Calculate S-curve profile
     calculate_scurve_profile(axis, abs_steps);
@@ -753,6 +919,7 @@ bool MultiAxis_IsAxisBusy(axis_id_t axis)
 /*! \brief Emergency stop all axes
  *
  *  Immediately halts all motion and disables OCR hardware.
+ *  Also disables all stepper drivers for safety.
  *  Safe to call at any time, including from interrupt context.
  */
 void MultiAxis_StopAll(void)
@@ -765,7 +932,13 @@ void MultiAxis_StopAll(void)
         axis_hw[axis].TMR_Stop();
         axis_state[axis].current_segment = SEGMENT_COMPLETE;
         axis_state[axis].active = false;
+
+        // Disable driver for safety (DRV8825 high-Z state)
+        MultiAxis_DisableDriver(axis);
     }
+
+    LED1_Clear();
+    LED2_Clear();
     // No global motion_running flag - each axis manages its own state
 }
 
@@ -850,7 +1023,7 @@ bool MultiAxis_CalculateCoordinatedMove(int32_t steps[NUM_AXES])
 
     // Step 2: Calculate S-curve profile for dominant axis
     // This determines the total move time and segment times (t1-t7)
-    scurve_state_t *dominant_state = &axis_state[dominant];
+    volatile scurve_state_t *dominant_state = &axis_state[dominant];
 
     if (!calculate_scurve_profile(dominant, max_steps))
     {
@@ -911,7 +1084,7 @@ void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES])
     }
 
     // Get dominant axis profile (this determines timing for all axes)
-    scurve_state_t *dominant = &axis_state[coord_move.dominant_axis];
+    volatile scurve_state_t *dominant = &axis_state[coord_move.dominant_axis];
 
     // Start all axes with synchronized profiles
     for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
@@ -921,7 +1094,7 @@ void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES])
             continue; // Skip axes with no motion
         }
 
-        scurve_state_t *s = &axis_state[axis];
+        volatile scurve_state_t *s = &axis_state[axis];
 
         // Copy segment times from dominant axis (ALL axes use same timing)
         s->t1_jerk_accel = dominant->t1_jerk_accel;

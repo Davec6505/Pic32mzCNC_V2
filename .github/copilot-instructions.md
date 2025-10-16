@@ -1,34 +1,56 @@
 # PIC32MZ CNC Motion Controller V2 - AI Coding Guide
 
+## ⚠️ CURRENT BRANCH: hardware-test (Multi-Axis S-Curve Development)
+
+**Status**: Multi-axis S-curve control WORKING ✅ (October 2025)
+- Per-axis independent state management implemented
+- X-axis tested and verified with oscilloscope
+- Y/Z/A axes ready (hardware not yet wired)
+
+**TODO - NEXT PRIORITY**: 
+🎯 **Implement coordinated circular interpolation (G2/G3 arc motion)**
+- Decision needed: Vector-based interpolation method for multi-axis arcs
+- Options to evaluate:
+  1. Time-based velocity scaling (all axes synchronized to dominant axis timing)
+  2. Chord-based linearization with coordinated S-curve segments
+  3. Native parametric arc with synchronized angular velocity
+- Consider: Hardware OCR generates linear step pulses, arc must be synthesized via coordinated velocity profiles
+- Goal: Smooth circular motion with proper feedrate control and S-curve acceleration/deceleration
+
 ## Architecture Overview
 
-This is a **modular embedded CNC controller** for the PIC32MZ2048EFH100 microcontroller implementing GRBL v1.1f protocol with advanced S-curve motion profiles. The system was recently refactored (2024) from a monolithic to a clean modular architecture.
+This is a **modular embedded CNC controller** for the PIC32MZ2048EFH100 microcontroller with **hardware-accelerated multi-axis S-curve motion profiles**. The system uses independent OCR (Output Compare) modules for pulse generation, eliminating the need for GRBL's traditional 30kHz step interrupt.
 
-### Core Architecture Pattern
+### Core Architecture Pattern (Current - October 2025)
 ```
-TMR1 (1kHz) → MotionPlanner_UpdateTrajectory() 
+TMR1 (1kHz) → Multi-Axis S-Curve State Machine
            ↓
-      Motion Planner (motion_planner.c)
-      ├── Motion Buffer (motion_buffer.c) - 16-cmd circular buffer
-      ├── G-code Parser (motion_gcode_parser.c) - G0/G1/G2/G3 parsing  
-      └── Hardware Layer (app.c) - OCR interrupts & GPIO
+      Per-Axis Control (multiaxis_control.c)
+      ├── Independent S-Curve Profiles (7 segments: jerk-limited)
+      ├── Hardware Pulse Generation (OCMP1/3/4/5 + TMR2/3/4/5)
+      ├── Dynamic Direction Control (function pointer tables)
+      └── Step Counter Callbacks (OCR interrupts)
+           ↓
+      Hardware Layer (PIC32MZ OCR Modules)
+      └── Dual-Compare PWM Mode (40-count pulse width for DRV8825)
 ```
 
 ### Critical Data Flow
-- **Real-time control**: 1kHz TMR1 timer drives `MotionPlanner_UpdateTrajectory()`
-- **Step generation**: OCRx hardware modules (OCMP1/3/4/5) with period calculations
-- **Position feedback**: OCR interrupt callbacks update position via `MotionPlanner_UpdateAxisPosition()`
-- **Safety**: Hard limits via GPIO interrupts, soft limits via pre-move validation
+- **Real-time control**: TMR1 @ 1kHz updates S-curve velocities for ALL active axes
+- **Step generation**: Independent OCR hardware modules (OCMP1/3/4/5) generate pulses
+- **Position feedback**: OCR callbacks increment `step_count` (volatile, per-axis)
+- **Synchronization**: All axes share segment timing from dominant axis (for coordinated moves)
+- **Safety**: Per-axis active flags, step count validation, velocity clamping
 
 ## Key Files & Responsibilities
 
 | File | Purpose | Critical Patterns |
 |------|---------|------------------|
 | `srcs/main.c` | Entry point, TMR1 callback setup | Always call `APP_Initialize()` before `TMR1_Start()` |
-| `srcs/app.c` | Hardware abstraction, OCR/GPIO management | Use getter/setter pattern for hardware access |
-| `srcs/motion_planner.c` | Real-time trajectory calculation | S-curve profiles, 1kHz update frequency via TMR1 |
-| `srcs/motion_buffer.c` | 16-block look-ahead buffer | Thread-safe circular buffer operations |
-| `srcs/motion_gcode_parser.c` | G-code command parsing | Parse G0/G1/G2/G3 into `motion_block_t` |
+| `srcs/app.c` | Button-based testing, initialization | Simple test interface: SW1/SW2 trigger single-axis moves |
+| `srcs/motion/multiaxis_control.c` | **Multi-axis S-curve engine** | 773 lines: Per-axis state, hardware abstraction, MISRA compliance |
+| `incs/motion/multiaxis_control.h` | **Multi-axis API** | 88 lines: 4-axis support (X/Y/Z/A), dynamic direction control |
+| `srcs/motion/stepper_control.c` | **Legacy single-axis reference** | PROVEN baseline implementation (kept for reference) |
 | `incs/app.h` | Main system interface | Extensive getter/setter API documentation |
 
 ## Development Workflow
@@ -68,18 +90,23 @@ The project uses **PowerShell scripts for hardware-in-the-loop testing**:
 ## Code Patterns & Conventions
 
 ### Modular API Design
-**NEW (2024)**: Clean module boundaries with encapsulated state:
+**Current (October 2025)**: Per-axis control with hardware abstraction:
 
 ```c
-// Motion Buffer API - Thread-safe circular buffer
-bool MotionBuffer_Add(motion_block_t *block);
-motion_block_t *MotionBuffer_GetNext(void);
-void MotionBuffer_Complete(void);
+// Multi-Axis Control API - Independent per-axis S-curve profiles
+void MultiAxis_Initialize(void);
+void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward);
+void MultiAxis_MoveCoordinated(int32_t steps[NUM_AXES]);
+bool MultiAxis_IsBusy(void);  // Checks all axes independently
+void MultiAxis_EmergencyStop(void);
 
-// Motion Planner API - Real-time control
-void MotionPlanner_UpdateTrajectory(void);  // Called at 1kHz
-uint32_t MotionPlanner_CalculateOCRPeriod(float velocity_mm_min);
-void MotionPlanner_UpdateAxisPosition(uint8_t axis, int32_t position);
+// Dynamic direction control (function pointer tables)
+void MultiAxis_SetDirection(axis_id_t axis);
+void MultiAxis_ClearDirection(axis_id_t axis);
+
+// Per-axis state query
+bool MultiAxis_IsAxisBusy(axis_id_t axis);
+int32_t MultiAxis_GetStepCount(axis_id_t axis);
 ```
 
 ### Hardware Abstraction Pattern
@@ -448,21 +475,23 @@ if (interp_context.motion_complete_callback)
 ## Common Tasks
 
 ### Adding New Motion Commands
-1. Parse in `motion_gcode_parser.c` → create `motion_block_t`
-2. Add to buffer via `MotionBuffer_Add()`  
-3. Process in `MotionPlanner_ProcessBuffer()`
-4. Execute via `MotionPlanner_ExecuteBlock()`
+1. Call `MultiAxis_MoveSingleAxis()` for individual axis moves
+2. Call `MultiAxis_MoveCoordinated()` for synchronized multi-axis moves
+3. Monitor completion with `MultiAxis_IsBusy()` or per-axis `MultiAxis_IsAxisBusy()`
+4. Use hardware abstraction via `APP_GetAxisCurrentPosition()` / `APP_SetAxisCurrentPosition()`
 
 ### Debugging Motion Issues
 1. Use `motion_debug_analysis.ps1` for real-time monitoring
-2. Check OCR interrupt callbacks in `app.c`
-3. Verify motion buffer status with `MotionBuffer_GetStatus()`
-4. Monitor S-curve profile calculations
+2. Check OCR interrupt callbacks in `multiaxis_control.c` (OCMP4/1/5/3_StepCounter)
+3. Verify S-curve profile calculations with oscilloscope
+4. Monitor per-axis `active` flags and `step_count` values
+5. Check TMR1 @ 1kHz callback: `TMR1_MultiAxisControl()`
 
 ### Hardware Testing
 1. **Always** test with limit switches connected
-2. Use conservative velocities for initial testing (`DEFAULT_MAX_VELOCITY = 50.0f`)  
-3. Verify OCR period calculations with oscilloscope
+2. Use conservative velocities for initial testing (max_velocity = 5000 steps/sec)
+3. Verify OCR period calculations with oscilloscope (expect symmetric S-curve)
 4. Test emergency stop functionality first
+5. Test single-axis moves before coordinated multi-axis moves
 
 Remember: This is a **safety-critical real-time system**. Always validate motion commands and maintain proper error handling in interrupt contexts.
