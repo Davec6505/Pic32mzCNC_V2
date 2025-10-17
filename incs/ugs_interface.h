@@ -262,6 +262,45 @@ extern "C"
      */
     void UGS_SendHelp(void);
 
+    /**
+     * @brief Send build info to UGS (response to "$I" command)
+     *
+     * Format: "[VER:1.1f.20251017:]\r\n[OPT:]\r\n"
+     *
+     * GRBL v1.1f requires this for UGS version detection.
+     * UGS sends "$I" on connection to identify firmware.
+     *
+     * Example output:
+     *   [VER:1.1f.20251017:]
+     *   [OPT:V,15,128]
+     *   ok
+     *
+     * Where:
+     *   VER = GRBL version and build date
+     *   OPT = Compile-time options (V=variable spindle, 15=buffer blocks, 128=buffer size)
+     */
+    void UGS_SendBuildInfo(void);
+
+    /**
+     * @brief Send parser state (response to "$G" command)
+     *
+     * Format: "[GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0 S0]\r\n"
+     *
+     * Shows current modal state for all modal groups.
+     * Uses GCode_GetModalState() to query parser state.
+     */
+    void UGS_SendParserState(void);
+
+    /**
+     * @brief Send startup line (response to "$N" commands)
+     *
+     * Format: "$N=G-code line\r\n"
+     * Where N is 0 or 1 (two startup lines supported in GRBL)
+     *
+     * @param line_number Startup line number (0 or 1)
+     */
+    void UGS_SendStartupLine(uint8_t line_number);
+
     //=============================================================================
     // INPUT (RX Buffer Read)
     //=============================================================================

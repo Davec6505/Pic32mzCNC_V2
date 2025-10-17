@@ -255,6 +255,54 @@ void UGS_SendHelp(void)
     (void)UGS_Print("[HLP:$C - Check G-code mode]\r\n");
 }
 
+/**
+ * @brief Send GRBL build info (response to "$I" command)
+ *
+ * Format: "[VER:1.1f.20251017:]\r\n[OPT:V,15,128]\r\n"
+ *
+ * CRITICAL: UGS uses this to detect GRBL version!
+ * Without this response, UGS connection fails.
+ */
+void UGS_SendBuildInfo(void)
+{
+    /* Version string: GRBL 1.1f with build date */
+    (void)UGS_Print("[VER:1.1f.20251017:PIC32MZ CNC V2]\r\n");
+
+    /* Options string:
+     * V = Variable spindle enabled
+     * 16 = Motion buffer size (blocks)
+     * 256 = Serial RX buffer size (bytes)
+     */
+    (void)UGS_Print("[OPT:V,16,256]\r\n");
+}
+
+/**
+ * @brief Send parser state (response to "$G" command)
+ *
+ * Format: "[GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0 S0]\r\n"
+ *
+ * Shows current modal state for all modal groups.
+ */
+void UGS_SendParserState(void)
+{
+    /* TODO: Query actual modal state from gcode_parser
+     * For now, send safe defaults */
+    (void)UGS_Print("[GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F0 S0]\r\n");
+}
+
+/**
+ * @brief Send startup line (response to "$N" commands)
+ *
+ * Format: "$N=\r\n" (empty by default)
+ *
+ * @param line_number Startup line number (0 or 1)
+ */
+void UGS_SendStartupLine(uint8_t line_number)
+{
+    /* Startup lines not implemented - send empty */
+    (void)UGS_Printf("$N%u=\r\n", line_number);
+}
+
 //=============================================================================
 // INPUT FUNCTIONS (RX Ring Buffer)
 //=============================================================================

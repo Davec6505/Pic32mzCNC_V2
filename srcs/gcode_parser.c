@@ -117,9 +117,49 @@ static void handle_control_char(char c)
     switch (c)
     {
     case GCODE_CTRL_STATUS_REPORT:
-        /* Send status report immediately - use dummy positions for now */
-        UGS_SendStatusReport("Idle", 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
-        break;
+    {
+        /* Read current step counts from motion controller */
+        int32_t steps_x = (int32_t)MultiAxis_GetStepCount(AXIS_X);
+        int32_t steps_y = (int32_t)MultiAxis_GetStepCount(AXIS_Y);
+        int32_t steps_z = (int32_t)MultiAxis_GetStepCount(AXIS_Z);
+#if (NUM_AXES > 3)
+        int32_t steps_a = (int32_t)MultiAxis_GetStepCount(AXIS_A);
+#endif
+
+        /* Convert steps to millimeters using motion_math */
+        float mpos_x = MotionMath_StepsToMM(steps_x, AXIS_X);
+        float mpos_y = MotionMath_StepsToMM(steps_y, AXIS_Y);
+        float mpos_z = MotionMath_StepsToMM(steps_z, AXIS_Z);
+#if (NUM_AXES > 3)
+        /* A-axis position available but not reported in standard GRBL status */
+        (void)steps_a; /* Suppress unused warning - kept for future 4-axis status */
+#endif
+
+        /* Calculate work position (machine position - G54 offset)
+         * For now, use same as machine position (G54 offset = 0) */
+        float wpos_x = mpos_x;
+        float wpos_y = mpos_y;
+        float wpos_z = mpos_z;
+
+        /* Determine machine state */
+        const char *state;
+        if (MultiAxis_IsBusy())
+        {
+            state = "Run"; /* Motion in progress */
+        }
+        else if (MotionBuffer_HasData())
+        {
+            state = "Run"; /* Buffer has moves pending */
+        }
+        else
+        {
+            state = "Idle"; /* Nothing moving, nothing queued */
+        }
+
+        /* Send status report to UGS */
+        UGS_SendStatusReport(state, mpos_x, mpos_y, mpos_z, wpos_x, wpos_y, wpos_z);
+    }
+    break;
 
     case GCODE_CTRL_FEED_HOLD:
         /* Pause motion buffer */
