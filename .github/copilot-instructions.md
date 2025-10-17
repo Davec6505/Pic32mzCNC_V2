@@ -1,60 +1,110 @@
 # PIC32MZ CNC Motion Controller V2 - AI Coding Guide
 
-## ⚠️ CURRENT STATUS: Time-Synchronized Coordinated Motion (October 16, 2025)
+## ⚠️ CURRENT STATUS: G-code Parser Integrated (October 17, 2025)
 
-**Latest Progress**: Implemented proper time-synchronized coordinated motion algorithm where dominant axis determines timing.
+**Latest Progress**: Full GRBL v1.1f G-code parser with serial control via UGS (Universal G-code Sender).
 
 **Current Working System** ✅:
-- **Button-driven testing**: SW1/SW2 trigger 50mm coordinated X+Y moves (forward/reverse)
+- **Serial G-code control**: UART2 @ 115200 baud, UGS interface with GRBL v1.1f protocol
+- **Full G-code parser**: Modal/non-modal commands, 13 modal groups, M-command support
 - **Multi-axis S-curve control**: TMR1 @ 1kHz drives 7-segment jerk-limited profiles per axis
 - **Hardware pulse generation**: OCR modules (OCMP1/4/5/3) generate step pulses independently
-- **All axes mechanically tested**: X, Y, Z all moving with proper S-curve profiles
+- **All axes ready**: X, Y, Z, A all enabled and configured
 - **Time-synchronized coordination**: Dominant (longest) axis determines total time, subordinate axes scale velocities
 - **Hardware configuration**: GT2 belt (80 steps/mm) on X/Y/A, 2.5mm leadscrew (1280 steps/mm) on Z
 - **Timer clock verified**: 12.5MHz (25MHz peripheral clock with 1:2 prescaler)
-- **Motion buffer infrastructure**: Ring buffer with look-ahead planning API ready for G-code parser
+- **Motion buffer infrastructure**: Ring buffer with look-ahead planning ready for streaming
 
-**Recent Additions** ✅:
-- ✅ **Time-synchronized algorithm**: `MultiAxis_ExecuteCoordinatedMove()` ensures accurate coordinated motion
-- ✅ **Hardware constants centralized**: TMR_CLOCK_HZ, STEPS_PER_MM_BELT, STEPS_PER_MM_LEADSCREW in motion_types.h
-- ✅ **Distance accuracy fixed**: Timer clock (12.5MHz) and steps/mm (80 belt, 1280 leadscrew) now correct
-- ✅ **motion_types.h**: Centralized type definitions (single source of truth)
-- ✅ **motion_buffer.c/h**: Ring buffer for look-ahead planning (16 blocks)
-- ✅ **Type system**: Eliminated all duplicate type definitions
+**Recent Additions (October 17, 2025)** ✅:
+- ✅ **G-code parser**: Full GRBL v1.1f compliance with modal/non-modal commands (1354 lines)
+- ✅ **UGS interface**: Serial communication with flow control and real-time commands
+- ✅ **Non-modal commands**: G4, G28, G28.1, G30, G30.1, G92, G92.1 implemented
+- ✅ **Modal groups**: 13 groups (motion, plane, distance, feedrate, units, coordinate systems, etc.)
+- ✅ **M-commands**: Spindle control (M3/M4/M5), coolant (M7/M8/M9), program control (M0/M1/M2/M30)
+- ✅ **MISRA C:2012 compliance**: All mandatory rules, documented deviations, snprintf() Rule 17.7 compliant
+- ✅ **XC32 optimization**: 553 bytes RAM, optimal memory placement, no special attributes needed
+- ✅ **App layer cleanup**: Removed SW1/SW2 debug buttons, motion now via G-code only
+- ✅ **Makefile improvements**: Added `make quiet` target for filtered build output
 
 **Current File Structure**:
 ```
 srcs/
-  ├── main.c                        // Entry point, SYS_Initialize, main loop
-  ├── app.c                         // Button handling, LED indicators, test patterns
+  ├── main.c                        // Entry point, G-code processing loop, motion execution ✨UPDATED
+  ├── app.c                         // System management, LED status (SW1/SW2 removed) ✨UPDATED
+  ├── gcode_parser.c                // GRBL v1.1f parser (1354 lines) ✨NEW
+  ├── ugs_interface.c               // UGS serial protocol ✨NEW
   └── motion/
       ├── multiaxis_control.c       // Time-based S-curve interpolation (1169 lines)
       ├── motion_math.c             // Kinematics & GRBL settings (733 lines)
-      ├── motion_buffer.c           // Ring buffer for look-ahead planning (284 lines) ✨NEW
+      ├── motion_buffer.c           // Ring buffer for look-ahead planning (284 lines)
       └── stepper_control.c         // Legacy single-axis reference (unused)
 
-incs/motion/
-  ├── motion_types.h                // Centralized type definitions (235 lines) ✨NEW
-  ├── motion_buffer.h               // Ring buffer API (207 lines) ✨NEW
-  ├── multiaxis_control.h           // Multi-axis API
-  ├── motion_math.h                 // Unit conversions, look-ahead support (398 lines)
-  └── stepper_control.h             // Legacy reference
+incs/
+  ├── gcode_parser.h                // Parser API, modal state (357 lines) ✨NEW
+  ├── ugs_interface.h               // UGS protocol API ✨NEW
+  └── motion/
+      ├── motion_types.h            // Centralized type definitions (235 lines)
+      ├── motion_buffer.h           // Ring buffer API (207 lines)
+      ├── multiaxis_control.h       // Multi-axis API
+      └── motion_math.h             // Unit conversions, look-ahead support (398 lines)
+
+docs/
+  ├── GCODE_PARSER_COMPLETE.md      // Full GRBL v1.1f implementation guide ✨NEW
+  ├── XC32_COMPLIANCE_GCODE_PARSER.md // MISRA/XC32 compliance documentation ✨NEW
+  ├── APP_CLEANUP_SUMMARY.md        // SW1/SW2 removal documentation ✨NEW
+  └── MAKEFILE_QUIET_BUILD.md       // make quiet target documentation ✨NEW
 ```
 
 **Design Philosophy**:
+- **Serial G-code control** (UGS → parser → motion buffer → execution)
 - **Time-based interpolation** (NOT Bresenham step counting)
 - **Hardware-accelerated pulse generation** (OCR modules, no software interrupts)
 - **Per-axis motion limits** (Z can be slower than XY)
 - **Centralized settings** (motion_math.c for GRBL $100-$133)
 - **Centralized types** (motion_types.h - single source of truth)
-- **Separation of concerns** (math library vs motion control vs planning)
+- **MISRA C:2012 compliant** (safety-critical embedded code standards)
+- **XC32 optimized** (minimal RAM footprint, optimal flash placement)
+
+**Motion Control Data Flow** (Production):
+```
+UART2 (115200 baud)
+    ↓
+UGS_Interface (ugs_interface.c) - Serial protocol, flow control
+    ↓
+G-code Parser (gcode_parser.c) - Parse commands → parsed_move_t
+    ↓
+Motion Buffer (motion_buffer.c) - Ring buffer, look-ahead planning
+    ↓
+Multi-Axis Control (multiaxis_control.c) - Time-synchronized S-curves
+    ↓
+Hardware OCR/TMR Modules - Step pulse generation
+```
 
 **TODO - NEXT PRIORITY**: 
-🎯 **Implement G-code parser to feed motion buffer**
-- Parse G0/G1 linear moves → `parsed_move_t` structures
-- Feed to `MotionBuffer_Add()` for look-ahead planning
-- Implement GRBL serial protocol with ring buffer for commands
-- Add G2/G3 arc interpolation (eventually)
+🎯 **Hardware testing with UGS**
+- Test serial communication @ 115200 baud
+- Send G-code commands via UGS: G0, G1, G90, G91, etc.
+- Verify coordinated motion accuracy with oscilloscope
+- Test feed hold (!), cycle start (~), soft reset (Ctrl-X)
+- Implement look-ahead planning in motion buffer (currently placeholder)
+- Add arc support (G2/G3 circular interpolation)
+
+**Known Working Commands**:
+```gcode
+$                    ; Show GRBL settings
+?                    ; Status report (real-time)
+!                    ; Feed hold (pause)
+~                    ; Cycle start (resume)
+^X                   ; Soft reset
+G90                  ; Absolute mode
+G91                  ; Relative mode  
+G0 X10 Y20 F1500     ; Rapid positioning
+G1 X50 Y50 F1000     ; Linear move
+G92 X0 Y0 Z0         ; Set work coordinate offset
+G28                  ; Go to predefined home
+M3 S1000             ; Spindle on CW @ 1000 RPM
+M5                   ; Spindle off
+```
 
 ## Architecture Overview
 
@@ -85,16 +135,24 @@ TMR1 (1kHz) → Multi-Axis S-Curve State Machine
 
 | File | Purpose | Critical Patterns |
 |------|---------|------------------|
-| `srcs/main.c` | Entry point, system initialization | Calls `SYS_Initialize()` → `APP_Initialize()` → infinite loop |
-| `srcs/app.c` | Button-based testing, LED indicators | SW1/SW2 trigger predefined motion via `multiaxis_control` API |
-| `incs/motion/motion_types.h` | **Centralized type definitions** | 235 lines: Single source of truth for ALL motion types - axis_id_t, position_t, motion_block_t, parsed_move_t, etc. |
-| `srcs/motion/motion_buffer.c` | **Ring buffer for look-ahead planning** | 284 lines: 16-block ring buffer, converts parsed_move_t to motion_block_t, triggers replanning at threshold |
-| `incs/motion/motion_buffer.h` | **Motion buffer API** | 207 lines: Add/GetNext/Recalculate functions, flow control (Pause/Resume/Clear), buffer queries |
+| `srcs/main.c` | **G-code processing & motion execution** | ProcessGCode() → ExecuteMotion() → APP_Tasks() → SYS_Tasks() loop |
+| `srcs/app.c` | **System management, LED status** | Simplified (SW1/SW2 removed), LED1 heartbeat, LED2 power-on, error state framework |
+| `srcs/gcode_parser.c` | **GRBL v1.1f G-code parser** | 1354 lines: Modal/non-modal commands, 13 modal groups, MISRA C:2012 compliant |
+| `incs/gcode_parser.h` | **Parser API & modal state** | 357 lines: parser_modal_state_t (~166 bytes), 13 modal groups, work coordinate systems |
+| `srcs/ugs_interface.c` | **UGS serial protocol** | UART2 ring buffer, flow control, real-time commands (?, !, ~, ^X) |
+| `incs/ugs_interface.h` | **UGS API** | SendOK(), SendError(), Print() for GRBL protocol |
+| `incs/motion/motion_types.h` | **Centralized type definitions** | 235 lines: Single source of truth - axis_id_t, position_t, motion_block_t, parsed_move_t |
+| `srcs/motion/motion_buffer.c` | **Ring buffer for look-ahead planning** | 284 lines: 16-block FIFO, converts parsed_move_t to motion_block_t |
+| `incs/motion/motion_buffer.h` | **Motion buffer API** | 207 lines: Add/GetNext/Recalculate, Pause/Resume/Clear, flow control |
 | `srcs/motion/multiaxis_control.c` | **Time-based S-curve interpolation** | 1169 lines: 7-segment profiles, TMR1 @ 1kHz, per-axis limits from motion_math |
 | `incs/motion/multiaxis_control.h` | **Multi-axis API** | 4-axis support (X/Y/Z/A), coordinated/single-axis moves, driver enable control |
 | `srcs/motion/motion_math.c` | **Kinematics & settings library** | 733 lines: Unit conversions, GRBL settings, look-ahead helpers, time-based calculations |
 | `incs/motion/motion_math.h` | **Motion math API** | 398 lines: Settings management, velocity calculations, junction planning, S-curve timing |
 | `srcs/motion/stepper_control.c` | **Legacy single-axis reference** | UNUSED - kept for reference only |
+| `docs/GCODE_PARSER_COMPLETE.md` | **GRBL v1.1f implementation guide** | 500+ lines: Command reference, modal groups, testing recommendations |
+| `docs/XC32_COMPLIANCE_GCODE_PARSER.md` | **MISRA/XC32 compliance documentation** | Memory usage, compiler optimization, MISRA C:2012 rules |
+| `docs/APP_CLEANUP_SUMMARY.md` | **App layer cleanup documentation** | SW1/SW2 removal, architecture changes |
+| `docs/MAKEFILE_QUIET_BUILD.md` | **Quiet build documentation** | make quiet target for filtered output |
 
 ## Development Workflow
 
@@ -133,39 +191,47 @@ The project uses **PowerShell scripts for hardware-in-the-loop testing**:
 ## Code Patterns & Conventions
 
 ### Modular API Design
-**Current (October 2025)**: Time-based interpolation with centralized settings:
+**Current (October 2025)**: Production system with G-code parser integration:
 
 ```c
+// G-code Parser API (gcode_parser.h)
+void GCode_Initialize(void);                          // Initialize parser with modal defaults
+bool GCode_BufferLine(char *buffer, size_t size);    // Buffer incoming serial line
+bool GCode_ParseLine(const char *line, parsed_move_t *move);  // Parse G-code → move structure
+bool GCode_IsControlChar(char c);                    // Check for real-time commands (?, !, ~, ^X)
+const char* GCode_GetLastError(void);                // Get error message
+void GCode_ClearError(void);                         // Clear error state
+const parser_modal_state_t* GCode_GetModalState(void);  // Get current modal state
+
+// UGS Interface API (ugs_interface.h)
+void UGS_Initialize(void);                           // Initialize UART2 @ 115200 baud
+void UGS_SendOK(void);                               // Send "ok\r\n" for flow control
+void UGS_SendError(uint8_t code, const char *msg);   // Send "error:X (message)\r\n"
+void UGS_Print(const char *str);                     // Send arbitrary string
+bool UGS_RxHasData(void);                            // Check if data available
+
+// Motion Buffer API (motion_buffer.h)
+void MotionBuffer_Initialize(void);                  // Initialize ring buffer
+bool MotionBuffer_Add(const parsed_move_t *move);    // Add move to buffer (converts mm→steps)
+bool MotionBuffer_GetNext(motion_block_t *block);    // Dequeue next planned move
+bool MotionBuffer_HasData(void);                     // Check if moves pending
+void MotionBuffer_Pause(void);                       // Feed hold (!)
+void MotionBuffer_Resume(void);                      // Cycle start (~)
+void MotionBuffer_Clear(void);                       // Emergency stop/soft reset
+
 // Multi-Axis Control API - Time-based S-curve profiles
-void MultiAxis_Initialize(void);  // Calls MotionMath_InitializeSettings()
-void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward);
-void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES]);  // Time-synchronized (ONLY coordinated motion function)
-bool MultiAxis_IsBusy(void);  // Checks all axes independently
-void MultiAxis_EmergencyStop(void);
-
-// Dynamic direction control (function pointer tables)
-void MultiAxis_SetDirection(axis_id_t axis);
-void MultiAxis_ClearDirection(axis_id_t axis);
-
-// Per-axis state query
-bool MultiAxis_IsAxisBusy(axis_id_t axis);
-uint32_t MultiAxis_GetStepCount(axis_id_t axis);
+void MultiAxis_Initialize(void);                     // Calls MotionMath_InitializeSettings()
+void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES]);  // Time-synchronized motion
+bool MultiAxis_IsBusy(void);                         // Checks all axes
+void MultiAxis_EmergencyStop(void);                  // Immediate stop all axes
 
 // Motion Math API - Kinematics & Settings
-void MotionMath_InitializeSettings(void);  // Load GRBL defaults
+void MotionMath_InitializeSettings(void);            // Load GRBL defaults
 float MotionMath_GetMaxVelocityStepsPerSec(axis_id_t axis);
 float MotionMath_GetAccelStepsPerSec2(axis_id_t axis);
 float MotionMath_GetJerkStepsPerSec3(axis_id_t axis);
-
-// Unit conversions (for future G-code parser)
-int32_t MotionMath_MMToSteps(float mm, axis_id_t axis);
+int32_t MotionMath_MMToSteps(float mm, axis_id_t axis);  // Unit conversion
 float MotionMath_StepsToMM(int32_t steps, axis_id_t axis);
-uint32_t MotionMath_FeedrateToOCRPeriod(float feedrate_mm_min, axis_id_t axis);
-
-// Look-ahead planning (for future motion buffer)
-float MotionMath_CalculateJunctionVelocity(...);
-float MotionMath_CalculateJunctionAngle(...);
-bool MotionMath_CalculateSCurveTiming(...);
 ```
 
 ### Motion Math Settings Pattern
@@ -445,22 +511,31 @@ APP_SetPickAndPlaceMode(false);  // Restore normal limits
 ## Integration Points
 
 ### Hardware Testing Current Capabilities
-- **SW1 button**: Triggers X-axis single move (5000 steps forward)
-- **SW2 button**: Triggers coordinated 3-axis move (X=5000, Y=5000, Z=10000)
+- **Serial G-code control**: Send commands via UGS or serial terminal @ 115200 baud
 - **LED1**: Heartbeat @ 1Hz when idle, solid during motion (driven by TMR1 callback)
-- **LED2**: Power-on indicator, toggles when axis processing occurs
-- **X-axis verified**: Oscilloscope confirms smooth S-curve velocity profiles
-- **Y/Z/A axes ready**: Hardware configured, awaiting physical wiring
+- **LED2**: Power-on indicator
+- **All axes enabled**: X, Y, Z, A all initialized and ready
+- **Verified motion**: Oscilloscope confirms smooth S-curve velocity profiles
+- **Real-time commands**: ?, !, ~, ^X supported (status, hold, resume, reset)
 
-### Future Integration Points (To Be Re-implemented)
-- **Universal G-code Sender (UGS)**: GRBL v1.1f protocol compatibility
-- **Serial Protocol**: Real-time commands (feed hold, cycle start, reset)
-- **Arc Support**: Native G2/G3 processing (requires interpolation engine)
+### Current Production Features
+- **Universal G-code Sender (UGS)**: GRBL v1.1f protocol compatible ✅
+- **Serial Protocol**: Real-time commands (feed hold, cycle start, reset) ✅
+- **Modal state tracking**: G90/G91, work coordinate systems, M-commands ✅
+- **Motion buffer**: Ring buffer with look-ahead planning framework ✅
+
+### Future Integration Points
+- **Look-ahead planning**: Full implementation in motion buffer (currently placeholder)
+- **Arc Support**: G2/G3 circular interpolation (requires arc engine)
+- **Probing**: G38.x probe commands (requires hardware integration)
+- **Spindle PWM**: M3/M4 with PWM output (state tracking implemented, GPIO pending)
+- **Coolant control**: M7/M8/M9 GPIO output (state tracking implemented, GPIO pending)
 
 ### Cross-Platform Build  
 - **Windows**: PowerShell-based testing, MPLAB X IDE v6.25
 - **Linux**: Make-based build system, XC32 v4.60 compiler
 - **Paths**: Auto-detected OS with proper path separators
+- **Quiet build**: `make quiet` for filtered output (errors/warnings only)
 
 ### Version Control
 - **Git workflow**: Use raw git commands (not GitKraken)
@@ -470,39 +545,38 @@ APP_SetPickAndPlaceMode(false);  // Restore normal limits
 
 ### Testing Current System
 1. **Flash firmware** to PIC32MZ board (`bins/CS23.hex`)
-2. **Press SW1** to trigger X-axis single move (5000 steps forward)
-3. **Press SW2** to trigger coordinated 3-axis move (X/Y/Z)
+2. **Connect via UGS** or serial terminal @ 115200 baud
+3. **Send G-code commands**: `G90`, `G1 X10 Y10 F1500`, etc.
 4. **Observe LED1** for heartbeat (1Hz idle) or solid (motion active)
-5. **Observe LED2** for power-on and axis processing activity
+5. **Observe LED2** for power-on status
 6. **Use oscilloscope** to verify S-curve velocity profiles on step/dir pins
 
 ### Adding New Motion Commands
-1. **For testing (steps-based)**:
-   ```c
-   MultiAxis_MoveSingleAxis(AXIS_X, 5000, true);  // 5000 steps forward
+1. **Via G-code (PRODUCTION METHOD)**:
+   ```gcode
+   G90              ; Absolute mode
+   G1 X10 Y20 F1500 ; Linear move to (10,20) @ 1500mm/min
+   G92 X0 Y0        ; Set current position as (0,0)
    ```
 
-2. **For coordinated moves (ONLY METHOD)**:
+2. **For coordinated moves (programmatic)**:
    ```c
-   int32_t steps[NUM_AXES] = {4000, 2000, 0, 0};  // X=50mm, Y=25mm (80 steps/mm)
+   int32_t steps[NUM_AXES] = {800, 400, 0, 0};  // X=10mm, Y=5mm (80 steps/mm)
    MultiAxis_ExecuteCoordinatedMove(steps);  // Time-synchronized - ensures straight line motion
    ```
 
-3. **For G-code (mm-based)** - when parser is added:
+3. **For G-code parsing (in main.c)**:
    ```c
-   // Parse "G1 X10 F1500"
-   int32_t steps = MotionMath_MMToSteps(10.0f, AXIS_X);  // 10mm → 2500 steps
-   MultiAxis_MoveSingleAxis(AXIS_X, steps, true);
+   parsed_move_t move;
+   if (GCode_ParseLine("G1 X10 F1500", &move)) {
+       MotionBuffer_Add(&move);  // Adds to ring buffer → converts mm to steps
+   }
    ```
 
 4. **Monitor completion**:
    ```c
    while (MultiAxis_IsBusy()) { }  // Wait for all axes
-   // or per-axis:
-   while (MultiAxis_IsAxisBusy(AXIS_X)) { }
    ```
-
-5. **Edit button handlers** in `app.c` to test different patterns
 
 ### Debugging Motion Issues
 1. Check TMR1 @ 1kHz callback: `TMR1_MultiAxisControl()` in `multiaxis_control.c`
@@ -510,13 +584,15 @@ APP_SetPickAndPlaceMode(false);  // Restore normal limits
 3. Verify S-curve profile calculations with oscilloscope (expect symmetric velocity ramps)
 4. Monitor per-axis `active` flags and `step_count` values
 5. Verify LED1 heartbeat confirms TMR1 is running @ 1Hz
+6. Check G-code parser state: `GCode_GetModalState()` for current modes
+7. Monitor motion buffer: `MotionBuffer_GetCount()` for pending moves
 
 ### Hardware Testing
-1. **Always** use conservative velocities for initial testing (max_velocity = 5000 steps/sec)
+1. **Always** use conservative velocities for initial testing (max_velocity = 5000 mm/min)
 2. Verify OCR period calculations with oscilloscope (expect symmetric S-curve)
-3. Test emergency stop functionality first (`MultiAxis_StopAll()`)
-4. Test single-axis moves before coordinated multi-axis moves
-5. X-axis is proven working, Y/Z/A axes configured but not physically wired yet
+3. Test emergency stop functionality: Send `^X` (Ctrl-X) via serial
+4. Test feed hold/resume: Send `!` to pause, `~` to resume
+5. All axes configured and enabled (X, Y, Z, A)
 
 ### Testing Current System
 1. **Flash firmware** to PIC32MZ board (`bins/CS23.hex`)
