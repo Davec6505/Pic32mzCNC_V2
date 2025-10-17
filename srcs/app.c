@@ -1,20 +1,19 @@
 /*******************************************************************************
-  Application Layer - Multi-Axis Hardware Test with Button Control
+  Application Layer - CNC Controller System Management
 
   Responsibilities:
-  - Button debouncing and detection (SW1/SW2)
   - LED indicators (power-on, heartbeat)
-  - Calls into multiaxis_control for coordinated motion
-  - Main application state machine
+  - System status monitoring
+  - Application state machine
 
-  Test patterns:
-  - SW1: Move X and Y axes +50mm forward (coordinated move)
-  - SW2: Move X and Y axes -50mm reverse (return to start)
+  Notes:
+  - Motion control is now driven by G-code parser via serial (see main.c)
+  - LED1 heartbeat is handled by TMR1 interrupt @ 1Hz (in multiaxis_control.c)
+  - LED2 power-on indicator
 *******************************************************************************/
 
 #include "app.h"
 #include "multiaxis_control.h"
-#include "motion_math.h" // For MotionMath_MMToSteps()
 #include "definitions.h"
 #include <stdbool.h>
 
@@ -23,10 +22,6 @@
 // *****************************************************************************
 
 APP_DATA appData;
-
-// Button debouncing
-static bool sw1_was_pressed = false;
-static bool sw2_was_pressed = false;
 
 // *****************************************************************************
 // Initialization
@@ -39,9 +34,11 @@ void APP_Initialize(void)
     // Initialize multi-axis stepper control subsystem
     MultiAxis_Initialize();
 
-    // Enable X and Y axis stepper drivers (DRV8825 ENABLE pin active LOW)
+    // Enable all axis stepper drivers (DRV8825 ENABLE pin active LOW)
     MultiAxis_EnableDriver(AXIS_X);
     MultiAxis_EnableDriver(AXIS_Y);
+    MultiAxis_EnableDriver(AXIS_Z);
+    MultiAxis_EnableDriver(AXIS_A);
 
     // Power-on indicator
     LED2_Set();
@@ -64,55 +61,23 @@ void APP_Tasks(void)
 
     case APP_STATE_SERVICE_TASKS:
     {
-        // Check SW1 (move X and Y axes +50mm forward) - active LOW
-        bool sw1_pressed = !SW1_Get();
-        if (sw1_pressed && !sw1_was_pressed)
-        {
-            LED2_Toggle(); // DEBUG: Show SW1 button press detected
-            if (!MultiAxis_IsBusy())
-            {
-                LED2_Toggle(); // DEBUG: Show we're starting motion
-
-                // Convert 50mm to steps for both axes (250 steps/mm = 12,500 steps)
-                int32_t steps_x = MotionMath_MMToSteps(50.0f, AXIS_X);
-                int32_t steps_y = MotionMath_MMToSteps(50.0f, AXIS_Y);
-
-                // Create coordinated move array (X, Y, Z, A)
-                int32_t steps[NUM_AXES] = {steps_x, steps_y, 0, 0};
-
-                // Move both X and Y axes forward 50mm (time-synchronized coordinated motion)
-                MultiAxis_ExecuteCoordinatedMove(steps);
-            }
-        }
-        sw1_was_pressed = sw1_pressed;
-
-        // Check SW2 (move X and Y axes -50mm reverse) - active LOW
-        bool sw2_pressed = !SW2_Get();
-        if (sw2_pressed && !sw2_was_pressed)
-        {
-            LED2_Toggle(); // DEBUG: Show SW2 button press detected
-            if (!MultiAxis_IsBusy())
-            {
-                LED2_Toggle(); // DEBUG: Show we're starting motion
-
-                // Convert 50mm to steps for both axes (250 steps/mm = 12,500 steps)
-                int32_t steps_x = MotionMath_MMToSteps(50.0f, AXIS_X);
-                int32_t steps_y = MotionMath_MMToSteps(50.0f, AXIS_Y);
-
-                // Create coordinated move array (negative for reverse)
-                int32_t steps[NUM_AXES] = {-steps_x, -steps_y, 0, 0};
-
-                // Move both X and Y axes reverse 50mm (time-synchronized coordinated motion)
-                MultiAxis_ExecuteCoordinatedMove(steps);
-            }
-        }
-        sw2_was_pressed = sw2_pressed;
-
         // LED1 heartbeat is handled by TMR1 interrupt (1Hz toggle in multiaxis_control.c)
-        // LED1 shows solid during motion (set in MultiAxis_MoveSingleAxis)
+        // LED1 shows solid during motion, toggles when idle
 
-        // LED2 shows motion activity (toggled by TMR1 when processing axes)
+        // LED2 shows power-on status (set in APP_Initialize)
+        // Could be used for error indication in future
 
+        // Motion control is now handled by G-code parser in main.c
+        // No button handling needed - all commands via serial
+
+        break;
+    }
+
+    case APP_STATE_MOTION_ERROR:
+    {
+        // Error state - could flash LEDs or trigger alarm
+        // For now, just stay in this state until reset
+        LED2_Toggle(); // Flash LED2 to indicate error
         break;
     }
 

@@ -13,6 +13,7 @@ typedef enum
 {
     APP_STATE_INIT,
     APP_STATE_SERVICE_TASKS,
+    APP_STATE_MOTION_ERROR, // Error state (limit switch hit, alarm, etc.)
 } APP_STATES;
 
 // *****************************************************************************

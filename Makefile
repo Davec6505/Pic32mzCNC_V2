@@ -43,6 +43,24 @@ all:
 	cd bins && "$(COMPILER_LOCATION)/xc32-bin2hex" $(MODULE)
 	@echo "######  BUILD COMPLETE   ########"
 
+# Quiet build - shows only errors, warnings, and completion status
+quiet:
+	@echo "######  QUIET BUILD (errors/warnings only)  ########"
+ifeq ($(OS),Windows_NT)
+	@powershell -NoProfile -ExecutionPolicy Bypass -Command \
+	"\$$output = & { Push-Location srcs; make COMPILER_LOCATION='$(COMPILER_LOCATION)' DFP_LOCATION='$(DFP_LOCATION)' DFP='$(DFP)' DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE) 2>&1; Pop-Location }; \
+	\$$filtered = \$$output | Select-String -Pattern 'error|warning' -CaseSensitive:\$$false; \
+	if (\$$filtered) { \$$filtered | Write-Host -ForegroundColor Red }; \
+	if (\$$LASTEXITCODE -eq 0) { \
+		cd bins; & '$(COMPILER_LOCATION)/xc32-bin2hex' $(MODULE) | Out-Null; \
+		if (\$$LASTEXITCODE -eq 0) { Write-Host '######  BUILD COMPLETE (no errors)  ########' -ForegroundColor Green } \
+		else { Write-Host '######  HEX CONVERSION FAILED  ########' -ForegroundColor Red; exit 1 } \
+	} else { Write-Host '######  BUILD FAILED  ########' -ForegroundColor Red; exit 1 }"
+else
+	@cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE) 2>&1 | grep -iE 'error|warning' || echo "No errors or warnings"
+	@if [ $$? -eq 0 ]; then cd bins && "$(COMPILER_LOCATION)/xc32-bin2hex" $(MODULE) >/dev/null 2>&1 && echo "######  BUILD COMPLETE  ########"; fi
+endif
+
 build_dir:
 	@echo "###### BUILDING DIRECTORIES FOR OUTPUT BINARIES #######"
 	cd srcs && $(BUILD_DIR)
@@ -118,7 +136,8 @@ help: cmdlets
 HELP_ENTRIES = \
     make build_dir            | Start by testing build directories output (DRY_RUN=1 default). ; \
     make build_dir DRY_RUN=0  | Create build directories (set DRY_RUN=1 to simulate). ; \
-    make all                  | Build the project. ; \
+    make all                  | Build the project (full output). ; \
+    make quiet                | Build with filtered output (errors/warnings only). ; \
     make clean                | Clean build outputs. ; \
     make platform             | Show platform information. ; \
     make rem_dir DIR_PATH=    | Remove specified directory (DIR_PATH=""). ; \
@@ -155,4 +174,4 @@ endif
 
 
 
-.PHONY: all build_dir clean install find-source grep-pattern list-files debug platform cmdlets 
+.PHONY: all quiet build_dir clean install find-source grep-pattern list-files debug platform cmdlets 
