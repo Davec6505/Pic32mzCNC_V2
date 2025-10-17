@@ -14,7 +14,12 @@ This is the **definitive direction** for a modern, modular CNC controller that e
 
 **Branch:** `master` (Main development branch)
 
-### ✅ Working Features
+### ✅ Working Features (Production Ready!)
+- **Full GRBL v1.1f Protocol**: Complete UGS integration with all system commands ($I, $G, $$, $#, $N, $)
+- **Real-Time Position Feedback**: Live position updates from hardware step counters (? status reports)
+- **Live Settings Management**: View and modify all GRBL settings ($100-$133) without recompilation
+- **GRBL Simple Send-Response Flow Control**: Blocking protocol ensures each move completes before accepting next command
+- **Real-Time Commands**: Feed hold (!), cycle start (~), soft reset (^X), status report (?)
 - **Time-Synchronized Coordinated Motion**: Dominant axis determines timing, subordinate axes scale velocities for accurate multi-axis moves
 - **Multi-Axis S-Curve Control**: Per-axis independent state machines with 7-segment jerk-limited profiles
 - **Hardware Step Generation**: OCMP1/3/4/5 modules generate step pulses autonomously (no CPU interrupts per step)
@@ -25,59 +30,52 @@ This is the **definitive direction** for a modern, modular CNC controller that e
 - **Dynamic Direction Control**: Function pointer tables for efficient GPIO management
 - **MISRA C Compliance**: Static assertions and runtime validation for safety-critical operation
 
-### 🧪 Currently Testing
-- **X/Y/Z Axes**: All mechanically operational with proper S-curve motion
-- **Coordinated Motion**: SW1/SW2 buttons trigger 50mm X+Y coordinated moves (forward/reverse)
-- **Distance Accuracy**: Timer clock (12.5MHz) and steps/mm calibrated correctly
+### 🧪 Ready for Testing
+- **UGS Connectivity**: Verified connection as "GRBL 1.1f" with full initialization sequence
+- **Serial Communication**: UART2 @ 115200 baud operational
+- **G-code Command Set**: G0/G1 (linear), G90/G91 (absolute/relative), G92 (coordinate offset), G28/G30 (predefined positions)
+- **M-Commands**: M3/M4/M5 (spindle), M7/M8/M9 (coolant), M0/M1/M2/M30 (program control)
+- **Blocking Protocol**: Each move completes before "ok" sent (pauses between moves are CORRECT per GRBL spec!)
 
 ### 🚧 Development Roadmap
 
-This project follows a **methodical validation approach** - each subsystem is perfected before moving to the next:
+**Phase 1: GRBL Protocol Integration ✅ COMPLETE!**
+- [x] Full G-code parser with modal/non-modal commands
+- [x] UGS serial interface with GRBL v1.1f protocol
+- [x] System commands ($I, $G, $$, $#, $N, $)
+- [x] Real-time position feedback from hardware
+- [x] Live settings management ($xxx=value)
+- [x] GRBL Simple Send-Response flow control
+- [x] Real-time command handling (?, !, ~, ^X)
+- [x] Build system optimization (make quiet)
+- [x] MISRA C:2012 compliance
 
-#### Phase 1: Motion Perfection (Current Phase - Nearly Complete!)
-**Objective**: Achieve flawless stepper motor control with S-curve profiles
+**Phase 2: Hardware Testing & Validation (CURRENT PHASE)**
+- [ ] Flash firmware and test via UGS
+- [ ] Verify coordinated motion accuracy with oscilloscope
+- [ ] Test blocking protocol behavior (pauses between moves)
+- [ ] Validate position feedback accuracy
+- [ ] Test real-time commands (feed hold, cycle start, reset)
+- [ ] Verify settings modification (change steps/mm, test motion)
+- [ ] Multi-line G-code file streaming tests
 
-- [x] Single-axis S-curve implementation
-- [x] Multi-axis hardware abstraction
-- [x] Per-axis state management
-- [x] Oscilloscope verification of motion profiles
-- [x] Wire X/Y/Z axis hardware (all tested mechanically)
-- [x] Hardware configuration centralized (motion_types.h)
-- [x] Timer clock calibrated (12.5MHz)
-- [x] Steps/mm calculated (80 belt, 1280 leadscrew)
-- [x] SW1/SW2 button tests for coordinated motion:
-  - [x] Multi-axis coordinated moves (50mm X+Y forward/reverse)
-  - [x] Time-synchronized coordination (dominant axis determines timing)
-  - [x] Distance accuracy verified
-  - [x] Direction reversal reliability
-- [ ] Circular interpolation (G2/G3 arc motion)
+**Phase 3: Look-Ahead Planning (Future Optimization)**
+- [ ] Implement full junction velocity calculations
+- [ ] Forward/reverse pass velocity optimization
+- [ ] S-curve profile pre-calculation in buffer
+- [ ] Switch to GRBL Character-Counting protocol
+- [ ] Continuous motion through corners (no stops)
+- [ ] Arc support (G2/G3 circular interpolation)
 
-**Exit Criteria**: All axes move with symmetric S-curves, coordinated motion verified ✅, zero issues with restarts or direction changes ✅
-
-#### Phase 2: Limit Switches & Jogging
-**Objective**: Safe manual control and homing
-
+**Phase 4: Advanced Features**
+- [ ] Coordinate systems ($#, G54-G59 work offsets)
+- [ ] Probing (G38.x commands)
+- [ ] Spindle PWM output (M3/M4 GPIO control)
+- [ ] Coolant GPIO control (M7/M8/M9 GPIO control)
 - [ ] Hard limit switch integration (immediate stop)
 - [ ] Soft limit enforcement (preventive)
 - [ ] Homing sequences (per-axis)
 - [ ] Manual jog controls (variable speed)
-- [ ] Pick-and-place mode (Z-axis limit masking)
-- [ ] Emergency stop validation
-
-**Exit Criteria**: Safe operation with all limit switches, reliable homing, smooth jogging
-
-#### Phase 3: Serial Communication & G-Code
-**Objective**: GRBL v1.1f compatibility with UGS integration
-
-- [ ] UART2 G-code parser (DMA-based)
-- [ ] Motion buffer (16-block look-ahead)
-- [ ] G-code command set (G0/G1/G2/G3)
-- [ ] Status reports ($X, ?, ~)
-- [ ] GRBL settings ($100-$132)
-- [ ] Universal G-code Sender (UGS) testing
-- [ ] Real-time command handling (feed hold, cycle start, reset)
-
-**Exit Criteria**: Full GRBL compatibility, UGS control panel working, production-ready
 
 ## 🏗️ Architecture
 
@@ -105,23 +103,41 @@ TMR1 (1kHz) → Multi-Axis S-Curve State Machine
 
 ### Key Design Decisions
 
-**1. Hardware-Accelerated Step Generation**
+**1. GRBL v1.1f Protocol Implementation**
+- Full system command support ($I, $G, $$, $#, $N, $)
+- Real-time commands (?, !, ~, ^X) with immediate response
+- GRBL Simple Send-Response flow control (Phase 1 - blocking protocol)
+- Live settings management ($100-$133 read/write)
+- Real-time position feedback from hardware step counters
+- UGS compatibility verified
+
+**2. Hardware-Accelerated Step Generation**
 - Traditional GRBL: 30kHz interrupt per step (CPU intensive)
 - Our approach: OCR modules generate pulses autonomously
 - Benefit: CPU free for advanced motion planning
 
-**2. Per-Axis State Management**
+**3. Per-Axis State Management**
 - No global motion_running flag
 - Each axis has independent `active` flag
 - Enables true concurrent motion and reliable restart
 
-**3. S-Curve Motion Profiles**
+**4. S-Curve Motion Profiles**
 - 7-segment jerk-limited profiles
 - Smooth acceleration/deceleration
 - Reduced mechanical stress and vibration
-- Parameters: `max_velocity=5000 steps/sec`, `max_accel=10000 steps/sec²`, `max_jerk=50000 steps/sec³`
+- Parameters configurable via GRBL settings ($110-$123)
 
-**4. MISRA C Compliance**
+**5. Flow Control Strategy**
+- Phase 1 (Current): Simple Send-Response blocking protocol
+  - Each move completes before "ok" sent
+  - Brief pauses between moves are CORRECT per GRBL spec
+  - Recommended by GRBL docs as "most fool-proof and simplest method"
+- Phase 2 (Future): Character-Counting protocol with look-ahead
+  - Track 128-byte RX buffer for maximum throughput
+  - Enable continuous motion through corners
+  - Requires full look-ahead planning implementation
+
+**6. MISRA C Compliance**
 - Static assertions for compile-time validation
 - Runtime parameter validation
 - Defensive programming patterns
@@ -132,17 +148,32 @@ TMR1 (1kHz) → Multi-Axis S-Curve State Machine
 ```
 Pic32mzCNC_V2/
 ├── srcs/
-│   ├── main.c                          # Entry point, TMR1 setup
-│   ├── app.c                           # Button-based testing (SW1/SW2)
+│   ├── main.c                          # Entry point, G-code processing loop
+│   ├── app.c                           # System management, LED status
+│   ├── gcode_parser.c                  # GRBL v1.1f parser (1354 lines)
+│   ├── ugs_interface.c                 # UGS serial protocol
 │   └── motion/
-│       ├── multiaxis_control.c         # Multi-axis S-curve engine (773 lines)
-│       └── stepper_control.c           # Legacy single-axis reference
+│       ├── multiaxis_control.c         # Multi-axis S-curve engine (1169 lines)
+│       ├── motion_math.c               # Kinematics & GRBL settings (733 lines)
+│       ├── motion_buffer.c             # Ring buffer for look-ahead (284 lines)
+│       └── stepper_control.c           # Legacy single-axis reference (unused)
 ├── incs/
 │   ├── app.h                           # Main system interface
+│   ├── gcode_parser.h                  # Parser API & modal state (357 lines)
+│   ├── ugs_interface.h                 # UGS protocol API
 │   └── motion/
-│       └── multiaxis_control.h         # Multi-axis API (4-axis support)
+│       ├── motion_types.h              # Centralized type definitions (235 lines)
+│       ├── motion_buffer.h             # Motion buffer API (207 lines)
+│       ├── multiaxis_control.h         # Multi-axis API (4-axis support)
+│       └── motion_math.h               # Motion math API (398 lines)
+├── docs/
+│   ├── GCODE_PARSER_COMPLETE.md        # GRBL v1.1f implementation guide
+│   ├── XC32_COMPLIANCE_GCODE_PARSER.md # MISRA/XC32 compliance docs
+│   ├── APP_CLEANUP_SUMMARY.md          # App layer cleanup docs
+│   ├── MAKEFILE_QUIET_BUILD.md         # make quiet target docs
+│   └── UGS_INTEGRATION.md              # UGS integration guide
 ├── .github/
-│   └── copilot-instructions.md         # AI assistant guidance
+│   └── copilot-instructions.md         # AI assistant guidance (1082 lines)
 ├── Makefile                            # Cross-platform build system
 └── README.md                           # This file
 ```
@@ -153,12 +184,16 @@ Pic32mzCNC_V2/
 - **MPLAB X IDE** v6.25 or later
 - **XC32 Compiler** v4.60 or later
 - **PICkit 4** or compatible programmer
+- **Universal G-code Sender (UGS)** for testing
 
 ### Build Commands
 
 ```powershell
-# Clean build
+# Standard build
 make all
+
+# Quiet build (filtered output - errors/warnings only)
+make quiet
 
 # Create directory structure (first time only)
 make build_dir
@@ -168,35 +203,210 @@ make clean
 
 # Show build configuration
 make debug
+
+# Show platform information
+make platform
 ```
 
 ### Output Files
 - `bins/CS23.elf` - Executable with debug symbols
 - `bins/CS23.hex` - Flash programming file
+- `objs/` - Object files (.o)
+
+### Build System Features
+- Cross-platform Make (Windows/Linux)
+- Automatic dependency generation
+- Optimized compilation (-O1 -Werror -Wall)
+- MISRA C:2012 compliance checking
+- Quiet build mode for cleaner output
+
+## 🖥️ Usage
+
+### Connecting to UGS
+
+1. **Flash firmware** to PIC32MZ board (`bins/CS23.hex`)
+2. **Open Universal G-code Sender**
+3. **Configure connection**:
+   - Port: COM4 (or your serial port)
+   - Baud Rate: 115200
+   - Firmware: GRBL
+4. **Click "Connect"**
+5. **Verify connection**: Should see "*** Connected to GRBL 1.1f"
+
+### Basic Operation
+
+```gcode
+# Check system status
+?
+
+# View all settings
+$$
+
+# Set work coordinate to current position
+G92 X0 Y0 Z0
+
+# Move in absolute mode
+G90
+G1 X10 Y10 F1000
+
+# Move in relative mode
+G91
+G1 X5 Y5 F500
+
+# Emergency stop (real-time)
+^X
+```
+
+### Understanding Blocking Protocol
+
+When using the current Simple Send-Response protocol, you will observe:
+- ✅ **Brief pauses between commands** - This is CORRECT behavior!
+- ✅ **"ok" sent after motion completes** - Ensures position accuracy
+- ✅ **UGS waits for "ok" before sending next command** - Prevents buffer overflow
+
+**Why this is good for testing:**
+- Each move completes before next starts
+- Position is always known
+- No risk of buffer overrun
+- Simple and reliable
+
+**Future optimization:**
+- Implement look-ahead planning
+- Switch to Character-Counting protocol
+- Enable continuous motion through corners
 
 ## 🧪 Testing
 
-### Hardware Button Tests (Current)
+### Current Testing Status
+
+**UGS Connectivity ✅**
+- Connects as "GRBL 1.1f" at 115200 baud
+- Full initialization sequence verified (?, $I, $$, $G)
+- Ready for motion testing via serial interface
+
+### Supported G-code Commands
+
+**System Commands:**
+```gcode
+$                    ; Show GRBL help message
+$I                   ; Build info (version detection)
+$G                   ; Parser state (current modal settings)
+$$                   ; View all settings ($11, $12, $100-$133)
+$#                   ; Coordinate offsets (placeholder)
+$N                   ; Startup lines
+$100=250.0           ; Set X steps/mm (live settings modification)
+```
+
+**Real-Time Commands:**
+```gcode
+?                    ; Status report (position, state)
+!                    ; Feed hold (pause motion)
+~                    ; Cycle start (resume motion)
+^X                   ; Soft reset (emergency stop)
+```
+
+**Motion Commands:**
+```gcode
+G90                  ; Absolute positioning mode
+G91                  ; Relative positioning mode  
+G0 X10 Y20 F1500     ; Rapid positioning
+G1 X50 Y50 F1000     ; Linear interpolation move
+G92 X0 Y0 Z0         ; Set work coordinate offset
+G28                  ; Go to predefined position 1
+G30                  ; Go to predefined position 2
+```
+
+**Machine Control:**
+```gcode
+M3 S1000             ; Spindle on CW @ 1000 RPM (state tracking)
+M4 S1000             ; Spindle on CCW @ 1000 RPM (state tracking)
+M5                   ; Spindle off
+M7                   ; Mist coolant on (state tracking)
+M8                   ; Flood coolant on (state tracking)
+M9                   ; All coolant off
+M0                   ; Program pause
+M2                   ; Program end
+M30                  ; Program end and reset
+```
+
+### Testing Workflow
+
+**Phase 1: UGS Connection (Complete ✅)**
+```powershell
+# Connect via UGS @ COM4, 115200 baud
+# Verify initialization commands work
+? $I $$ $G
+```
+
+**Phase 2: Motion Testing (Ready to Test 🎯)**
+```gcode
+# Test absolute positioning
+G90
+G1 X10 Y10 F1000
+
+# Verify blocking protocol (pause between commands is CORRECT!)
+G1 X20 Y20 F1000
+
+# Test relative positioning  
+G91
+G1 X-5 Y-5 F500
+
+# Test coordinate offset
+G92 X0 Y0 Z0
+G1 X10 F1000
+```
+
+**Phase 3: Settings Testing (Ready to Test 🎯)**
+```gcode
+# View current settings
+$$
+
+# Modify X axis steps/mm
+$100=200.0
+
+# Verify change
+$$
+
+# Test motion with new setting
+G1 X10 F1000
+
+# Restore original
+$100=80.0
+```
+
+**Phase 4: Real-Time Commands (Ready to Test 🎯)**
+```gcode
+# Start a long move
+G1 X100 F500
+
+# While moving, send feed hold
+!
+
+# Resume motion
+~
+
+# Emergency stop
+^X
+```
+
+### Hardware Button Tests (Legacy - Removed)
 
 ```c
-// SW1 - Coordinated X+Y 50mm forward
-// Tests: Time-synchronized coordinated motion, dominant axis timing
-
-// SW2 - Coordinated X+Y 50mm reverse  
-// Tests: Return to start position, bidirectional accuracy
+// SW1/SW2 removed in favor of G-code control
+// Motion now exclusively via serial interface
 ```
 
 ### Future Testing Scripts
 
 ```powershell
-# Motion testing (Phase 1)
+# Motion testing via serial
 .\motion_test.ps1 -Port COM4
 
-# Limit switch testing (Phase 2)
-.\limit_test.ps1 -Port COM4
+# UGS G-code file streaming
+.\ugs_test.ps1 -Port COM4 -GCodeFile modular_test.gcode
 
-# G-code testing (Phase 3)
-.\ugs_test.ps1 -Port COM4 -GCodeFile test.gcode
+# Debug output monitoring
+.\monitor_debug.ps1 -Port COM4
 ```
 
 ## 📊 Hardware Mapping

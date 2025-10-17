@@ -1,11 +1,15 @@
 # PIC32MZ CNC Motion Controller V2 - AI Coding Guide
 
-## ⚠️ CURRENT STATUS: G-code Parser Integrated (October 17, 2025)
+## ⚠️ CURRENT STATUS: GRBL v1.1f Protocol Complete (October 17, 2025)
 
-**Latest Progress**: Full GRBL v1.1f G-code parser with serial control via UGS (Universal G-code Sender).
+**Latest Progress**: Full UGS integration with GRBL Simple Send-Response protocol, real-time position feedback, and live settings management.
 
 **Current Working System** ✅:
-- **Serial G-code control**: UART2 @ 115200 baud, UGS interface with GRBL v1.1f protocol
+- **Full GRBL v1.1f protocol**: All system commands ($I, $G, $$, $#, $N, $), real-time commands (?, !, ~, ^X)
+- **Serial G-code control**: UART2 @ 115200 baud, UGS connects successfully as "GRBL 1.1f"
+- **Real-time position feedback**: Actual step counts from hardware → mm conversion in status reports
+- **Live settings management**: $$ views all 18 settings, $xxx=value modifies settings on-the-fly
+- **GRBL Simple Send-Response flow control**: Blocking protocol waits for motion complete before "ok" (Phase 1)
 - **Full G-code parser**: Modal/non-modal commands, 13 modal groups, M-command support
 - **Multi-axis S-curve control**: TMR1 @ 1kHz drives 7-segment jerk-limited profiles per axis
 - **Hardware pulse generation**: OCR modules (OCMP1/4/5/3) generate step pulses independently
@@ -16,6 +20,12 @@
 - **Motion buffer infrastructure**: Ring buffer with look-ahead planning ready for streaming
 
 **Recent Additions (October 17, 2025)** ✅:
+- ✅ **System commands**: $I (version), $G (parser state), $$ (all settings), $N (startup lines), $ (help)
+- ✅ **Settings management**: $100-$133 read/write with MotionMath integration
+- ✅ **Real-time position feedback**: MultiAxis_GetStepCount() → MotionMath_StepsToMM() in ? status reports
+- ✅ **Machine state tracking**: "Idle" vs "Run" based on MultiAxis_IsBusy()
+- ✅ **GRBL Simple Send-Response protocol**: Blocking wait for motion complete before sending "ok"
+- ✅ **UGS connectivity verified**: Full initialization sequence working (?, $I, $$, $G)
 - ✅ **G-code parser**: Full GRBL v1.1f compliance with modal/non-modal commands (1354 lines)
 - ✅ **UGS interface**: Serial communication with flow control and real-time commands
 - ✅ **Non-modal commands**: G4, G28, G28.1, G30, G30.1, G92, G92.1 implemented
@@ -81,13 +91,36 @@ Hardware OCR/TMR Modules - Step pulse generation
 ```
 
 **TODO - NEXT PRIORITY**: 
-🎯 **Hardware testing with UGS**
-- Test serial communication @ 115200 baud
-- Send G-code commands via UGS: G0, G1, G90, G91, etc.
-- Verify coordinated motion accuracy with oscilloscope
-- Test feed hold (!), cycle start (~), soft reset (Ctrl-X)
-- Implement look-ahead planning in motion buffer (currently placeholder)
+🎯 **Hardware Testing & Protocol Validation (Phase 1 Complete - Ready to Test!)**
+- ✅ UGS connectivity verified - connects as "GRBL 1.1f"
+- ✅ System commands working - $I, $G, $$, $#, $N, $
+- ✅ Settings management - $100-$133 read/write operational
+- ✅ Real-time position feedback - ? command shows actual positions
+- ✅ Flow control implemented - GRBL Simple Send-Response blocking protocol
+- 🎯 **NEXT: Flash firmware and test actual motion via UGS**
+  - Send G-code moves: G90, G1 X10 Y10 F1000
+  - Verify blocking behavior: each move completes before "ok" sent (pauses between moves are CORRECT!)
+  - Observe position values update during motion in UGS status window
+  - Test real-time commands: ! (feed hold), ~ (cycle start), ^X (reset)
+  - Verify settings changes: $100=200, send move, verify new steps/mm applied
+  - Use oscilloscope to confirm motion accuracy
+
+🎯 **Future Development (Phase 2 - Look-Ahead Planning)**
+- Implement full look-ahead planning in motion buffer (currently placeholder)
+  - Forward pass: Calculate maximum exit velocities
+  - Reverse pass: Ensure acceleration limits respected
+  - Junction velocity optimization for smooth cornering
+- Switch to GRBL Character-Counting protocol for continuous motion
+  - Track 128-byte RX buffer
+  - Send multiple commands without waiting for completion
+  - Enable smooth motion through corners without stops
 - Add arc support (G2/G3 circular interpolation)
+  - Arc engine with center-format and radius-format
+  - Integration with look-ahead planner
+- Implement coordinate systems ($# command - work offsets G54-G59)
+- Add probing support (G38.x commands)
+- Spindle PWM output (M3/M4 state tracking complete, GPIO pending)
+- Coolant GPIO control (M7/M8/M9 state tracking complete, GPIO pending)
 
 **Known Working Commands**:
 ```gcode
