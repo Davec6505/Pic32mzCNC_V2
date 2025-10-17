@@ -1,0 +1,190 @@
+@startuml
+!theme cerulean
+title Module Dependencies - Motion Control Subsystem
+
+' ============================================================================
+' CENTRALIZED TYPE SYSTEM
+' ============================================================================
+package "Type System (Single Source of Truth)" <<Rectangle>> {
+  component [motion_types.h] as Types <<header>> #Gold
+  
+  note right of Types
+    **Centralized Types** (235 lines):
+    * axis_id_t (X, Y, Z, A)
+    * position_t (step tracking)
+    * motion_block_t (ring buffer entry)
+    * parsed_move_t (parser output)
+    * scurve_motion_profile_t
+    * coordinated_move_t
+    * velocity_profile_t
+    * motion_settings_t (GRBL $100-$133)
+    
+    **Critical Rule**:
+    🚫 NEVER define types elsewhere!
+    All modules import from here.
+  end note
+}
+
+' ============================================================================
+' MOTION MATH LIBRARY
+' ============================================================================
+package "Motion Math Library" <<Rectangle>> {
+  component [motion_math.h] as MathH <<header>>
+  component [motion_math.c] as MathC <<implementation>>
+  
+  note right of MathC
+    **Pure Functions** (733 lines):
+    * Unit conversions (mm ↔ steps)
+    * Velocity calculations
+    * Junction velocity (cornering)
+    * S-curve timing helpers
+    * GRBL settings management
+    
+    **No side effects** - easy to test
+  end note
+}
+
+' ============================================================================
+' MOTION BUFFER (Ring Buffer)
+' ============================================================================
+package "Motion Buffer (Ring Buffer Planner)" <<Rectangle>> {
+  component [motion_buffer.h] as BufferH <<header>>
+  component [motion_buffer.c] as BufferC <<implementation>>
+  
+  note right of BufferC
+    **Ring Buffer** (284 lines):
+    * 16-block circular queue
+    * MotionBuffer_Add() - enqueue
+    * MotionBuffer_GetNext() - dequeue
+    * Look-ahead planning (TODO)
+    * Flow control (Pause/Resume/Clear)
+    
+    **Converts**: parsed_move_t → motion_block_t
+  end note
+}
+
+' ============================================================================
+' MULTI-AXIS CONTROL
+' ============================================================================
+package "Multi-Axis Motion Controller" <<Rectangle>> {
+  component [multiaxis_control.h] as ControlH <<header>>
+  component [multiaxis_control.c] as ControlC <<implementation>>
+  
+  note right of ControlC
+    **S-Curve Interpolation** (1169 lines):
+    * TMR1 @ 1kHz state machine
+    * 7-segment jerk-limited profiles
+    * Per-axis velocity/accel/jerk
+    * OCR hardware pulse generation
+    * Coordinated multi-axis moves
+    
+    **Executes**: motion_block_t → hardware
+  end note
+}
+
+' ============================================================================
+' APPLICATION LAYER
+' ============================================================================
+package "Application Layer" <<Rectangle>> {
+  component [app.h] as AppH <<header>>
+  component [app.c] as AppC <<implementation>>
+  component [main.c] as Main <<entry point>>
+  
+  note right of AppC
+    **Current Mode**: Button-driven testing
+    * SW1: Single-axis X move
+    * SW2: Coordinated XYZ move
+    * LED indicators (heartbeat, status)
+    
+    **Future**: G-code parser integration
+  end note
+}
+
+' ============================================================================
+' HARDWARE ABSTRACTION LAYER (MCC Generated)
+' ============================================================================
+package "Hardware Abstraction Layer (MCC)" <<Rectangle>> #LightYellow {
+  component [plib_tmr1.h] as TMR1_H
+  component [plib_ocmp*.h] as OCR_H
+  component [plib_gpio.h] as GPIO_H
+  component [plib_uart2.h] as UART_H
+}
+
+' ============================================================================
+' DEPENDENCIES - Type System
+' ============================================================================
+Types -down-> MathH : imports
+Types -down-> BufferH : imports
+Types -down-> ControlH : imports
+Types -down-> AppH : imports
+
+' ============================================================================
+' DEPENDENCIES - Motion Math
+' ============================================================================
+MathH -down-> MathC : declares
+MathC -down-> BufferC : used by\nunit conversion
+MathC -down-> ControlC : used by\nget limits
+
+' ============================================================================
+' DEPENDENCIES - Motion Buffer
+' ============================================================================
+BufferH -down-> BufferC : declares
+BufferC -down-> MathC : calls\nMotionMath_*()
+BufferC -right-> ControlC : feeds planned\nmotion_block_t
+
+' ============================================================================
+' DEPENDENCIES - Multi-Axis Control
+' ============================================================================
+ControlH -down-> ControlC : declares
+ControlC -down-> TMR1_H : uses\nTMR1_CallbackRegister
+ControlC -down-> OCR_H : uses\nOCMP*_Enable/Disable
+ControlC -down-> GPIO_H : uses\nGPIO_PinWrite
+ControlC -up-> MathC : calls\nMotionMath_Get*()
+
+' ============================================================================
+' DEPENDENCIES - Application Layer
+' ============================================================================
+AppH -down-> AppC : declares
+Main -down-> AppC : calls\nAPP_Tasks()
+AppC -down-> ControlC : calls\nMultiAxis_*()
+AppC -down-> GPIO_H : reads buttons\nwrites LEDs
+
+' ============================================================================
+' FUTURE DEPENDENCIES (Planned)
+' ============================================================================
+package "Future Modules" <<Rectangle>> #LightGray {
+  component [gcode_parser.c] as Parser <<future>>
+  component [grbl_serial.c] as Serial <<future>>
+}
+
+Serial .down.> Parser : sends lines
+Parser .down.> BufferC : MotionBuffer_Add()
+Serial .down.> UART_H : UART2_Read/Write
+
+' ============================================================================
+' LEGEND
+' ============================================================================
+legend right
+  **Module Types**
+  |= Color |= Type |
+  | <back:gold>Gold</back> | Centralized Types |
+  | <back:lightgreen>Green</back> | Motion Subsystem |
+  | <back:lightyellow>Yellow</back> | HAL (MCC Generated) |
+  | <back:lightgray>Gray</back> | Future Implementation |
+  
+  **Dependency Rules**
+  * Solid arrows = Direct dependencies
+  * Dashed arrows = Future dependencies
+  * All motion modules import motion_types.h
+  * No circular dependencies allowed
+  * HAL is lowest layer (no upward deps)
+  
+  **Key Principles**
+  * Types centralized in motion_types.h
+  * Math library is stateless (pure functions)
+  * Buffer converts parsed → planned moves
+  * Control executes planned moves
+  * Application uses high-level API only
+end legend
+
+@enduml

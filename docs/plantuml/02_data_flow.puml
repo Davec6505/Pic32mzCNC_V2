@@ -1,0 +1,172 @@
+@startuml
+!theme cerulean
+title Complete Data Flow - Serial to Motion Execution
+scale 1.2
+
+' ============================================================================
+' STAGE 1: SERIAL RECEPTION (Future)
+' ============================================================================
+rectangle "**Stage 1: Serial Reception**\n<size:10>(Future Implementation)</size>" as Stage1 #LightGray {
+  queue "Serial RX\nRing Buffer\n(256 bytes)" as SerialBuf
+  note right of SerialBuf
+    Circular buffer for raw serial data
+    Handles bursty input from UGS
+    ISR writes, main loop reads
+  end note
+}
+
+' ============================================================================
+' STAGE 2: G-CODE PARSING (Future)
+' ============================================================================
+rectangle "**Stage 2: G-Code Parser**\n<size:10>(Future Implementation)</size>" as Stage2 #LightGray {
+  component [G-code Parser] as Parser
+  component [parsed_move_t] as ParsedMove
+  
+  note right of Parser
+    **Input**: "G1 X10 Y20 F1500\n"
+    **Output**: parsed_move_t {
+      target = {10.0, 20.0, 0, 0}
+      feedrate = 1500.0
+      axis_words = {true, true, false, false}
+    }
+  end note
+}
+
+' ============================================================================
+' STAGE 3: MOTION BUFFER (Implemented)
+' ============================================================================
+rectangle "**Stage 3: Motion Planning**\n<size:10>(Currently Implemented)</size>" as Stage3 #LightGreen {
+  component [MotionBuffer_Add()] as BufferAdd
+  component [Motion Math\nUnit Conversion] as MathConv
+  queue "Ring Buffer\n16 × motion_block_t" as RingBuf
+  component [Look-Ahead\nPlanner] as Planner
+  
+  note right of MathConv
+    **Conversions**:
+    mm → steps (MotionMath_MMToSteps)
+    mm/min → steps/sec
+    Calculate junction velocities
+  end note
+  
+  note right of Planner
+    **Optimization** (TODO):
+    Forward pass: Maximize exit velocities
+    Reverse pass: Respect accel limits
+    Pre-calculate S-curve profiles
+  end note
+}
+
+' ============================================================================
+' STAGE 4: MOTION EXECUTION (Working)
+' ============================================================================
+rectangle "**Stage 4: Motion Controller**\n<size:10>(Currently Working)</size>" as Stage4 #LightGreen {
+  component [MotionBuffer_GetNext()] as BufferGet
+  component [motion_block_t] as MotionBlock
+  component [MultiAxis_MoveCoordinated()] as Coordinated
+  component [TMR1 @ 1kHz\nS-Curve State Machine] as TMR1
+  
+  note right of MotionBlock
+    **Pre-calculated block**:
+    steps[4] = {2500, 5000, 0, 0}
+    feedrate = 1500.0 mm/min
+    entry_velocity = 800 mm/min
+    exit_velocity = 1200 mm/min
+    profile = { 7-segment timing }
+  end note
+}
+
+' ============================================================================
+' STAGE 5: HARDWARE PULSE GENERATION (Working)
+' ============================================================================
+rectangle "**Stage 5: Hardware Layer**\n<size:10>(Currently Working)</size>" as Stage5 #LightBlue {
+  component [OCR Modules\nOCMP1/3/4/5] as OCR
+  component [TMR2/3/4/5\nTime Base] as Timers
+  component [DRV8825 Drivers] as Drivers
+  component [Stepper Motors] as Motors
+  
+  note right of OCR
+    **Dual-Compare PWM**:
+    Period = f(velocity)
+    Pulse width = 40 counts
+    Generates step pulses automatically
+  end note
+}
+
+' ============================================================================
+' DATA FLOW CONNECTIONS
+' ============================================================================
+
+' Stage 1 → Stage 2
+SerialBuf -down-> Parser : Extract line\n(until '\\n')
+
+' Stage 2 → Stage 3
+Parser -down-> ParsedMove : Parse tokens
+ParsedMove -down-> BufferAdd : Add to buffer
+
+' Stage 3 internal flow
+BufferAdd -down-> MathConv : Convert units
+MathConv -down-> RingBuf : Store block
+RingBuf -right-> Planner : Trigger at\nthreshold (4 blocks)
+Planner -down-> RingBuf : Update velocities
+
+' Stage 3 → Stage 4
+RingBuf -down-> BufferGet : Dequeue when\nnot busy
+BufferGet -down-> MotionBlock : Copy planned block
+MotionBlock -down-> Coordinated : Execute move
+
+' Stage 4 → Stage 5
+Coordinated -down-> TMR1 : Start S-curve\nprofile
+TMR1 -down-> OCR : Update period\nevery 1ms
+OCR -down-> Timers : Generate pulses
+Timers -down-> Drivers : STEP/DIR signals
+Drivers -down-> Motors : Drive current
+
+' ============================================================================
+' REAL-TIME COMMANDS (Bypass Buffer)
+' ============================================================================
+rectangle "**Real-Time Commands**\n<size:10>(High Priority)</size>" as RealTime #Pink {
+  component [? Status] as Status
+  component [! Feed Hold] as Hold
+  component [~ Cycle Start] as Resume
+  component [^X Soft Reset] as Reset
+}
+
+SerialBuf -right-> Status : Immediate
+Status -down-> Stage4 : Read position
+SerialBuf -right-> Hold : Immediate
+Hold -down-> RingBuf : MotionBuffer_Pause()
+SerialBuf -right-> Resume : Immediate
+Resume -down-> RingBuf : MotionBuffer_Resume()
+SerialBuf -right-> Reset : Immediate
+Reset -down-> RingBuf : MotionBuffer_Clear()
+
+' ============================================================================
+' FEEDBACK LOOP
+' ============================================================================
+OCR -up[#Red,dashed]-> TMR1 : <color:Red>Step count callbacks\n(position tracking)</color>
+TMR1 -up[#Blue,dashed]-> Stage3 : <color:Blue>Motion complete\n(get next block)</color>
+
+' ============================================================================
+' LEGEND
+' ============================================================================
+legend bottom
+  **Data Structure Transformations**
+  |= Stage |= Input |= Output |= Format |
+  | 1 | Raw bytes | Text lines | char[] |
+  | 2 | "G1 X10..." | parsed_move_t | mm, feedrate |
+  | 3 | parsed_move_t | motion_block_t | steps, velocities |
+  | 4 | motion_block_t | S-curve profile | timing segments |
+  | 5 | Velocity | OCR period | timer counts |
+  
+  **Status Legend**
+  * <back:lightgreen>Green</back> = Implemented & Working
+  * <back:lightgray>Gray</back> = Future Implementation
+  * <back:lightblue>Blue</back> = Hardware Layer
+  * <back:pink>Pink</back> = Real-Time (High Priority)
+  
+  **Critical Paths**
+  * <color:Red>Red Dashed</color> = Feedback (interrupts)
+  * <color:Blue>Blue Dashed</color> = State updates
+end legend
+
+@enduml

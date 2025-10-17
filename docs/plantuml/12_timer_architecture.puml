@@ -1,0 +1,237 @@
+@startuml
+!theme cerulean
+title Timer Architecture - TMR1 + OCR Modules
+
+' ============================================================================
+' TIMER HIERARCHY
+' ============================================================================
+package "Timer Hierarchy" {
+  component "TMR1\n1kHz\n(Motion Control)" as TMR1 #LightGreen
+  component "TMR2\n(X-axis OCR)" as TMR2 #LightBlue
+  component "TMR3\n(Z-axis OCR)" as TMR3 #LightBlue
+  component "TMR4\n(Y-axis OCR)" as TMR4 #LightBlue
+  component "TMR5\n(A-axis OCR)" as TMR5 #LightBlue
+  
+  note right of TMR1
+    **Motion Control Timer**:
+    Frequency: 1kHz (1ms period)
+    Clock: 12.5MHz (25MHz / 2 prescaler)
+    Purpose: S-curve state machine
+    ISR: TMR1_MultiAxisControl()
+    
+    **Responsibilities**:
+    * Update elapsed time
+    * Calculate current velocity
+    * Update OCR periods
+    * Check motion complete
+  end note
+  
+  note right of TMR2
+    **OCR Time Base Timers**:
+    Frequency: Variable (velocity-dependent)
+    Clock: 12.5MHz (25MHz / 2 prescaler)
+    Purpose: Generate step pulse timing
+    
+    **Period Calculation**:
+    period = 1MHz / velocity_steps_sec
+    
+    **Assignment** (per MCC):
+    * TMR2 → OCMP4 (X-axis)
+    * TMR3 → OCMP5 (Z-axis)
+    * TMR4 → OCMP1 (Y-axis)
+    * TMR5 → OCMP3 (A-axis)
+  end note
+}
+
+' ============================================================================
+' OCR MODULES
+' ============================================================================
+package "OCR Modules (Output Compare)" {
+  component "OCMP1\n(Y-axis)" as OCMP1 #Gold
+  component "OCMP3\n(A-axis)" as OCMP3 #Gold
+  component "OCMP4\n(X-axis)" as OCMP4 #Gold
+  component "OCMP5\n(Z-axis)" as OCMP5 #Gold
+  
+  note right of OCMP4
+    **Dual-Compare PWM Mode**:
+    
+    **Registers**:
+    * TMRxPR = period (rollover)
+    * OCxR = period - 40 (rising edge)
+    * OCxRS = 40 (falling edge)
+    
+    **Result**:
+    Pin HIGH for 40 counts
+    Pin LOW for (period - 40) counts
+    
+    **Example** (period = 300):
+    Count:  0....40.......260.......300
+    Pin:    LOW  HIGH     LOW       LOW
+            └────────────┘
+            40 counts (1.9µs @ DRV8825)
+  end note
+}
+
+' ============================================================================
+' GPIO OUTPUTS
+' ============================================================================
+package "GPIO Outputs" {
+  component "STEP_X\n(Pin RB3)" as StepX
+  component "STEP_Y\n(Pin RG0)" as StepY
+  component "STEP_Z\n(Pin RB5)" as StepZ
+  component "STEP_A\n(Pin RE5)" as StepA
+  
+  component "DIR_X\n(Pin RB15)" as DirX
+  component "DIR_Y\n(Pin RG1)" as DirY
+  component "DIR_Z\n(Pin RB4)" as DirZ
+  component "DIR_A\n(Pin RE6)" as DirA
+  
+  note right of StepX
+    **STEP Pins**:
+    Driven by OCR hardware
+    Pulse width: 40 timer counts
+    Frequency: Varies with velocity
+    
+    **DIR Pins**:
+    Controlled by software (GPIO_PinWrite)
+    Set BEFORE step pulses start
+    Stable during motion
+  end note
+}
+
+' ============================================================================
+' DRV8825 DRIVERS
+' ============================================================================
+package "DRV8825 Stepper Drivers" {
+  component "X-Driver" as DrvX
+  component "Y-Driver" as DrvY
+  component "Z-Driver" as DrvZ
+  component "A-Driver" as DrvA
+}
+
+' ============================================================================
+' CONNECTIONS - Timers to OCR
+' ============================================================================
+TMR2 -down-> OCMP4 : Time base
+TMR3 -down-> OCMP5 : Time base
+TMR4 -down-> OCMP1 : Time base
+TMR5 -down-> OCMP3 : Time base
+
+' ============================================================================
+' CONNECTIONS - OCR to GPIO
+' ============================================================================
+OCMP4 -down-> StepX : PWM output
+OCMP1 -down-> StepY : PWM output
+OCMP5 -down-> StepZ : PWM output
+OCMP3 -down-> StepA : PWM output
+
+' ============================================================================
+' CONNECTIONS - GPIO to Drivers
+' ============================================================================
+StepX -down-> DrvX : STEP signal
+DirX -down-> DrvX : DIR signal
+StepY -down-> DrvY : STEP signal
+DirY -down-> DrvY : DIR signal
+StepZ -down-> DrvZ : STEP signal
+DirZ -down-> DrvZ : DIR signal
+StepA -down-> DrvA : STEP signal
+DirA -down-> DrvA : DIR signal
+
+' ============================================================================
+' CONTROL FLOW - TMR1 to OCR
+' ============================================================================
+TMR1 -[#Red,dashed]down-> TMR2 : <color:Red>TMR2_PeriodSet()</color>
+TMR1 -[#Red,dashed]down-> TMR3 : <color:Red>TMR3_PeriodSet()</color>
+TMR1 -[#Red,dashed]down-> TMR4 : <color:Red>TMR4_PeriodSet()</color>
+TMR1 -[#Red,dashed]down-> TMR5 : <color:Red>TMR5_PeriodSet()</color>
+
+OCMP4 -[#Blue,dashed]up-> TMR1 : <color:Blue>Step count callback</color>
+OCMP1 -[#Blue,dashed]up-> TMR1 : <color:Blue>Step count callback</color>
+OCMP5 -[#Blue,dashed]up-> TMR1 : <color:Blue>Step count callback</color>
+OCMP3 -[#Blue,dashed]up-> TMR1 : <color:Blue>Step count callback</color>
+
+' ============================================================================
+' TIMING DIAGRAM
+' ============================================================================
+@startuml
+robust "TMR1 @ 1kHz" as T1
+concise "X-axis Velocity" as VelX
+concise "OCR Period (X)" as OCRX
+robust "STEP_X Pin" as StepX
+
+@0
+T1 is "ISR"
+VelX is "100 steps/sec"
+OCRX is "10000"
+StepX is {-}
+
+@1
+T1 is "Idle"
+VelX is "100"
+OCRX is "10000"
+
+@10
+T1 is "ISR"
+VelX is "150 steps/sec"
+OCRX is "6667"
+StepX is {+}
+
+@11
+T1 is "Idle"
+StepX is {-}
+
+@20
+T1 is "ISR"
+VelX is "200 steps/sec"
+OCRX is "5000"
+StepX is {+}
+
+@21
+T1 is "Idle"
+StepX is {-}
+
+@30
+T1 is "ISR"
+VelX is "250 steps/sec"
+OCRX is "4000"
+
+@enduml
+
+' ============================================================================
+' LEGEND
+' ============================================================================
+legend right
+  **Timer Clocking**:
+  * Peripheral Clock: 25MHz
+  * Prescaler: 1:2 (all timers)
+  * Timer Clock: 12.5MHz
+  * Resolution: 80ns per count
+  
+  **TMR1 Configuration**:
+  * Period: 12500 counts (1ms)
+  * Frequency: 1kHz
+  * Priority: High (ISR critical)
+  
+  **OCR Configuration**:
+  * Mode: Dual-Compare PWM
+  * Min Period: 50 counts (safety)
+  * Max Period: 65485 counts (16-bit limit)
+  * Pulse Width: 40 counts (3.2µs)
+  
+  **DRV8825 Requirements**:
+  * Min STEP pulse: 1.9µs
+  * Our pulse: 3.2µs (safe margin)
+  * DIR setup time: 200ns (GPIO provides)
+  
+  **Control Paths**:
+  * <color:Red>Red Dashed</color> = TMR1 updates OCR periods
+  * <color:Blue>Blue Dashed</color> = OCR callbacks to TMR1
+  
+  **Key Benefits**:
+  ✅ Hardware generates pulses (no CPU load)
+  ✅ TMR1 only updates rates (1kHz manageable)
+  ✅ Independent per-axis timing
+  ✅ Smooth velocity changes (every 1ms)
+end legend
+
+@enduml

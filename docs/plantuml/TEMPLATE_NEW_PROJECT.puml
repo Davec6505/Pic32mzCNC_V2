@@ -1,0 +1,255 @@
+@startuml
+!theme cerulean
+title NEW PROJECT TEMPLATE - Embedded System Architecture
+/'
+  INSTRUCTIONS FOR USING THIS TEMPLATE:
+  
+  1. Copy this file to start your new project documentation
+  2. Replace "NEW PROJECT" with your actual project name
+  3. Fill in each section with your specific components
+  4. Remove this instruction block when done
+  5. Keep diagram simple at first, add detail incrementally
+  
+  TIPS:
+  * Start with high-level overview (hardware + software layers)
+  * Add module dependencies next
+  * Document data flow between components
+  * Use sequence diagrams for complex interactions
+  * Keep diagrams focused - one concept per diagram
+  
+  Press Alt+D in VS Code to preview this diagram!
+'/
+
+' ============================================================================
+' STEP 1: DEFINE HARDWARE LAYER
+' ============================================================================
+package "Hardware Layer" <<Rectangle>> {
+  component [Microcontroller\n(Your MCU)] as MCU
+  component [Sensors/Inputs] as Sensors
+  component [Actuators/Outputs] as Actuators
+  component [Communication\n(UART/SPI/I2C)] as Comm
+  
+  note right of MCU
+    **Microcontroller Details**:
+    * Part Number: ___________
+    * Clock Speed: _____ MHz
+    * RAM: _____ KB
+    * Flash: _____ KB
+    * Peripherals Used:
+      - Timer: ______
+      - GPIO: ______
+      - UART: ______
+  end note
+}
+
+' ============================================================================
+' STEP 2: DEFINE HARDWARE ABSTRACTION LAYER (HAL)
+' ============================================================================
+package "Hardware Abstraction Layer (HAL)" <<Rectangle>> {
+  component [Timer HAL] as TimerHAL
+  component [GPIO HAL] as GPIOHAL
+  component [UART HAL] as UARTHAL
+  component [Interrupt Controller] as NVIC
+  
+  note right of TimerHAL
+    **HAL Responsibilities**:
+    * Abstract hardware specifics
+    * Provide consistent API
+    * Hide register manipulation
+    * Support multiple targets
+    
+    **Example APIs**:
+    - Timer_Start()
+    - Timer_Stop()
+    - Timer_SetPeriod()
+  end note
+}
+
+' ============================================================================
+' STEP 3: DEFINE APPLICATION LOGIC
+' ============================================================================
+package "Application Layer" <<Rectangle>> {
+  component [Core Logic] as CoreLogic
+  component [State Machine] as StateMachine
+  component [Control Algorithm] as Algorithm
+  
+  note right of CoreLogic
+    **Application Components**:
+    * Main control flow
+    * Business logic
+    * User interface
+    * Error handling
+    
+    **Design Pattern**:
+    Consider using:
+    - State machines for modes
+    - Event-driven for async
+    - Polling for simple systems
+  end note
+}
+
+' ============================================================================
+' STEP 4: DEFINE DATA STRUCTURES (Centralized)
+' ============================================================================
+package "Type System (Centralized)" <<Rectangle>> {
+  component [types.h\nCentralized Definitions] as Types <<header>> #Gold
+  
+  note right of Types
+    **Centralized Type Definitions**:
+    
+    typedef struct {
+      // Your data structure
+    } my_data_t;
+    
+    typedef enum {
+      // Your states/modes
+    } state_t;
+    
+    **Benefits**:
+    ✅ Single source of truth
+    ✅ No duplicate definitions
+    ✅ Easy to maintain
+  end note
+}
+
+' ============================================================================
+' STEP 5: DEFINE MODULE DEPENDENCIES
+' ============================================================================
+Types .down.> CoreLogic : imports
+Types .down.> StateMachine : imports
+Types .down.> Algorithm : imports
+
+CoreLogic -down-> UARTHAL : uses
+CoreLogic -down-> GPIOHAL : uses
+StateMachine -down-> TimerHAL : uses
+Algorithm -down-> CoreLogic : feeds
+
+UARTHAL -down-> Comm : controls
+GPIOHAL -down-> Sensors : reads
+GPIOHAL -down-> Actuators : writes
+TimerHAL -down-> NVIC : configures
+
+' ============================================================================
+' STEP 6: ADD DATA FLOW (Optional - create separate diagram)
+' ============================================================================
+note as DataFlowNote
+  **Data Flow** (create separate diagram):
+  
+  Input → Processing → Output
+  
+  Example:
+  Sensor → HAL → Core Logic → HAL → Actuator
+  
+  See: 02_data_flow.puml for detailed flow
+end note
+
+' ============================================================================
+' STEP 7: DOCUMENT KEY DESIGN DECISIONS
+' ============================================================================
+legend right
+  **System Requirements**:
+  * Requirement 1: ________________
+  * Requirement 2: ________________
+  * Requirement 3: ________________
+  
+  **Design Decisions**:
+  * Decision 1: ________________
+    Rationale: ______________
+  * Decision 2: ________________
+    Rationale: ______________
+  
+  **Key Metrics**:
+  * Timing requirement: _____ ms
+  * Memory usage: _____ KB
+  * Power consumption: _____ mA
+  
+  **Constraints**:
+  * Hardware limitation 1
+  * Software limitation 2
+  * Resource limitation 3
+  
+  **Next Steps**:
+  1. [ ] Implement HAL layer
+  2. [ ] Define type system
+  3. [ ] Create core logic
+  4. [ ] Test and iterate
+end legend
+
+@enduml
+
+/'
+  ============================================================================
+  NEXT DIAGRAMS TO CREATE FOR YOUR PROJECT:
+  ============================================================================
+  
+  1. **Data Flow Diagram** (02_data_flow.puml):
+     Show how data moves through your system
+     Input → Processing stages → Output
+  
+  2. **Sequence Diagram** (sequence.puml):
+     Document timing-critical operations
+     Show function call sequences
+     Include interrupt handling
+  
+  3. **State Machine** (state_machine.puml):
+     If your system has modes/states
+     Document transitions and events
+  
+  4. **Module Dependencies** (dependencies.puml):
+     Show which modules depend on which
+     Identify circular dependencies
+     Plan compilation order
+  
+  5. **Timing Diagram** (timing.puml):
+     Critical for real-time systems
+     Show timer relationships
+     Document interrupt priorities
+  
+  ============================================================================
+  EXAMPLE MINIMAL PROJECT:
+  ============================================================================
+  
+  @startuml Simple LED Blinker
+  !theme plain
+  
+  [Microcontroller] --> [GPIO HAL]
+  [GPIO HAL] --> [LED Control]
+  [Timer HAL] --> [LED Control]
+  [LED Control] --> [LED Hardware]
+  
+  note right of [LED Control]
+    Simple state machine:
+    Toggle LED every 1 second
+  end note
+  @enduml
+  
+  ============================================================================
+  LEARNING PATH:
+  ============================================================================
+  
+  Week 1: Architecture Diagrams
+  - System overview (component diagram)
+  - Data flow (activity diagram)
+  - Module dependencies (package diagram)
+  
+  Week 2: Detailed Design
+  - Sequence diagrams (function calls)
+  - State machines (if applicable)
+  - Timing relationships
+  
+  Week 3: Implementation
+  - Keep diagrams updated as code evolves
+  - Add notes for design decisions
+  - Document deviations from original plan
+  
+  ============================================================================
+  RESOURCES:
+  ============================================================================
+  
+  * PlantUML Official: https://plantuml.com/
+  * Real Examples: https://real-world-plantuml.com/
+  * This Project: See other .puml files in docs/plantuml/
+  * VS Code Extension: "PlantUML" by jebbs
+  
+  ============================================================================
+'/

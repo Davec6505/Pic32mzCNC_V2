@@ -1,0 +1,185 @@
+@startuml
+!theme cerulean
+title Coordinated Move Sequence - Multi-Axis Motion Execution
+
+actor "Application" as App
+participant "multiaxis_control.c" as Control
+participant "motion_math.c" as Math
+participant "TMR1 @ 1kHz" as Timer
+participant "OCR Hardware" as OCR
+participant "DRV8825 Drivers" as Drivers
+
+== Initialization Phase ==
+App -> Control : MultiAxis_Initialize()
+activate Control
+Control -> Math : MotionMath_InitializeSettings()
+activate Math
+Math -> Math : Load GRBL defaults\n(250 steps/mm, 5000 mm/min, etc.)
+Math --> Control : Settings loaded
+deactivate Math
+Control -> Timer : TMR1_CallbackRegister(callback)
+Control -> OCR : Register step count callbacks
+Control --> App : Initialization complete
+deactivate Control
+
+== Motion Request ==
+App -> Control : MultiAxis_MoveCoordinated({5000, 3000, 0, 0})
+note right
+  **Move Request**:
+  X-axis: 5000 steps forward
+  Y-axis: 3000 steps forward
+  Z-axis: 0 (no motion)
+  A-axis: 0 (no motion)
+end note
+activate Control
+
+Control -> Control : Validate inputs\nCheck if busy
+
+== S-Curve Profile Calculation ==
+Control -> Math : MotionMath_GetMaxVelocityStepsPerSec(AXIS_X)
+activate Math
+Math --> Control : 20.83 steps/sec (5000 mm/min)
+deactivate Math
+
+Control -> Math : MotionMath_GetAccelStepsPerSec2(AXIS_X)
+activate Math
+Math --> Control : 125 steps/sec² (500 mm/sec²)
+deactivate Math
+
+Control -> Math : MotionMath_GetJerkStepsPerSec3(AXIS_X)
+activate Math
+Math --> Control : 1250 steps/sec³ (5000 mm/sec³)
+deactivate Math
+
+Control -> Control : calculate_scurve_profile()
+note right
+  **Calculate 7-Segment Profile**:
+  1. Determine dominant axis (X - longest)
+  2. Calculate total time (X determines)
+  3. Calculate Y velocity ratio (3000/5000)
+  4. Compute segment times (t1-t7)
+  5. Store peak velocity, accel, jerk
+end note
+
+== Motion Execution Start ==
+Control -> Control : Set direction GPIOs\n(DirX_Set, DirY_Set)
+Control -> Control : Enable stepper drivers\n(axis_enable[X] = true)
+Control -> OCR : Configure X-axis OCR period
+activate OCR
+OCR -> OCR : TMR2_PeriodSet(period)\nOCMP4_CompareValueSet()
+OCR --> Control : X-axis configured
+deactivate OCR
+
+Control -> OCR : Configure Y-axis OCR period
+activate OCR
+OCR -> OCR : TMR4_PeriodSet(period)\nOCMP1_CompareValueSet()
+OCR --> Control : Y-axis configured
+deactivate OCR
+
+Control -> OCR : Enable OCR modules\nStart timers
+activate OCR
+OCR -> OCR : OCMP4_Enable()\nTMR2_Start()
+OCR -> OCR : OCMP1_Enable()\nTMR4_Start()
+OCR --> Control : Pulse generation started
+deactivate OCR
+
+Control -> Timer : motion_active = true
+Control --> App : Move started (returns immediately)
+deactivate Control
+
+== Real-Time S-Curve Interpolation (Every 1ms) ==
+loop Every 1ms while motion active
+  Timer -> Control : TMR1_Callback()
+  activate Control
+  Control -> Control : Update elapsed_time
+  Control -> Control : Determine current segment (1-7)
+  
+  alt Segment 1-3: Acceleration Phase
+    Control -> Control : Calculate velocity\nv = v0 + a*t + j*t²/2
+    Control -> Control : Apply jerk limits
+  else Segment 4: Constant Velocity
+    Control -> Control : Maintain peak_velocity
+  else Segment 5-7: Deceleration Phase
+    Control -> Control : Calculate velocity\nv = vf - a*t - j*t²/2
+    Control -> Control : Apply jerk limits
+  end
+  
+  Control -> Control : Clamp velocity to limits\nmin(v, max_velocity)
+  
+  Control -> Control : Calculate OCR period\nperiod = 1MHz / velocity
+  
+  Control -> OCR : Update X-axis period
+  activate OCR
+  OCR -> OCR : TMR2_PeriodSet(new_period)
+  OCR --> Control : X-axis updated
+  deactivate OCR
+  
+  Control -> OCR : Update Y-axis period
+  activate OCR
+  OCR -> OCR : TMR4_PeriodSet(new_period)
+  OCR --> Control : Y-axis updated
+  deactivate OCR
+  
+  alt Segment 7 complete
+    Control -> Control : motion_active = false
+    Control -> OCR : Stop timers
+    activate OCR
+    OCR -> OCR : TMR2_Stop()\nTMR4_Stop()
+    OCR -> OCR : OCMP4_Disable()\nOCMP1_Disable()
+    OCR --> Control : Motion stopped
+    deactivate OCR
+  end
+  
+  Control --> Timer : Callback complete
+  deactivate Control
+end
+
+== Hardware Pulse Generation (Parallel) ==
+loop Continuously during motion
+  OCR -> OCR : Compare TMR2 count\nto OCxR/OCxRS
+  OCR -> Drivers : STEP pulse\n(40µs width)
+  activate Drivers
+  Drivers -> Drivers : Increment motor position
+  Drivers --> OCR : Step acknowledged
+  deactivate Drivers
+  
+  OCR -> Control : Step count callback
+  activate Control
+  Control -> Control : Increment step_count[X]
+  Control --> OCR : Count updated
+  deactivate Control
+end
+
+== Motion Complete ==
+App -> Control : MultiAxis_IsBusy()
+activate Control
+Control -> Control : Check motion_active flags
+Control --> App : false (all axes idle)
+deactivate Control
+
+App -> Control : MultiAxis_GetStepCount(AXIS_X)
+activate Control
+Control --> App : 5000 (move complete)
+deactivate Control
+
+legend right
+  **Key Timing**:
+  * TMR1 callback: Every 1ms (1kHz)
+  * OCR updates: Every 1ms (velocity changes)
+  * Step pulses: Variable rate (velocity-dependent)
+  * Total move time: ~2-5 seconds (typical)
+  
+  **Concurrency**:
+  * TMR1 ISR updates velocities
+  * OCR hardware generates pulses
+  * Step count callbacks track position
+  * All run in parallel (hardware-accelerated)
+  
+  **Benefits**:
+  ✅ Smooth S-curve acceleration
+  ✅ Time-synchronized multi-axis
+  ✅ No software step interrupts
+  ✅ Jerk-limited motion (gentle on hardware)
+end legend
+
+@enduml

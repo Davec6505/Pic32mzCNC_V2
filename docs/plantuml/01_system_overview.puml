@@ -1,0 +1,132 @@
+@startuml
+!theme cerulean
+title PIC32MZ CNC Motion Controller V2 - System Overview
+scale 1.5
+
+' ============================================================================
+' HARDWARE LAYER
+' ============================================================================
+package "Hardware Layer" <<Rectangle>> {
+  component [PIC32MZ2048EFH100\n200MHz, 512KB RAM] as MCU
+  component [DRV8825 Drivers\n(X, Y, Z, A)] as Drivers
+  component [Stepper Motors\n4-Axis Gantry] as Motors
+  component [Limit Switches\nSafety Sensors] as Limits
+  component [UART2 Serial\n115200 baud] as Serial
+}
+
+' ============================================================================
+' FIRMWARE LAYER - HARDWARE ABSTRACTION
+' ============================================================================
+package "Hardware Abstraction Layer (MCC Generated)" <<Rectangle>> {
+  component [TMR1 @ 1kHz\nMotion Control] as TMR1
+  component [OCMP1/3/4/5\nStep Pulse Gen] as OCR
+  component [TMR2/3/4/5\nOCR Time Base] as TMR_OCR
+  component [GPIO\nDirection/Enable] as GPIO
+  component [UART2 HAL\nSerial I/O] as UART
+  component [EVIC\nInterrupt Controller] as EVIC
+}
+
+' ============================================================================
+' FIRMWARE LAYER - MOTION SUBSYSTEM
+' ============================================================================
+package "Motion Control Subsystem" <<Rectangle>> {
+  component [motion_types.h\nCentralized Types] as Types <<Header>>
+  component [motion_math.c\nKinematics & Settings] as MathLib <<Library>>
+  component [motion_buffer.c\nRing Buffer Planner] as Buffer <<Queue>>
+  component [multiaxis_control.c\nS-Curve Interpolation] as Motion <<Controller>>
+}
+
+' ============================================================================
+' FIRMWARE LAYER - APPLICATION
+' ============================================================================
+package "Application Layer" <<Rectangle>> {
+  component [app.c\nButton Test Patterns] as App
+  component [main.c\nSystem Init & Loop] as Main
+  note right of App
+    **Current Mode**:
+    Button-driven testing
+    SW1/SW2 trigger moves
+    
+    **Future**:
+    G-code parser
+    Serial protocol
+  end note
+}
+
+' ============================================================================
+' FUTURE COMPONENTS (Planned)
+' ============================================================================
+package "Future Components" <<Rectangle>> #LightGray {
+  component [gcode_parser.c\nGRBL v1.1f Parser] as Parser <<Future>>
+  component [grbl_serial.c\nSerial Protocol] as Protocol <<Future>>
+  component [serial_buffer.c\nCommand Queue] as SerialBuf <<Future>>
+}
+
+' ============================================================================
+' RELATIONSHIPS - Hardware Connections
+' ============================================================================
+MCU -down-> Drivers : STEP/DIR\nENABLE pins
+Drivers -down-> Motors : Drive signals
+Limits -up-> MCU : Digital inputs
+Serial <-up-> MCU : TX/RX
+
+' ============================================================================
+' RELATIONSHIPS - HAL to Hardware
+' ============================================================================
+TMR1 -up-> EVIC : 1kHz interrupt
+OCR -up-> EVIC : Step count callbacks
+TMR_OCR -up-> OCR : Time base
+GPIO -up-> MCU : Pin control
+UART -up-> Serial : Serial data
+
+' ============================================================================
+' RELATIONSHIPS - Motion Subsystem
+' ============================================================================
+Types .down.> MathLib : imports
+Types .down.> Buffer : imports
+Types .down.> Motion : imports
+
+MathLib -down-> Buffer : Unit conversion\nSettings lookup
+Buffer -down-> Motion : Planned moves\n(motion_block_t)
+Motion -down-> OCR : Configure periods\nStart/stop timers
+Motion -down-> GPIO : Set direction\nEnable drivers
+Motion -up-> TMR1 : 1kHz callback\nUpdate S-curves
+
+' ============================================================================
+' RELATIONSHIPS - Application Layer
+' ============================================================================
+Main -down-> App : Initialize
+App -down-> Motion : Coordinated moves\nSingle axis moves
+
+' ============================================================================
+' RELATIONSHIPS - Future Integration
+' ============================================================================
+Protocol -down-> Parser : Raw G-code lines
+Parser -down-> Buffer : parsed_move_t
+SerialBuf -down-> Protocol : Command queue
+UART .right.> Protocol : Serial RX/TX
+
+' ============================================================================
+' LEGEND
+' ============================================================================
+legend right
+  **Architecture Layers**
+  |= Color |= Layer |
+  | <back:lightblue>Blue</back> | Hardware (Physical) |
+  | <back:lightyellow>Yellow</back> | HAL (MCC Generated) |
+  | <back:lightgreen>Green</back> | Application (Custom Code) |
+  | <back:lightgray>Gray</back> | Future Implementation |
+  
+  **Key Design Principles**
+  * Time-based S-curve interpolation
+  * Hardware-accelerated pulse generation
+  * Centralized type definitions (motion_types.h)
+  * Ring buffer for look-ahead planning
+  * Per-axis motion limits (Z slower than XY)
+  
+  **Critical Data Flow**
+  Button/G-code → Motion Buffer → Multiaxis Control
+  → OCR Hardware → Stepper Motors
+end legend
+
+@enduml

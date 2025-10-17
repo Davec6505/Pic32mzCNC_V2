@@ -1,0 +1,228 @@
+@startuml
+!theme cerulean
+title Motion Buffer - Ring Buffer Architecture
+scale 1.3
+
+' ============================================================================
+' RING BUFFER STATE
+' ============================================================================
+rectangle "Ring Buffer State" as State {
+  component "motion_buffer[16]" as Array
+  component "buffer_head = 5" as Head
+  component "buffer_tail = 2" as Tail
+  component "count = 3" as Count
+  
+  note right of Array
+    **Circular Array**:
+    Fixed size: 16 blocks
+    Each block: ~120 bytes
+    Total memory: ~2KB
+    
+    **Properties**:
+    Empty: head == tail
+    Full: (head + 1) % 16 == tail
+    Count: (head - tail + 16) % 16
+  end note
+}
+
+' ============================================================================
+' BUFFER VISUALIZATION
+' ============================================================================
+rectangle "Buffer Memory Layout" as Layout {
+  queue "Index 0\n[empty]" as B0
+  queue "Index 1\n[empty]" as B1
+  queue "Index 2\n**TAIL**\nBlock A" as B2 #LightGreen
+  queue "Index 3\nBlock B" as B3 #LightGreen
+  queue "Index 4\nBlock C" as B4 #LightGreen
+  queue "Index 5\n**HEAD**\n[next write]" as B5 #LightCoral
+  queue "Index 6\n[empty]" as B6
+  queue "Index 7-15\n[empty...]" as B7
+  
+  B0 -[hidden]down-> B1
+  B1 -[hidden]down-> B2
+  B2 -[hidden]down-> B3
+  B3 -[hidden]down-> B4
+  B4 -[hidden]down-> B5
+  B5 -[hidden]down-> B6
+  B6 -[hidden]down-> B7
+  
+  note right of B2
+    **TAIL** (read position):
+    Next block to execute
+    Advances on GetNext()
+  end note
+  
+  note right of B5
+    **HEAD** (write position):
+    Next available slot
+    Advances on Add()
+  end note
+}
+
+' ============================================================================
+' MOTION BLOCK STRUCTURE
+' ============================================================================
+rectangle "motion_block_t Structure" as BlockStruct {
+  object "motion_block_t" as Block {
+    int32_t steps[4]
+    float feedrate
+    float entry_velocity
+    float exit_velocity
+    float max_entry_velocity
+    bool recalculate_flag
+    bool axis_active[4]
+    scurve_motion_profile_t profile
+  }
+  
+  note right of Block
+    **Total Size**: ~120 bytes
+    
+    **Key Fields**:
+    * steps[] - Target position (absolute)
+    * entry/exit_velocity - From planner
+    * max_entry_velocity - Junction limit
+    * recalculate_flag - Needs optimization
+    * profile - Pre-calculated S-curve
+  end note
+}
+
+' ============================================================================
+' OPERATIONS
+' ============================================================================
+rectangle "Ring Buffer Operations" as Operations {
+  usecase "Add\n(Enqueue)" as Add
+  usecase "GetNext\n(Dequeue)" as Get
+  usecase "Recalculate\n(Look-Ahead)" as Recalc
+  usecase "Pause\n(Feed Hold)" as Pause
+  usecase "Resume\n(Cycle Start)" as Resume
+  usecase "Clear\n(Emergency)" as Clear
+  
+  note right of Add
+    **MotionBuffer_Add()**:
+    1. Check if buffer full
+    2. Convert mm → steps
+    3. Calculate max_entry_velocity
+    4. Store at buffer_head
+    5. Advance head: (head + 1) % 16
+    6. Trigger replanning if count ≥ 4
+  end note
+  
+  note right of Get
+    **MotionBuffer_GetNext()**:
+    1. Check if paused or empty
+    2. Copy block at buffer_tail
+    3. Advance tail: (tail + 1) % 16
+    4. Return block to caller
+  end note
+  
+  note right of Recalc
+    **MotionBuffer_RecalculateAll()**:
+    1. Forward pass: Maximize exit velocities
+    2. Reverse pass: Respect accel limits
+    3. Calculate S-curve profiles
+    4. Clear recalculate_flags
+    
+    **Status**: Placeholder (TODO)
+  end note
+}
+
+' ============================================================================
+' DATA FLOW
+' ============================================================================
+rectangle "Data Flow Through Buffer" as Flow {
+  (*) -right-> "parsed_move_t\n(from parser)" as Input
+  Input -right-> "MotionBuffer_Add()\nConvert & Plan" as AddOp
+  AddOp -right-> "Ring Buffer\n(motion_block_t[])" as Buf
+  Buf -right-> "MotionBuffer_GetNext()\nDequeue" as GetOp
+  GetOp -right-> "multiaxis_control\nExecute" as Execute
+  Execute -right-> (*)
+  
+  Buf -down-> "MotionBuffer_RecalculateAll()\nOptimize Velocities" as RecalcOp
+  RecalcOp -up-> Buf : Update blocks
+}
+
+' ============================================================================
+' STATE MACHINE
+' ============================================================================
+rectangle "Buffer State Machine" as StateMachine {
+  state "IDLE" as Idle
+  state "EXECUTING" as Exec
+  state "PLANNING" as Plan
+  state "FULL" as Full
+  state "PAUSED" as Paused
+  
+  [*] -down-> Idle
+  Idle -right-> Exec : Add() && count > 0
+  Exec -down-> Plan : count ≥ threshold
+  Plan -up-> Exec : Recalculate complete
+  Exec -right-> Full : Add() && buffer full
+  Full -left-> Exec : GetNext()
+  Exec -down-> Paused : Pause() (!)
+  Paused -up-> Exec : Resume() (~)
+  Exec -right-> Idle : GetNext() && count == 0
+  Idle -down-> [*] : Clear() (^X)
+  Exec -down-> [*] : Clear() (^X)
+  Paused -down-> [*] : Clear() (^X)
+  Full -down-> [*] : Clear() (^X)
+  
+  note right of Full
+    **GRBL Flow Control**:
+    When FULL, don't send "ok"
+    UGS waits for buffer space
+  end note
+}
+
+' ============================================================================
+' GRBL INTEGRATION
+' ============================================================================
+rectangle "GRBL Protocol Integration" as GRBL {
+  component "Serial RX" as RX
+  component "G-code Parser" as Parser
+  component "Motion Buffer" as MB
+  component "Send 'ok'" as OK
+  
+  RX -right-> Parser : Line complete
+  Parser -right-> MB : parsed_move_t
+  MB -down-> OK : if Add() success
+  
+  note bottom of OK
+    **Flow Control**:
+    "ok\n" → UGS can send next
+    No "ok" → UGS waits
+    
+    **Real-Time Commands** (bypass):
+    ? → Status query
+    ! → Feed hold (Pause)
+    ~ → Cycle start (Resume)
+    ^X → Soft reset (Clear)
+  end note
+}
+
+' ============================================================================
+' LEGEND
+' ============================================================================
+legend right
+  **Memory Layout**
+  * <back:lightgreen>Green</back> = Occupied blocks (data ready)
+  * <back:lightcoral>Coral</back> = HEAD pointer (next write)
+  * <back:white>White</back> = Empty slots
+  
+  **Key Metrics**
+  * Buffer Size: 16 blocks (configurable)
+  * Block Size: ~120 bytes each
+  * Total Memory: ~2KB
+  * Planning Threshold: 4 blocks
+  
+  **Performance**
+  * Add: O(1) - constant time
+  * GetNext: O(1) - constant time
+  * Recalculate: O(n) - n = block count
+  
+  **Benefits**
+  ✅ Fixed memory (no malloc)
+  ✅ Fast operations (modulo arithmetic)
+  ✅ FIFO ordering (natural for G-code)
+  ✅ Look-ahead ready (iterate both directions)
+end legend
+
+@enduml
