@@ -29,12 +29,16 @@
  *
  * Configuration from MCC:
  * - Peripheral clock: 25 MHz
- * - Prescaler: 1:2
- * - Effective frequency: 12.5 MHz (80ns per tick)
+ * - Prescaler: 1:16
+ * - Effective frequency: 1.5625 MHz (640ns per tick)
  *
  * This constant is used for calculating OCR periods for step pulse generation.
+ * 
+ * NOTE: 1:16 prescaler chosen to prevent 16-bit timer overflow at slow speeds.
+ * Min step rate: 1.5625MHz / 65535 = 23.8 steps/sec (excellent for slow Z-axis)
+ * Max step rate: 1.5625MHz / 50 = 31,250 steps/sec (adequate for rapids)
  */
-#define TMR_CLOCK_HZ 12500000UL // 12.5 MHz (25 MHz ÷ 2 prescaler)
+#define TMR_CLOCK_HZ 1562500UL // 1.5625 MHz (25 MHz ÷ 16 prescaler)
 
 /**
  * @brief Stepper motor configuration

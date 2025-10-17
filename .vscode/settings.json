@@ -1,3 +1,5 @@
 {
-    "C_Cpp.errorSquiggles": "disabled"
+    "C_Cpp.errorSquiggles": "disabled",
+    "plantuml.java": "C:\\Program Files\\Java\\jre1.8.0_461\\bin\\java.exe",
+    "plantuml.render": "Local"
 }

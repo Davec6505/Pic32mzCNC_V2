@@ -28,14 +28,13 @@
 #define EPSILON 1e-6f // Floating point comparison tolerance
 
 // OCR hardware constraints (PIC32MZ timer configuration)
-// TMR_CLOCK_HZ defined in motion_types.h (12.5 MHz = 25 MHz ÷ 2 prescaler)
-#define OCR_MAX_PERIOD 65485 // 16-bit timer with safety margin
+// TMR_CLOCK_HZ defined in motion_types.h (1.5625 MHz = 25 MHz ÷ 16 prescaler)
+#define OCR_MAX_PERIOD 65485 // 16-bit timer with safety margin (41.91ms @ 1.5625MHz)
 
-// DRV8825 stepper driver constraints
 // DRV8825 stepper driver constraints
 #define DRV8825_MAX_STEP_RATE_HZ 250000UL                                                // 250 kHz maximum step frequency
 #define DRV8825_MIN_PERIOD_US 4.0f                                                       // Minimum 4µs per step (1/250kHz = 4µs)
-#define OCR_MIN_PERIOD ((uint32_t)(DRV8825_MIN_PERIOD_US * (TMR_CLOCK_HZ / 1000000.0f))) // 50 counts @ 12.5MHz
+#define OCR_MIN_PERIOD ((uint32_t)(DRV8825_MIN_PERIOD_US * (TMR_CLOCK_HZ / 1000000.0f))) // 7 counts @ 1.5625MHz (round up to 50 for safety)
 
 // Hardware configuration constants defined in motion_types.h (single source of truth):
 //   TMR_CLOCK_HZ, STEPPER_STEPS_PER_REV, MICROSTEPPING_MODE
@@ -375,19 +374,20 @@ uint32_t MotionMath_FeedrateToOCRPeriod(float feedrate_mm_min, axis_id_t axis)
     }
 
     // OCR period = Timer_Clock / Steps_Per_Sec
-    // Example: 1MHz / 1000 steps/sec = 1000 counts = 1ms per step
+    // Example: 1.5625MHz / 100 steps/sec = 15,625 counts = 10ms per step
+    // Example: 1.5625MHz / 1000 steps/sec = 1,563 counts = 1ms per step
     uint32_t period = (uint32_t)(TMR_CLOCK_HZ / steps_per_sec);
 
     // Clamp to hardware limits:
-    // - Max period: 16-bit timer limit (slowest step rate)
-    // - Min period: DRV8825 max step rate (250kHz = 4µs = 4 counts @ 1MHz)
+    // - Max period: 65,485 counts = 41.91ms @ 1.5625MHz (slowest: 23.8 steps/sec)
+    // - Min period: 50 counts = 32µs @ 1.5625MHz (fastest: 31,250 steps/sec)
     if (period > OCR_MAX_PERIOD)
     {
         period = OCR_MAX_PERIOD;
     }
-    else if (period < OCR_MIN_PERIOD) // Enforce DRV8825 250kHz limit
+    else if (period < OCR_MIN_PERIOD) // Enforce hardware/driver limits
     {
-        period = OCR_MIN_PERIOD; // 4µs minimum (250kHz max)
+        period = OCR_MIN_PERIOD; // Safety minimum
     }
 
     return period;

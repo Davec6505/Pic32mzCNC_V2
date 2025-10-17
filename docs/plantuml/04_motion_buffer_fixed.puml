@@ -1,4 +1,4 @@
-@startuml Motion_Buffer
+@startuml Motion_Buffer_Working
 !theme cerulean
 title Motion Buffer - Ring Buffer Architecture
 

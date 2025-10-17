@@ -1,0 +1,9 @@
+@startuml
+title Test Diagram
+
+rectangle A
+rectangle B
+
+A --> B
+
+@enduml

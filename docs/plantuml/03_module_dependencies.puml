@@ -75,9 +75,8 @@ package "Multi-Axis Motion Controller" <<Rectangle>> {
     * TMR1 @ 1kHz state machine
     * 7-segment jerk-limited profiles
     * Per-axis velocity/accel/jerk
-    * OCR hardware pulse generation
+    * OCR hardware continous pulse generation
     * Coordinated multi-axis moves
-    
     **Executes**: motion_block_t → hardware
   end note
 }

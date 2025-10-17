@@ -15,7 +15,7 @@ package "Timer Hierarchy" {
   note right of TMR1
     **Motion Control Timer**:
     Frequency: 1kHz (1ms period)
-    Clock: 12.5MHz (25MHz / 2 prescaler)
+    Clock: 1.5625MHz (25MHz / 16 prescaler)
     Purpose: S-curve state machine
     ISR: TMR1_MultiAxisControl()
     
@@ -29,11 +29,20 @@ package "Timer Hierarchy" {
   note right of TMR2
     **OCR Time Base Timers**:
     Frequency: Variable (velocity-dependent)
-    Clock: 12.5MHz (25MHz / 2 prescaler)
+    Clock: 1.5625MHz (25MHz / 16 prescaler)
     Purpose: Generate step pulse timing
     
     **Period Calculation**:
-    period = 1MHz / velocity_steps_sec
+    period = TMR_CLOCK_HZ / velocity_steps_sec
+    period = 1,562,500 / velocity_steps_sec
+    
+    **Example** (100 steps/sec):
+    period = 1,562,500 / 100 = 15,625 counts
+    time = 15,625 / 1.5625MHz = 10ms per step
+    
+    **Range** (16-bit timer):
+    Min: 23.8 steps/sec (period 65,535)
+    Max: 31,250 steps/sec (period 50)
     
     **Assignment** (per MCC):
     * TMR2 → OCMP4 (X-axis)
@@ -60,15 +69,15 @@ package "OCR Modules (Output Compare)" {
     * OCxR = period - 40 (rising edge)
     * OCxRS = 40 (falling edge)
     
-    **Result**:
-    Pin HIGH for 40 counts
-    Pin LOW for (period - 40) counts
+    **Pulse Width**: 40 counts
+    * Time: 40 / 1.5625MHz = 25.6µs
+    * DRV8825 requires: ≥ 1.9µs ✓
     
-    **Example** (period = 300):
-    Count:  0....40.......260.......300
-    Pin:    LOW  HIGH     LOW       LOW
-            └────────────┘
-            40 counts (1.9µs @ DRV8825)
+    **Example** (period = 15,625):
+    * Frequency: 1.5625MHz / 15,625 = 100 Hz
+    * Step rate: 100 steps/second
+    * Pin HIGH: 40 counts (25.6µs)
+    * Pin LOW: 15,585 counts (9.974ms)
   end note
 }
 
@@ -151,51 +160,20 @@ OCMP5 -[#Blue,dashed]up-> TMR1 : <color:Blue>Step count callback</color>
 OCMP3 -[#Blue,dashed]up-> TMR1 : <color:Blue>Step count callback</color>
 
 ' ============================================================================
-' TIMING DIAGRAM
+' TIMING EXAMPLE
 ' ============================================================================
-@startuml
-robust "TMR1 @ 1kHz" as T1
-concise "X-axis Velocity" as VelX
-concise "OCR Period (X)" as OCRX
-robust "STEP_X Pin" as StepX
-
-@0
-T1 is "ISR"
-VelX is "100 steps/sec"
-OCRX is "10000"
-StepX is {-}
-
-@1
-T1 is "Idle"
-VelX is "100"
-OCRX is "10000"
-
-@10
-T1 is "ISR"
-VelX is "150 steps/sec"
-OCRX is "6667"
-StepX is {+}
-
-@11
-T1 is "Idle"
-StepX is {-}
-
-@20
-T1 is "ISR"
-VelX is "200 steps/sec"
-OCRX is "5000"
-StepX is {+}
-
-@21
-T1 is "Idle"
-StepX is {-}
-
-@30
-T1 is "ISR"
-VelX is "250 steps/sec"
-OCRX is "4000"
-
-@enduml
+note bottom
+  **Timing Example**:
+  
+  Time 0ms:  TMR1 ISR → Velocity = 100 steps/sec → OCR Period = 15,625 counts (10ms)
+  Time 1ms:  TMR1 ISR → Velocity = 150 steps/sec → OCR Period = 10,417 counts (6.67ms)
+  Time 2ms:  TMR1 ISR → Velocity = 200 steps/sec → OCR Period = 7,813 counts (5ms)
+  Time 3ms:  TMR1 ISR → Velocity = 250 steps/sec → OCR Period = 6,250 counts (4ms)
+  
+  **Calculation**: period = 1,562,500 Hz / (steps/sec)
+  **Result**: Smooth velocity ramp from 100 to 250 steps/sec over 3ms
+  STEP_X pin frequency increases proportionally
+end note
 
 ' ============================================================================
 ' LEGEND
@@ -203,24 +181,24 @@ OCRX is "4000"
 legend right
   **Timer Clocking**:
   * Peripheral Clock: 25MHz
-  * Prescaler: 1:2 (all timers)
-  * Timer Clock: 12.5MHz
-  * Resolution: 80ns per count
+  * Prescaler: 1:16 (all OCR timers)
+  * Timer Clock: 1.5625MHz
+  * Resolution: 640ns per count
   
   **TMR1 Configuration**:
-  * Period: 12500 counts (1ms)
+  * Period: 1562 counts (1ms @ 1.5625MHz)
   * Frequency: 1kHz
   * Priority: High (ISR critical)
   
   **OCR Configuration**:
   * Mode: Dual-Compare PWM
-  * Min Period: 50 counts (safety)
-  * Max Period: 65485 counts (16-bit limit)
-  * Pulse Width: 40 counts (3.2µs)
+  * Min Period: 50 counts (32µs, 31,250 steps/sec max)
+  * Max Period: 65,485 counts (41.91ms, 23.8 steps/sec min)
+  * Pulse Width: 40 counts (25.6µs)
   
   **DRV8825 Requirements**:
   * Min STEP pulse: 1.9µs
-  * Our pulse: 3.2µs (safe margin)
+  * Our pulse: 25.6µs (13.5x safety margin!)
   * DIR setup time: 200ns (GPIO provides)
   
   **Control Paths**:
@@ -232,6 +210,7 @@ legend right
   ✅ TMR1 only updates rates (1kHz manageable)
   ✅ Independent per-axis timing
   ✅ Smooth velocity changes (every 1ms)
+  ✅ 16-bit timer fits all speeds (23.8 - 31,250 steps/sec)
 end legend
 
 @enduml

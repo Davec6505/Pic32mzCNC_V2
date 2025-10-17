@@ -7,7 +7,7 @@ scale 1.5
 ' HARDWARE LAYER
 ' ============================================================================
 package "Hardware Layer" <<Rectangle>> {
-  component [PIC32MZ2048EFH100\n200MHz, 512KB RAM] as MCU
+  component [PIC32MZ2048EFH100\n200MHz, 2048KB RAM] as MCU
   component [DRV8825 Drivers\n(X, Y, Z, A)] as Drivers
   component [Stepper Motors\n4-Axis Gantry] as Motors
   component [Limit Switches\nSafety Sensors] as Limits

@@ -45,7 +45,7 @@ STATIC_ASSERT(NUM_AXES == 4, num_axes_must_be_four);
 // Hardware Configuration
 // *****************************************************************************/
 
-// Timer clock frequency defined in motion_types.h (12.5 MHz = 25 MHz ÷ 2 prescaler)
+// Timer clock frequency defined in motion_types.h (1.5625 MHz = 25 MHz ÷ 16 prescaler)
 
 // OCR/Timer assignments per PIC32MZ hardware
 typedef struct
@@ -1191,7 +1191,7 @@ void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES])
          *
          * Timing:
          * - Initial period = 65000 counts (slow start for S-curve)
-         * - Pulse width = 40 counts (meets DRV8825 1.9µs minimum @ 12.5MHz)
+         * - Pulse width = 40 counts (25.6µs @ 1.5625MHz - exceeds DRV8825 1.9µs minimum)
          * - TMR must be restarted for each move (stops when motion completes)
          *
          * MISRA Rule 10.3: Explicit cast for unsigned arithmetic
