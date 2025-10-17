@@ -76,23 +76,53 @@ extern "C"
     /**
      * @brief Modal state (persistent across commands)
      *
-     * GRBL modal groups:
+     * GRBL v1.1f modal groups:
      * - Motion mode: G0, G1, G2, G3, G38.x, G80
      * - Plane: G17 (XY), G18 (XZ), G19 (YZ)
      * - Distance: G90 (absolute), G91 (relative)
-     * - Feed rate: G93 (inverse time), G94 (units/min)
+     * - Arc distance: G90.1 (absolute), G91.1 (relative)
+     * - Feed rate mode: G93 (inverse time), G94 (units/min)
      * - Units: G20 (inches), G21 (mm)
-     * - Coordinate system: G54-G59
+     * - Cutter radius comp: G40 (off), G41 (left), G42 (right)
+     * - Tool length offset: G43.1, G49
+     * - Coordinate system: G54-G59, G59.1-G59.3
+     * - Path control: G61 (exact path), G61.1 (exact stop), G64 (continuous)
+     * - Spindle: M3 (CW), M4 (CCW), M5 (off)
+     * - Coolant: M7 (mist), M8 (flood), M9 (off)
      */
     typedef struct
     {
-        uint8_t motion_mode;       /* Current motion mode (G0, G1, etc.) */
-        bool absolute_mode;        /* G90=true, G91=false */
-        bool metric_mode;          /* G21=true, G20=false */
-        uint8_t plane;             /* G17=XY, G18=XZ, G19=YZ */
-        float feedrate;            /* Current feedrate (mm/min or in/min) */
-        float spindle_speed;       /* Current spindle RPM */
-        uint8_t coordinate_system; /* G54-G59 (0-5) */
+        /* Modal groups */
+        uint8_t motion_mode;       /* G0, G1, G2, G3 (Group 1) */
+        uint8_t plane;             /* G17, G18, G19 (Group 2) */
+        bool absolute_mode;        /* G90/G91 (Group 3) */
+        bool arc_absolute_mode;    /* G90.1/G91.1 (Group 4) */
+        uint8_t feed_rate_mode;    /* G93, G94 (Group 5) */
+        bool metric_mode;          /* G20/G21 (Group 6) */
+        uint8_t cutter_comp;       /* G40, G41, G42 (Group 7) */
+        uint8_t tool_offset;       /* G43.1, G49 (Group 8) */
+        uint8_t coordinate_system; /* G54-G59.3 (Group 12) */
+        uint8_t path_control;      /* G61, G61.1, G64 (Group 13) */
+
+        /* Modal parameters */
+        float feedrate;      /* Current feedrate (mm/min or in/min) */
+        float spindle_speed; /* Current spindle RPM */
+        uint8_t tool_number; /* Current tool (T parameter) */
+
+        /* Spindle/Coolant state */
+        uint8_t spindle_state; /* 0=off, 3=CW, 4=CCW */
+        bool coolant_mist;     /* M7 */
+        bool coolant_flood;    /* M8 */
+
+        /* Work coordinate offsets (G92) */
+        float g92_offset[NUM_AXES]; /* X, Y, Z, A coordinate offsets */
+
+        /* Stored positions */
+        float g28_position[NUM_AXES]; /* G28 home position */
+        float g30_position[NUM_AXES]; /* G30 secondary home position */
+
+        /* Work coordinate systems (G54-G59) */
+        float wcs_offsets[6][NUM_AXES]; /* 6 work coordinate systems */
     } parser_modal_state_t;
 
     /**
