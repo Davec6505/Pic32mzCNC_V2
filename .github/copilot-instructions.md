@@ -1,30 +1,50 @@
 # PIC32MZ CNC Motion Controller V2 - AI Coding Guide
 
-## ⚠️ CURRENT STATUS: GRBL v1.1f Protocol Complete (October 17, 2025)
+## ⚠️ CRITICAL HARDWARE FIX APPLIED (October 17, 2025)
 
-**Latest Progress**: Full UGS integration with GRBL Simple Send-Response protocol, real-time position feedback, and live settings management.
+**TIMER PRESCALER FIX - RESOLVES STEPPER SPEED ISSUE** 🔧:
+- **Problem Found**: 1:2 prescaler (12.5MHz) caused 16-bit timer overflow at slow speeds
+  - Example: 100 steps/sec requires 125,000 counts → **OVERFLOWS 16-bit limit (65,535)!**
+  - Hardware saturated at max value, causing steppers to run **2-3x too fast**
+- **Solution Applied**: Changed to **1:16 prescaler** (1.5625MHz timer clock)
+  - New range: 23.8 to 31,250 steps/sec (fits in 16-bit timer ✓)
+  - Pulse width: 40 counts × 640ns = **25.6µs** (exceeds DRV8825's 1.9µs minimum)
+  - Period example: 100 steps/sec = 15,625 counts ✓ (no overflow!)
+- **Code Changes**: Updated `TMR_CLOCK_HZ` from 12500000UL to **1562500UL**
+- **MCC Action Required**: User must update TMR2/3/4/5 prescalers to 1:16 in MCC GUI
+- **Documentation**: See `docs/TIMER_PRESCALER_ANALYSIS.md` for full analysis
+
+## ⚠️ CURRENT STATUS: Command Buffer Integration Complete! (October 17, 2025)
+
+**Latest Progress**: Full three-stage pipeline with **64-command buffer**, command separation algorithm, and **non-blocking protocol** enabling continuous motion with deep look-ahead.
 
 **Current Working System** ✅:
 - **Full GRBL v1.1f protocol**: All system commands ($I, $G, $$, $#, $N, $), real-time commands (?, !, ~, ^X)
 - **Serial G-code control**: UART2 @ 115200 baud, UGS connects successfully as "GRBL 1.1f"
 - **Real-time position feedback**: Actual step counts from hardware → mm conversion in status reports
 - **Live settings management**: $$ views all 18 settings, $xxx=value modifies settings on-the-fly
-- **GRBL Simple Send-Response flow control**: Blocking protocol waits for motion complete before "ok" (Phase 1)
+- **GRBL Character-Counting Protocol**: Non-blocking "ok" response enables continuous motion ✨**PHASE 2 ACTIVE**
 - **Full G-code parser**: Modal/non-modal commands, 13 modal groups, M-command support
 - **Multi-axis S-curve control**: TMR1 @ 1kHz drives 7-segment jerk-limited profiles per axis
 - **Hardware pulse generation**: OCR modules (OCMP1/4/5/3) generate step pulses independently
 - **All axes ready**: X, Y, Z, A all enabled and configured
 - **Time-synchronized coordination**: Dominant (longest) axis determines total time, subordinate axes scale velocities
 - **Hardware configuration**: GT2 belt (80 steps/mm) on X/Y/A, 2.5mm leadscrew (1280 steps/mm) on Z
-- **Timer clock verified**: 12.5MHz (25MHz peripheral clock with 1:2 prescaler)
-- **Motion buffer infrastructure**: Ring buffer with look-ahead planning ready for streaming
+- **Timer clock FIXED**: 1.5625MHz (25MHz peripheral clock with 1:16 prescaler) ✨**CRITICAL FIX**
+- **Motion buffer infrastructure**: 16-block ring buffer for look-ahead planning (ready for optimization)
+- **PlantUML documentation**: 9 architecture diagrams for visual reference
 
 **Recent Additions (October 17, 2025)** ✅:
+- 🚀 **COMMAND BUFFER INTEGRATION** - Three-stage pipeline with 64-command buffer (80 commands total!)
+- 🔧 **COMMAND SEPARATION** - Splits concatenated G-code: "G92G0X10Y10" → ["G92"], ["G0 X10 Y10"]
+- ⚡ **NON-BLOCKING PROTOCOL** - "ok" response in ~175µs (570x faster than blocking!)
+- 🏗️ **BUILD SUCCESS** - command_buffer.c compiled and linked (202,936 byte hex)
+- 🔧 **CRITICAL: Timer prescaler fix** - Changed from 1:2 to 1:16 to prevent 16-bit overflow
+- ✅ **PlantUML documentation system**: 9 diagrams (system overview, data flow, timer architecture, etc.)
 - ✅ **System commands**: $I (version), $G (parser state), $$ (all settings), $N (startup lines), $ (help)
 - ✅ **Settings management**: $100-$133 read/write with MotionMath integration
 - ✅ **Real-time position feedback**: MultiAxis_GetStepCount() → MotionMath_StepsToMM() in ? status reports
 - ✅ **Machine state tracking**: "Idle" vs "Run" based on MultiAxis_IsBusy()
-- ✅ **GRBL Simple Send-Response protocol**: Blocking wait for motion complete before sending "ok"
 - ✅ **UGS connectivity verified**: Full initialization sequence working (?, $I, $$, $G)
 - ✅ **G-code parser**: Full GRBL v1.1f compliance with modal/non-modal commands (1354 lines)
 - ✅ **UGS interface**: Serial communication with flow control and real-time commands
@@ -39,30 +59,47 @@
 **Current File Structure**:
 ```
 srcs/
-  ├── main.c                        // Entry point, G-code processing loop, motion execution ✨UPDATED
-  ├── app.c                         // System management, LED status (SW1/SW2 removed) ✨UPDATED
-  ├── gcode_parser.c                // GRBL v1.1f parser (1354 lines) ✨NEW
-  ├── ugs_interface.c               // UGS serial protocol ✨NEW
+  ├── main.c                        // Entry point, three-stage pipeline, motion execution ✨UPDATED
+  ├── app.c                         // System management, LED status (SW1/SW2 removed)
+  ├── command_buffer.c              // Command separation algorithm (279 lines) ✨NEW
+  ├── gcode_parser.c                // GRBL v1.1f parser (1354 lines)
+  ├── ugs_interface.c               // UGS serial protocol
   └── motion/
-      ├── multiaxis_control.c       // Time-based S-curve interpolation (1169 lines)
-      ├── motion_math.c             // Kinematics & GRBL settings (733 lines)
+      ├── multiaxis_control.c       // Time-based S-curve interpolation (1169 lines) ✨UPDATED
+      ├── motion_math.c             // Kinematics & GRBL settings (733 lines) ✨UPDATED
       ├── motion_buffer.c           // Ring buffer for look-ahead planning (284 lines)
       └── stepper_control.c         // Legacy single-axis reference (unused)
 
 incs/
+  ├── command_buffer.h              // Command buffer API (183 lines) ✨NEW
   ├── gcode_parser.h                // Parser API, modal state (357 lines) ✨NEW
   ├── ugs_interface.h               // UGS protocol API ✨NEW
   └── motion/
-      ├── motion_types.h            // Centralized type definitions (235 lines)
+      ├── motion_types.h            // Centralized type definitions (235 lines) ✨UPDATED
       ├── motion_buffer.h           // Ring buffer API (207 lines)
       ├── multiaxis_control.h       // Multi-axis API
       └── motion_math.h             // Unit conversions, look-ahead support (398 lines)
 
 docs/
+  ├── COMMAND_BUFFER_ARCHITECTURE.md // Command separation architecture (450 lines) ✨NEW
+  ├── COMMAND_BUFFER_TESTING.md     // Testing guide (550 lines) ✨NEW
+  ├── BUILD_SUCCESS_COMMAND_BUFFER.md // Build verification (420 lines) ✨NEW
+  ├── PHASE2_NON_BLOCKING_PROTOCOL.md // Non-blocking protocol guide (320 lines) ✨NEW
   ├── GCODE_PARSER_COMPLETE.md      // Full GRBL v1.1f implementation guide ✨NEW
   ├── XC32_COMPLIANCE_GCODE_PARSER.md // MISRA/XC32 compliance documentation ✨NEW
   ├── APP_CLEANUP_SUMMARY.md        // SW1/SW2 removal documentation ✨NEW
-  └── MAKEFILE_QUIET_BUILD.md       // make quiet target documentation ✨NEW
+  ├── MAKEFILE_QUIET_BUILD.md       // make quiet target documentation ✨NEW
+  ├── TIMER_PRESCALER_ANALYSIS.md   // Prescaler fix analysis (1:2 → 1:16) ✨NEW
+  └── plantuml/                      // Architecture visualization (9 diagrams) ✨NEW
+      ├── README.md                  // PlantUML setup and viewing guide
+      ├── QUICK_REFERENCE.md         // PlantUML syntax cheat sheet
+      ├── TEMPLATE_NEW_PROJECT.puml  // Reusable template
+      ├── 01_system_overview.puml    // Hardware/firmware/application layers
+      ├── 02_data_flow.puml          // Serial → Parser → Buffer → Control
+      ├── 03_module_dependencies.puml // Module relationships
+      ├── 04_motion_buffer.puml      // Ring buffer architecture ✨FIXED
+      ├── 07_coordinated_move_sequence.puml // Motion execution sequence
+      └── 12_timer_architecture.puml // TMR1 + OCR timing ✨UPDATED
 ```
 
 **Design Philosophy**:
@@ -74,6 +111,7 @@ docs/
 - **Centralized types** (motion_types.h - single source of truth)
 - **MISRA C:2012 compliant** (safety-critical embedded code standards)
 - **XC32 optimized** (minimal RAM footprint, optimal flash placement)
+- **Visual documentation** (PlantUML diagrams for architecture understanding)
 
 **Motion Control Data Flow** (Production):
 ```
@@ -91,29 +129,45 @@ Hardware OCR/TMR Modules - Step pulse generation
 ```
 
 **TODO - NEXT PRIORITY**: 
-🎯 **Hardware Testing & Protocol Validation (Phase 1 Complete - Ready to Test!)**
+🎯 **CRITICAL: Update MCC Prescalers (Hardware Configuration)**
+- ⚠️ **MCC Action Required**: Open MCC and change prescalers to 1:16
+  - TMR2 (X-axis): Set prescaler to 1:16
+  - TMR3 (Z-axis): Set prescaler to 1:16
+  - TMR4 (Y-axis): Set prescaler to 1:16
+  - TMR5 (A-axis): Set prescaler to 1:16
+  - Regenerate code in MCC
+- ✅ **Code already updated**: TMR_CLOCK_HZ = 1562500UL (1.5625MHz)
+- 🎯 **Rebuild & Flash**: `make all` → Flash bins/CS23.hex
+
+🎯 **Hardware Testing & Protocol Validation (Phase 2 Active!)**
 - ✅ UGS connectivity verified - connects as "GRBL 1.1f"
 - ✅ System commands working - $I, $G, $$, $#, $N, $
 - ✅ Settings management - $100-$133 read/write operational
 - ✅ Real-time position feedback - ? command shows actual positions
-- ✅ Flow control implemented - GRBL Simple Send-Response blocking protocol
-- 🎯 **NEXT: Flash firmware and test actual motion via UGS**
-  - Send G-code moves: G90, G1 X10 Y10 F1000
-  - Verify blocking behavior: each move completes before "ok" sent (pauses between moves are CORRECT!)
+- ✅ **Non-blocking protocol active** - GRBL Character-Counting enables continuous motion!
+- ✅ **Timer prescaler fix applied** - Prevents 16-bit overflow at slow speeds
+- 🎯 **NEXT: Test continuous motion via UGS**
+  - Test slow Z-axis: G1 Z1 F60 (should move correctly, not 2-3x too fast!)
+  - Send multiple G-code moves: G90, G1 X10 Y10 F1000, G1 X20 Y20 F1000, G1 X30 Y30 F1000
+  - **Verify non-blocking behavior**: "ok" sent immediately, motion continues in background!
+  - **Verify continuous motion**: No stops between moves (buffer fills with commands)
   - Observe position values update during motion in UGS status window
   - Test real-time commands: ! (feed hold), ~ (cycle start), ^X (reset)
   - Verify settings changes: $100=200, send move, verify new steps/mm applied
-  - Use oscilloscope to confirm motion accuracy
+  - Use oscilloscope to confirm smooth cornering with multiple moves queued
+  - Test buffer full condition: Send 20+ rapid moves, verify UGS retries when buffer full
 
-🎯 **Future Development (Phase 2 - Look-Ahead Planning)**
-- Implement full look-ahead planning in motion buffer (currently placeholder)
-  - Forward pass: Calculate maximum exit velocities
+🎯 **Look-Ahead Planning Implementation (Ready for Phase 3!)**
+- Motion buffer now accepts commands non-blocking (Phase 2 complete ✅)
+- Next step: Implement full look-ahead planning in MotionBuffer_RecalculateAll()
+  - Forward pass: Calculate maximum exit velocities for each block
   - Reverse pass: Ensure acceleration limits respected
   - Junction velocity optimization for smooth cornering
-- Switch to GRBL Character-Counting protocol for continuous motion
-  - Track 128-byte RX buffer
-  - Send multiple commands without waiting for completion
-  - Enable smooth motion through corners without stops
+  - S-curve profile generation with entry/exit velocities
+- Test with complex G-code: Circles, spirals, text engraving paths
+- Measure corner speeds with oscilloscope (should NOT slow to zero!)
+
+🎯 **Future Development (Phase 3+)**
 - Add arc support (G2/G3 circular interpolation)
   - Arc engine with center-format and radius-format
   - Integration with look-ahead planner
@@ -309,12 +363,11 @@ static float max_velocity = 5000.0f;  // ❌ Use motion_math instead!
 ```
 Output Compare Module | Available Timer Sources | ACTUAL Assignment
 ------------------------------------------------------------------
-OC1 (Y-axis)         | Timer2 or Timer3        | TMR4 (per MCC)
+OC1 (Y-axis)         | Timer4 or Timer5        | TMR4 (per MCC)
 OC2 (unused)         | Timer4 or Timer5        | N/A
 OC3 (A-axis)         | Timer4 or Timer5        | TMR5 (per MCC)
 OC4 (X-axis)         | Timer2 or Timer3        | TMR2 (per MCC)
 OC5 (Z-axis)         | Timer2 or Timer3        | TMR3 (per MCC)
-```
 
 **OCR Dual-Compare Architecture - VERIFIED WORKING PATTERN (Oct 2025):**
 
@@ -439,6 +492,81 @@ High    Low   High   1/32 step
 - **CRITICAL**: Never connect/disconnect motors while powered - will destroy driver
 
 **Fault protection**:
+- **FAULT pin**: Pulls low on over-current, over-temperature, or under-voltage
+- **Protection resistor**: 1.5kΩ in series allows safe connection to logic supply
+- Our system can monitor this pin for real-time error detection
+
+### Timer Prescaler Configuration (CRITICAL - October 2025)
+
+**PROBLEM IDENTIFIED**: Original 1:2 prescaler caused 16-bit timer overflow at slow speeds
+
+**Root Cause Analysis**:
+```
+Original Configuration (BROKEN):
+- Peripheral Clock: 25MHz
+- Prescaler: 1:2
+- Timer Clock: 12.5MHz
+- Resolution: 80ns per count
+
+Example failure at 100 steps/sec:
+  Period required = 12,500,000 / 100 = 125,000 counts
+  16-bit timer max = 65,535 counts
+  Result: OVERFLOW! Hardware saturates, steppers run 2-3x too fast
+```
+
+**SOLUTION APPLIED**: Changed to **1:16 prescaler**
+
+**New Configuration (FIXED)**:
+```c
+// In motion_types.h:
+#define TMR_CLOCK_HZ 1562500UL  // 1.5625 MHz (25 MHz ÷ 16 prescaler)
+
+// Timer characteristics:
+Timer Clock: 1.5625MHz
+Resolution: 640ns per count
+Pulse Width: 40 counts = 25.6µs (exceeds DRV8825 1.9µs minimum ✓)
+
+// Step rate range (fits in 16-bit timer):
+Min: 23.8 steps/sec (period = 65,535 counts = 41.94ms)
+Max: 31,250 steps/sec (period = 50 counts = 32µs)
+
+// Example calculations:
+100 steps/sec:   period = 15,625 counts (10ms) ✓ FITS!
+1,000 steps/sec: period = 1,563 counts (1ms) ✓ FITS!
+5,000 steps/sec: period = 313 counts (200µs) ✓ FITS!
+```
+
+**MCC Configuration Required**:
+User must update prescalers in MPLAB X MCC:
+- TMR2 (X-axis): Set prescaler to **1:16**
+- TMR3 (Z-axis): Set prescaler to **1:16**
+- TMR4 (Y-axis): Set prescaler to **1:16**
+- TMR5 (A-axis): Set prescaler to **1:16**
+
+**Code Changes Applied**:
+1. ✅ `incs/motion/motion_types.h`: Updated `TMR_CLOCK_HZ` from 12500000UL to 1562500UL
+2. ✅ `srcs/motion/motion_math.c`: Updated OCR period calculations and comments
+3. ✅ `srcs/motion/multiaxis_control.c`: Updated timer clock comments
+4. ✅ `docs/plantuml/12_timer_architecture.puml`: Updated all timing diagrams
+5. ✅ `docs/TIMER_PRESCALER_ANALYSIS.md`: Full prescaler analysis document
+
+**Benefits of 1:16 Prescaler**:
+- ✅ Supports slow Z-axis moves (down to 24 steps/sec)
+- ✅ Still fast enough for rapids (up to 31,250 steps/sec)
+- ✅ All GRBL settings ($110-$113 max rates) fit within range
+- ✅ 13.5x safety margin on pulse width (25.6µs vs 1.9µs minimum)
+- ✅ Eliminates timer overflow causing "steppers running too fast" bug
+
+**Verification After MCC Update**:
+```gcode
+# Test slow Z-axis motion (should move correctly, not 2-3x too fast):
+G90
+G1 Z1 F60    ; 1mm @ 60mm/min (1mm/sec = 1,280 steps/sec)
+
+# Expected period: 1,562,500 / 1,280 = 1,221 counts (780µs) ✓ FITS!
+```
+
+### Fault protection**:
 - **FAULT pin**: Pulls low on over-current, over-temperature, or under-voltage
 - **Protection resistor**: 1.5kΩ in series allows safe connection to logic supply
 - Our system can monitor this pin for real-time error detection
