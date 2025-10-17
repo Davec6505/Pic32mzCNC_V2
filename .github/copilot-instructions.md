@@ -2,7 +2,7 @@
 
 ## ⚠️ CRITICAL HARDWARE FIX APPLIED (October 17, 2025)
 
-**TIMER PRESCALER FIX - RESOLVES STEPPER SPEED ISSUE** 🔧:
+**TIMER PRESCALER FIX - RESOLVES STEPPER SPEED ISSUE** ✅ **COMPLETE!**:
 - **Problem Found**: 1:2 prescaler (12.5MHz) caused 16-bit timer overflow at slow speeds
   - Example: 100 steps/sec requires 125,000 counts → **OVERFLOWS 16-bit limit (65,535)!**
   - Hardware saturated at max value, causing steppers to run **2-3x too fast**
@@ -10,9 +10,10 @@
   - New range: 23.8 to 31,250 steps/sec (fits in 16-bit timer ✓)
   - Pulse width: 40 counts × 640ns = **25.6µs** (exceeds DRV8825's 1.9µs minimum)
   - Period example: 100 steps/sec = 15,625 counts ✓ (no overflow!)
-- **Code Changes**: Updated `TMR_CLOCK_HZ` from 12500000UL to **1562500UL**
-- **MCC Action Required**: User must update TMR2/3/4/5 prescalers to 1:16 in MCC GUI
+- **Code Changes**: ✅ Updated `TMR_CLOCK_HZ` from 12500000UL to **1562500UL**
+- **MCC Configuration**: ✅ **COMPLETE!** TMR2/3/4/5 prescalers updated to 1:16 in MCC GUI
 - **Documentation**: See `docs/TIMER_PRESCALER_ANALYSIS.md` for full analysis
+- **Status**: ✅ Ready for rebuild and hardware testing!
 
 ## ⚠️ CURRENT STATUS: Command Buffer Integration Complete! (October 17, 2025)
 
@@ -30,7 +31,7 @@
 - **All axes ready**: X, Y, Z, A all enabled and configured
 - **Time-synchronized coordination**: Dominant (longest) axis determines total time, subordinate axes scale velocities
 - **Hardware configuration**: GT2 belt (80 steps/mm) on X/Y/A, 2.5mm leadscrew (1280 steps/mm) on Z
-- **Timer clock FIXED**: 1.5625MHz (25MHz peripheral clock with 1:16 prescaler) ✨**CRITICAL FIX**
+- **Timer clock FIXED**: 1.5625MHz (25MHz peripheral clock with 1:16 prescaler) ✨**COMPLETE - CODE & MCC!**
 - **Motion buffer infrastructure**: 16-block ring buffer for look-ahead planning (ready for optimization)
 - **PlantUML documentation**: 9 architecture diagrams for visual reference
 
@@ -39,7 +40,7 @@
 - 🔧 **COMMAND SEPARATION** - Splits concatenated G-code: "G92G0X10Y10" → ["G92"], ["G0 X10 Y10"]
 - ⚡ **NON-BLOCKING PROTOCOL** - "ok" response in ~175µs (570x faster than blocking!)
 - 🏗️ **BUILD SUCCESS** - command_buffer.c compiled and linked (202,936 byte hex)
-- 🔧 **CRITICAL: Timer prescaler fix** - Changed from 1:2 to 1:16 to prevent 16-bit overflow
+- ✅ **CRITICAL: Timer prescaler fix COMPLETE** - Both code AND MCC updated to 1:16 (ready to test!)
 - ✅ **PlantUML documentation system**: 9 diagrams (system overview, data flow, timer architecture, etc.)
 - ✅ **System commands**: $I (version), $G (parser state), $$ (all settings), $N (startup lines), $ (help)
 - ✅ **Settings management**: $100-$133 read/write with MotionMath integration
@@ -129,17 +130,12 @@ Hardware OCR/TMR Modules - Step pulse generation
 ```
 
 **TODO - NEXT PRIORITY**: 
-🎯 **CRITICAL: Update MCC Prescalers (Hardware Configuration)**
-- ⚠️ **MCC Action Required**: Open MCC and change prescalers to 1:16
-  - TMR2 (X-axis): Set prescaler to 1:16
-  - TMR3 (Z-axis): Set prescaler to 1:16
-  - TMR4 (Y-axis): Set prescaler to 1:16
-  - TMR5 (A-axis): Set prescaler to 1:16
-  - Regenerate code in MCC
-- ✅ **Code already updated**: TMR_CLOCK_HZ = 1562500UL (1.5625MHz)
-- 🎯 **Rebuild & Flash**: `make all` → Flash bins/CS23.hex
-
 🎯 **Hardware Testing & Protocol Validation (Phase 2 Active!)**
+- ✅ **MCC Prescalers Updated**: All timers (TMR2/3/4/5) now configured to 1:16 ✨**COMPLETE!**
+- ✅ **Code Updated**: TMR_CLOCK_HZ = 1562500UL (1.5625MHz)
+- 🎯 **NEXT: Rebuild & Flash**: `make all` → Flash bins/CS23.hex
+
+🎯 **Hardware Motion Testing (Ready to Test!)**
 - ✅ UGS connectivity verified - connects as "GRBL 1.1f"
 - ✅ System commands working - $I, $G, $$, $#, $N, $
 - ✅ Settings management - $100-$133 read/write operational
