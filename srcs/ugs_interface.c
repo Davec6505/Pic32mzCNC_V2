@@ -5,10 +5,10 @@
  * Provides printf-style communication between motion_buffer and UGS via UART2.
  *
  * Data Flow Architecture:
- *   UGS (PC) ←→ UART2 (256B RX/TX ring buffers) ←→ This Module ←→ motion_buffer
+ *   UGS (PC) ←→ UART2 (512B RX/TX ring buffers) ←→ This Module ←→ motion_buffer
  *
  * UART2_Write Interface (plib_uart2.c):
- *   - Copies data to static UART2_WriteBuffer[256] ring buffer
+ *   - Copies data to static UART2_WriteBuffer[512] ring buffer
  *   - Uses wrInIndex/wrOutIndex (volatile uint32_t) for thread safety
  *   - UART TX ISR transmits from buffer automatically
  *   - Returns bytes successfully queued (non-blocking)
@@ -31,9 +31,9 @@
  * @brief Static buffer for printf formatting
  *
  * MISRA Rule 8.7: File scope static buffer for thread safety.
- * Size matches UART2 TX ring buffer (256 bytes from plib_uart2.c).
+ * Size matches UART2 TX ring buffer (512 bytes from plib_uart2.c, increased from 256).
  *
- * Flow: vsnprintf() → This buffer → UART2_Write() → UART2_WriteBuffer[256] → ISR → UGS
+ * Flow: vsnprintf() → This buffer → UART2_Write() → UART2_WriteBuffer[512] → ISR → UGS
  */
 static char tx_format_buffer[UGS_SERIAL_TX_BUFFER_SIZE];
 
@@ -258,7 +258,7 @@ void UGS_SendHelp(void)
 /**
  * @brief Send GRBL build info (response to "$I" command)
  *
- * Format: "[VER:1.1f.20251017:]\r\n[OPT:V,15,128]\r\n"
+ * Format: "[VER:1.1f.20251017:]\r\n[OPT:V,16,512]\r\n"
  *
  * CRITICAL: UGS uses this to detect GRBL version!
  * Without this response, UGS connection fails.
@@ -271,9 +271,9 @@ void UGS_SendBuildInfo(void)
     /* Options string:
      * V = Variable spindle enabled
      * 16 = Motion buffer size (blocks)
-     * 256 = Serial RX buffer size (bytes)
+     * 512 = Serial RX buffer size (bytes) - Increased from 256 to match mikroC (500B)
      */
-    (void)UGS_Print("[OPT:V,16,256]\r\n");
+    (void)UGS_Print("[OPT:V,16,512]\r\n");
 }
 
 /**

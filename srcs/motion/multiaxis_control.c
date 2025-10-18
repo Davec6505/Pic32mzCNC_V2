@@ -18,6 +18,7 @@
 #include "motion/multiaxis_control.h"
 #include "motion/motion_math.h"
 #include "config/default/peripheral/gpio/plib_gpio.h"
+#include "ugs_interface.h"
 
 #include "definitions.h"
 #include <stdbool.h>
@@ -451,6 +452,12 @@ static bool calculate_scurve_profile(axis_id_t axis, uint32_t distance)
     float max_accel = MotionMath_GetAccelStepsPerSec2(axis);
     float max_jerk = MotionMath_GetJerkStepsPerSec3(axis);
 
+#ifdef DEBUG_MOTION_BUFFER
+    // Debug: Print S-curve inputs
+    UGS_Debug("[SCURVE] axis=%d distance=%lu maxV=%.1f maxA=%.1f maxJ=%.1f\r\n",
+              axis, distance, max_velocity, max_accel, max_jerk);
+#endif
+
     float t_jerk = max_accel / max_jerk;
     float v_jerk = 0.5f * max_accel * t_jerk;
     float d_jerk = (1.0f / 6.0f) * max_jerk * t_jerk * t_jerk * t_jerk;
@@ -557,6 +564,21 @@ static bool calculate_scurve_profile(axis_id_t axis, uint32_t distance)
     }
 
     s->total_steps = distance;
+
+#ifdef DEBUG_MOTION_BUFFER
+    // Debug: Print S-curve segment times
+    {
+        float total_time = s->t1_jerk_accel + s->t2_const_accel + s->t3_jerk_decel_accel +
+                           s->t4_cruise + s->t5_jerk_accel_decel + s->t6_const_decel + s->t7_jerk_decel_decel;
+        (void)total_time; // Suppress unused warning if UGS_Debug is disabled
+        UGS_Debug("[SCURVE] Times: t1=%.3f t2=%.3f t3=%.3f t4=%.3f t5=%.3f t6=%.3f t7=%.3f total=%.3f\r\n",
+                  s->t1_jerk_accel, s->t2_const_accel, s->t3_jerk_decel_accel,
+                  s->t4_cruise, s->t5_jerk_accel_decel, s->t6_const_decel, s->t7_jerk_decel_decel, total_time);
+        UGS_Debug("[SCURVE] Velocities: v1=%.1f v2=%.1f v3=%.1f cruise=%.1f v5=%.1f v6=%.1f\r\n",
+                  s->v_end_segment1, s->v_end_segment2, s->v_end_segment3,
+                  s->cruise_velocity, s->v_end_segment5, s->v_end_segment6);
+    }
+#endif
 
     return true;
 }
@@ -669,8 +691,8 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
             new_accel = 0.0f;
             new_velocity = s->cruise_velocity;
 
-            // Safety: if we've traveled the distance, start deceleration
-            if (s->elapsed_time >= s->t4_cruise || s->step_count >= (s->total_steps * 0.6f))
+            // Transition based on TIME only (S-curve is time-based, not step-based)
+            if (s->elapsed_time >= s->t4_cruise)
             {
                 s->current_segment = SEGMENT_JERK_ACCEL_DECEL;
                 s->elapsed_time = 0.0f;
@@ -708,10 +730,9 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
                            (max_accel * s->elapsed_time) +
                            (0.5f * max_jerk * s->elapsed_time * s->elapsed_time);
 
-            // Check time-based OR step-based completion
-            if (s->elapsed_time >= s->t7_jerk_decel_decel ||
-                new_velocity <= 0.1f ||
-                s->step_count >= s->total_steps)
+            // Transition based on TIME or velocity reaching zero
+            // Step count check removed - S-curve is time-based!
+            if (s->elapsed_time >= s->t7_jerk_decel_decel || new_velocity <= 0.1f)
             {
                 s->current_segment = SEGMENT_COMPLETE;
                 new_velocity = 0.0f;
@@ -722,6 +743,15 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
             // CRITICAL: Stop timer then disable OCR
             axis_hw[dominant_axis].TMR_Stop();
             axis_hw[dominant_axis].OCMP_Disable();
+
+#ifdef DEBUG_MOTION_BUFFER
+            // Debug: Report final motion state
+            UGS_Debug("[COMPLETE] axis=%d steps=%lu/%lu (%.1f%%) time=%.3fs\r\n",
+                      dominant_axis, s->step_count, s->total_steps,
+                      (float)s->step_count * 100.0f / (float)s->total_steps,
+                      s->total_elapsed);
+#endif
+
             // Clear state
             s->active = false;
             s->current_velocity = 0.0f;
@@ -767,24 +797,6 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
             axis_hw[dominant_axis].TMR_PeriodSet(dominant_ocr_period);
             axis_hw[dominant_axis].OCMP_CompareValueSet(dominant_ocr_period - OCMP_PULSE_WIDTH);
             axis_hw[dominant_axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
-
-#ifdef DEBUG_MOTION_BUFFER
-            // Debug: Print dominant axis OCR calculations (once per move, not every 1ms!)
-            static uint8_t debug_count = 0;
-            if (debug_count == 0 && s->current_segment == SEGMENT_ACCEL_1)
-            {
-                const char *axis_names[] = {"X", "Y", "Z", "A"};
-                UGS_Printf("[OCR-DOM] %s: vel=%.1f steps/s, period=%lu counts, steps=%ld/%ld\r\n",
-                           axis_names[dominant_axis],
-                           s->current_velocity,
-                           dominant_ocr_period,
-                           s->step_count,
-                           s->total_steps);
-                debug_count = 100; // Print once, then skip 100ms
-            }
-            if (debug_count > 0)
-                debug_count--;
-#endif
         }
     }
 
@@ -818,6 +830,21 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
         // Check if axis velocity scale is zero (axis not moving in this coordinated move)
         if (coord_move.axis_velocity_scale[axis] == 0.0f)
             continue;
+
+        // Check if dominant axis completed motion (subordinate must also stop!)
+        // NOTE: Check this BEFORE copying segment state, because dominant may have
+        // already transitioned from SEGMENT_COMPLETE to SEGMENT_IDLE!
+        if (!axis_state[dominant_axis].active)
+        {
+            // Stop subordinate axis - dominant has completed
+            axis_hw[axis].TMR_Stop();
+            axis_hw[axis].OCMP_Disable();
+            sub->active = false;
+            sub->current_velocity = 0.0f;
+            sub->current_accel = 0.0f;
+            sub->current_segment = SEGMENT_IDLE;
+            continue;
+        }
 
         // Update segment timing from dominant axis (time synchronization)
         sub->current_segment = axis_state[dominant_axis].current_segment;
@@ -853,24 +880,6 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
         axis_hw[axis].TMR_PeriodSet(subordinate_ocr_period);
         axis_hw[axis].OCMP_CompareValueSet(subordinate_ocr_period - OCMP_PULSE_WIDTH);
         axis_hw[axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
-
-#ifdef DEBUG_MOTION_BUFFER
-        // Debug: Print subordinate axis OCR calculations
-        static uint8_t sub_debug_count[NUM_AXES] = {0};
-        if (sub_debug_count[axis] == 0 && sub->current_segment == SEGMENT_ACCEL_1)
-        {
-            const char *axis_names[] = {"X", "Y", "Z", "A"};
-            UGS_Printf("[OCR-SUB] %s: ratio=%.3f, period=%lu counts, steps=%ld/%ld\r\n",
-                       axis_names[axis],
-                       step_ratio,
-                       subordinate_ocr_period,
-                       sub->step_count,
-                       sub->total_steps);
-            sub_debug_count[axis] = 100; // Print once, then skip 100ms
-        }
-        if (sub_debug_count[axis] > 0)
-            sub_debug_count[axis]--;
-#endif
 
         // Update velocity for informational purposes (not used for control!)
         // velocity = TMR_CLOCK_HZ / period
@@ -1327,34 +1336,7 @@ void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES])
 
         axis_hw[axis].OCMP_Enable(); /* Enable OCR output */
         axis_hw[axis].TMR_Start();   /* Start timer (CRITICAL - must restart each move) */
-
-#ifdef DEBUG_MOTION_BUFFER
-        /* Debug: Print initial axis setup */
-        const char *axis_names[] = {"X", "Y", "Z", "A"};
-        UGS_Printf("[START] %s: steps=%ld dir=%s scale=%.3f initial_period=%lu\r\n",
-                   axis_names[axis],
-                   s->total_steps,
-                   s->direction_forward ? "FWD" : "REV",
-                   velocity_scale,
-                   initial_period);
-#endif
     }
-
-#ifdef DEBUG_MOTION_BUFFER
-    /* Print coordinated move summary */
-    const char *axis_names[] = {"X", "Y", "Z", "A"};
-    UGS_Printf("[COORD] Dominant=%s time=%.3fs active axes: ",
-               axis_names[coord_move.dominant_axis],
-               coord_move.total_move_time);
-    for (axis_id_t a = AXIS_X; a < NUM_AXES; a++)
-    {
-        if (axis_state[a].active)
-        {
-            UGS_Printf("%s(%ld) ", axis_names[a], axis_state[a].total_steps);
-        }
-    }
-    UGS_Printf("\r\n");
-#endif
 
     /* Visual feedback: LED1 solid during coordinated motion */
     LED1_Set();

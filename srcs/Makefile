@@ -142,7 +142,16 @@ ifeq ($(COMPILER),c99)
 CC := "$(COMPILER_LOCATION)/xc32-gcc"
 MCU := -mprocessor=$(DEVICE)
 STD := c99
+# Debug mode control: set DEBUG=1 on command line to enable diagnostic output
+# Usage: make all DEBUG=1  (enables -DDEBUG_MOTION_BUFFER)
+#        make all          (production build, no debug output)
+ifeq ($(DEBUG),1)
 FLAGS := -Werror -Wall -MP -MMD -DDEBUG_MOTION_BUFFER
+$(info *** DEBUG MODE ENABLED: -DDEBUG_MOTION_BUFFER defined ***)
+else
+FLAGS := -Werror -Wall -MP -MMD
+$(info *** PRODUCTION BUILD: Debug output disabled ***)
+endif
 else
 CC := "$(COMPILER_LOCATION)/xc32"
 MCU := -mprocessor=$(DEVICE)

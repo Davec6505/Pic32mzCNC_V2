@@ -8,14 +8,6 @@
  * @date October 16, 2025
  */
 
-// Debug configuration
-// *****************************************************************************
-// Debug Configuration
-// *****************************************************************************
-#define DEBUG_MOTION_BUFFER // Enable debug output for motion buffer analysis
-
-// *****************************************************************************
-
 #include "motion/motion_buffer.h"
 #include "motion/motion_math.h"
 #include "motion/multiaxis_control.h" /* For MultiAxis_GetStepCount() */

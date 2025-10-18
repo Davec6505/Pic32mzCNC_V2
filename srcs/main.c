@@ -23,11 +23,6 @@
 *******************************************************************************/
 
 // *****************************************************************************
-// Debug Configuration
-// *****************************************************************************
-#define DEBUG_MOTION_BUFFER // Re-enabled to see execution values
-
-// *****************************************************************************
 // Section: Included Files
 // *****************************************************************************
 
@@ -46,9 +41,16 @@
 #include "motion/multiaxis_control.h" // Multi-axis coordinated motion
 
 // *****************************************************************************
-// Debug: UART RX Callback
+// External Test Functions (test_ocr_direct.c)
 // *****************************************************************************
-#ifdef DEBUG_MOTION_BUFFER
+extern void TestOCR_CheckCommands(void);
+extern void TestOCR_ExecuteTest(void);
+extern void TestOCR_ResetCounters(void);
+
+// *****************************************************************************
+// Debug: UART RX Callback (DISABLED - causes race conditions with polling)
+// *****************************************************************************
+#ifdef DEBUG_MOTION_BUFFER_DISABLED_FOR_NOW
 static volatile uint32_t uart_rx_int_count = 0;
 static void UART_RxDebugCallback(UART_EVENT event, uintptr_t context)
 {
@@ -89,19 +91,19 @@ static void ProcessSerialRx(void)
 {
   static char line_buffer[256] = {0}; /* Initialize to zeros on first use */
 
-  /* V1 Pattern: Call GCode_BufferLine() ONCE per main loop iteration
-   * This matches the original V1 code pattern:
-   *   - V1 called Sample_Gocde_Line() once per loop
-   *   - Control characters handled INSIDE the function when no complete line
-   *   - Returns false when no data, but doesn't exit main loop
+  /* CRITICAL FIX: Process ALL available serial data in one call
+   * Previous issue: Called GCode_BufferLine() once, but if main loop is slow,
+   * bytes arrive faster than we can read them (115200 baud = 87µs per byte).
+   * PIC32MZ UART FIFO is only 9 bytes deep!
    *
-   * CRITICAL: Do NOT use while loop! That causes every-2nd-query bug:
-   *   - First call: '?' received, handled, returns true
-   *   - Second call: UART empty (next '?' not arrived yet), returns false → loop exits
-   *   - Third call (next main loop): New '?' arrived, works again
-   *   - Result: Alternating success/fail pattern (10/20 = 50%)
+   * Solution: Keep calling GCode_BufferLine() until it returns false,
+   * ensuring we drain the UART buffer completely before processing commands.
+   *
+   * This does NOT violate the "once per loop" rule for control characters:
+   * - Control chars return immediately (no tokenization/processing)
+   * - Only complete lines trigger command buffer processing below
    */
-  if (GCode_BufferLine(line_buffer, sizeof(line_buffer)))
+  while (GCode_BufferLine(line_buffer, sizeof(line_buffer)))
   {
     /* Trim leading whitespace (newlines, spaces, tabs) */
     char *line_start = line_buffer;
@@ -452,7 +454,11 @@ int main(void)
   /* Initialize UGS serial interface */
   UGS_Initialize();
 
-#ifdef DEBUG_MOTION_BUFFER
+  /* DEBUG: Callback removed - it interferes with polling-based UART2_Read()
+   * The callback fires on every byte, potentially causing race conditions
+   * with our byte-by-byte reading in GCode_BufferLine().
+   */
+#ifdef DEBUG_MOTION_BUFFER_DISABLED_FOR_NOW
   /* Register RX notification callback to prove interrupts work */
   UART2_ReadNotificationEnable(true, false);
   UART2_ReadCallbackRegister(UART_RxDebugCallback, 0);
@@ -487,6 +493,11 @@ int main(void)
   /* Main application loop - Three-stage pipeline */
   while (true)
   {
+    /* OCR Direct Hardware Test - Check for 'T' command */
+    TestOCR_CheckCommands();
+    TestOCR_ExecuteTest();
+    TestOCR_ResetCounters();
+
     /* Stage 1: Process incoming serial data → Command Buffer (64 entries)
      * - Receives lines from UART
      * - Tokenizes: "G92G0X10" → ["G92", "G0", "X10"]

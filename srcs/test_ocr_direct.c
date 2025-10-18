@@ -7,9 +7,11 @@
  * to verify the OCR period scaling fix is working correctly.
  *
  * Usage:
- *   Send 'T' via serial to trigger test moves
+ *   Send '$T' via serial to trigger test moves (GRBL system command style)
  *   Send '?' to check position
- *   Send 'R' to reset position counters
+ *   Send '$R' to reset position counters
+ *
+ * Note: Uses '$T' instead of 'T' to avoid conflict with G-code T (tool change)
  */
 
 #include "definitions.h"
@@ -17,13 +19,22 @@
 #include "motion/motion_math.h"
 #include "ugs_interface.h"
 #include <string.h>
+#include <stdio.h>
+#include <inttypes.h> // For PRId32 format specifier
 
 // Test command flag (set by serial command handler)
 static volatile bool test_trigger = false;
 static volatile bool reset_trigger = false;
+static char cmd_buffer[3] = {0}; // Buffer for $T or $R commands
+static uint8_t cmd_index = 0;
 
 /**
  * @brief Check for test commands from serial
+ * 
+ * Recognizes GRBL-style system commands:
+ *   $T or $t - Trigger direct hardware test
+ *   $R or $r - Reset position counters
+ *   $D or $d - Debug axis state information
  */
 void TestOCR_CheckCommands(void)
 {
@@ -35,13 +46,50 @@ void TestOCR_CheckCommands(void)
     char cmd;
     if (UART2_Read((uint8_t *)&cmd, 1) == 1)
     {
-        if (cmd == 'T' || cmd == 't')
+        // Build command buffer for $X style commands
+        if (cmd == '$')
         {
-            test_trigger = true;
+            cmd_buffer[0] = '$';
+            cmd_index = 1;
         }
-        else if (cmd == 'R' || cmd == 'r')
+        else if (cmd_index == 1)
         {
-            reset_trigger = true;
+            // Second character after '$'
+            cmd_buffer[1] = cmd;
+            cmd_buffer[2] = '\0';
+            
+            // Check for test commands
+            if (cmd == 'T' || cmd == 't')
+            {
+                test_trigger = true;
+            }
+            else if (cmd == 'R' || cmd == 'r')
+            {
+                reset_trigger = true;
+            }
+            else if (cmd == 'D' || cmd == 'd')
+            {
+                // Debug: Print axis state information
+                UGS_Print("\r\n[DEBUG] Axis State Information:\r\n");
+                for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+                {
+                    int32_t steps = MultiAxis_GetStepCount(axis);
+                    float mm = MotionMath_StepsToMM(steps, axis);
+                    char dbg[100];
+                    const char *axis_names[] = {"X", "Y", "Z", "A"};
+                    snprintf(dbg, sizeof(dbg), "  %s: %" PRId32 " steps = %.3fmm\r\n",
+                             axis_names[axis], steps, mm);
+                    UGS_Print(dbg);
+                }
+            }
+            
+            // Reset buffer
+            cmd_index = 0;
+        }
+        else
+        {
+            // Not building a $ command, reset
+            cmd_index = 0;
         }
     }
 }
@@ -93,7 +141,7 @@ void TestOCR_ExecuteTest(void)
     float y_mm = MotionMath_StepsToMM(y_steps, AXIS_Y);
 
     char msg[100];
-    snprintf(msg, sizeof(msg), "  Result: Y=%ld steps = %.3fmm\r\n", y_steps, y_mm);
+    snprintf(msg, sizeof(msg), "  Result: Y=%" PRId32 " steps = %.3fmm\r\n", y_steps, y_mm);
     UGS_Print(msg);
 
     if (y_steps == 800)
@@ -110,7 +158,7 @@ void TestOCR_ExecuteTest(void)
     }
     else
     {
-        snprintf(msg, sizeof(msg), "  ✗ FAIL: Expected 800 steps, got %ld\r\n", y_steps);
+        snprintf(msg, sizeof(msg), "  ✗ FAIL: Expected 800 steps, got %" PRId32 "\r\n", y_steps);
         UGS_Print(msg);
     }
 
@@ -133,9 +181,9 @@ void TestOCR_ExecuteTest(void)
     float x_mm = MotionMath_StepsToMM(x_steps, AXIS_X);
     float y_mm2 = MotionMath_StepsToMM(y_steps2, AXIS_Y);
 
-    snprintf(msg, sizeof(msg), "  Result: X=%ld steps = %.3fmm\r\n", x_steps, x_mm);
+    snprintf(msg, sizeof(msg), "  Result: X=%" PRId32 " steps = %.3fmm\r\n", x_steps, x_mm);
     UGS_Print(msg);
-    snprintf(msg, sizeof(msg), "          Y=%ld steps = %.3fmm\r\n", y_steps2, y_mm2);
+    snprintf(msg, sizeof(msg), "          Y=%" PRId32 " steps = %.3fmm\r\n", y_steps2, y_mm2);
     UGS_Print(msg);
 
     if (x_steps == 800 && y_steps2 == 1600)
@@ -144,7 +192,7 @@ void TestOCR_ExecuteTest(void)
     }
     else
     {
-        snprintf(msg, sizeof(msg), "  ✗ FAIL: Expected X=800, Y=1600, got X=%ld, Y=%ld\r\n",
+        snprintf(msg, sizeof(msg), "  ✗ FAIL: Expected X=800, Y=1600, got X=%" PRId32 ", Y=%" PRId32 "\r\n",
                  x_steps, y_steps2);
         UGS_Print(msg);
     }
@@ -168,9 +216,9 @@ void TestOCR_ExecuteTest(void)
     float x_mm_final = MotionMath_StepsToMM(x_final, AXIS_X);
     float y_mm_final = MotionMath_StepsToMM(y_final, AXIS_Y);
 
-    snprintf(msg, sizeof(msg), "  Final: X=%ld steps = %.3fmm\r\n", x_final, x_mm_final);
+    snprintf(msg, sizeof(msg), "  Final: X=%" PRId32 " steps = %.3fmm\r\n", x_final, x_mm_final);
     UGS_Print(msg);
-    snprintf(msg, sizeof(msg), "         Y=%ld steps = %.3fmm\r\n", y_final, y_mm_final);
+    snprintf(msg, sizeof(msg), "         Y=%" PRId32 " steps = %.3fmm\r\n", y_final, y_mm_final);
     UGS_Print(msg);
 
     if (x_final == 0 && y_final == 0)
@@ -183,7 +231,7 @@ void TestOCR_ExecuteTest(void)
     }
     else
     {
-        snprintf(msg, sizeof(msg), "  ✗ FAIL: Position error X=%ld, Y=%ld steps\r\n",
+        snprintf(msg, sizeof(msg), "  ✗ FAIL: Position error X=%" PRId32 ", Y=%" PRId32 " steps\r\n",
                  x_final, y_final);
         UGS_Print(msg);
     }
@@ -193,6 +241,8 @@ void TestOCR_ExecuteTest(void)
 
 /**
  * @brief Reset step counters to zero
+ * Note: This is a manual reset message only. Step counters are maintained
+ * by hardware and reset only on system reset or firmware reload.
  */
 void TestOCR_ResetCounters(void)
 {
@@ -203,11 +253,6 @@ void TestOCR_ResetCounters(void)
 
     reset_trigger = false;
 
-    // Reset all axis step counters
-    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
-    {
-        MultiAxis_ResetStepCount(axis);
-    }
-
-    UGS_Print("Step counters reset to zero\r\n");
+    UGS_Print("Note: Step counters are hardware-maintained.\r\n");
+    UGS_Print("To reset, perform a system reset or reload firmware.\r\n");
 }

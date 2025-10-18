@@ -263,18 +263,43 @@ bool GCode_BufferLine(char *line, size_t line_size)
         return false;
     }
 
-    /* Read as many bytes as we can fit
-     * This advances the UART ring buffer tail pointer automatically */
-    size_t to_read = (available < space_left) ? available : space_left;
-    size_t bytes_read = UART2_Read((uint8_t *)&line_buffer.buffer[line_buffer.index], to_read);
-
-    /* Now scan the newly read data for line terminators */
-    for (size_t i = 0; i < bytes_read; i++)
+    /* DIAGNOSTIC: Read ONE BYTE AT A TIME with detailed logging
+     * This will help us see EXACTLY what bytes are received and in what order
+     */
+    while (space_left > 0)
     {
-        char c = line_buffer.buffer[line_buffer.index + i];
+        uint8_t byte;
+
+        /* Read ONE byte from UART ring buffer */
+        size_t bytes_read = UART2_Read(&byte, 1);
+        if (bytes_read == 0)
+        {
+            /* No more data available */
+#ifdef DEBUG_MOTION_BUFFER
+            if (line_buffer.index > 0)
+            {
+                UGS_Printf("[WAIT] Partial line, index=%u, waiting for more data\r\n", line_buffer.index);
+            }
+#endif
+            break;
+        }
+
+        char c = (char)byte;
+
+        /* DIAGNOSTIC: Log every byte received */
+#ifdef DEBUG_MOTION_BUFFER
+        if (c >= 32 && c < 127)
+        {
+            UGS_Printf("[BYTE] %u='%c' index=%u\r\n", (uint8_t)c, c, line_buffer.index);
+        }
+        else
+        {
+            UGS_Printf("[BYTE] %u=(ctrl) index=%u\r\n", (uint8_t)c, line_buffer.index);
+        }
+#endif
 
         /* Check for control character at start of line */
-        if (line_buffer.index == 0 && i == 0 && GCode_IsControlChar(c))
+        if (line_buffer.index == 0 && GCode_IsControlChar(c))
         {
             handle_control_char(c);
             line[0] = c;
@@ -282,87 +307,62 @@ bool GCode_BufferLine(char *line, size_t line_size)
 #ifdef DEBUG_MOTION_BUFFER
             UGS_Printf("[CTRL] char='%c'\r\n", c);
 #endif
-            /* UGS sends control characters as SINGLE BYTES with NO line terminators!
-             * Example: UGS sends just '?' (0x3F), NOT "?\r\n"
-             *
-             * However, if a control char happens to be followed by line terminators
-             * (e.g., from a serial terminal), we should skip those too to prevent
-             * them from being processed as an empty line.
-             *
-             * CRITICAL: Must check bounds - don't read past bytes_read! */
-            size_t skip = 1;          /* Start by skipping the control char itself */
-            while (skip < bytes_read) /* BOUNDS CHECK: Don't read past what we received */
-            {
-                char next = line_buffer.buffer[skip];
-                if (next == GCODE_CTRL_LINE_FEED || next == GCODE_CTRL_CARRIAGE_RET)
-                {
-                    skip++; /* Also skip this terminator */
-                }
-                else
-                {
-                    break; /* Stop at first non-terminator */
-                }
-            }
-
-            /* Shift remaining bytes to start of buffer */
-            size_t remaining = bytes_read - skip;
-            if (remaining > 0)
-            {
-                memmove(line_buffer.buffer, &line_buffer.buffer[skip], remaining);
-                line_buffer.index = remaining;
-            }
-            else
-            {
-                line_buffer.index = 0;
-            }
-
-            /* Clear the rest of the buffer to prevent garbage */
-            memset(&line_buffer.buffer[line_buffer.index], 0, sizeof(line_buffer.buffer) - line_buffer.index);
-
+            /* Control characters are single bytes, no terminators to skip */
+            line_buffer.index = 0;
             return true;
         }
 
         /* Check for line terminator */
         if (c == GCODE_CTRL_LINE_FEED || c == GCODE_CTRL_CARRIAGE_RET)
         {
-            size_t line_end_pos = line_buffer.index + i;
-            if (line_end_pos > 0)
+            if (line_buffer.index > 0)
             {
                 /* Found complete line! */
-                line_buffer.buffer[line_end_pos] = '\0';
+                line_buffer.buffer[line_buffer.index] = '\0';
 
                 /* Copy to output */
-                size_t copy_size = (line_end_pos < line_size - 1) ? line_end_pos : (line_size - 1);
+                size_t copy_size = (line_buffer.index < line_size - 1) ? line_buffer.index : (line_size - 1);
                 memcpy(line, line_buffer.buffer, copy_size);
                 line[copy_size] = '\0';
 
 #ifdef DEBUG_MOTION_BUFFER
-                UGS_Printf("[LINE] '%s' (len=%u)\r\n", line, line_end_pos);
+                UGS_Printf("[LINE] '%s' (len=%u)\r\n", line, line_buffer.index);
 #endif
 
-                /* Shift remaining unprocessed data to start of buffer */
-                size_t remaining = bytes_read - i - 1;
-                if (remaining > 0)
-                {
-                    memmove(line_buffer.buffer,
-                            &line_buffer.buffer[line_end_pos + 1],
-                            remaining);
-                    line_buffer.index = remaining;
-                }
-                else
-                {
-                    line_buffer.index = 0;
-                }
+                /* Reset buffer for next line */
+                line_buffer.index = 0;
+                memset(line_buffer.buffer, 0, sizeof(line_buffer.buffer));
 
-                return true;
+                return true; /* Complete line found */
             }
-            /* Empty line, skip the terminator */
+            else
+            {
+                /* Empty line (just a terminator) - ignore and continue reading */
+#ifdef DEBUG_MOTION_BUFFER
+                UGS_Printf("[SKIP] Empty line terminator\r\n");
+#endif
+                continue;
+            }
         }
+
+        /* Normal character - add to buffer */
+        line_buffer.buffer[line_buffer.index] = c;
+        line_buffer.index++;
+        space_left--;
     }
 
-    /* No complete line found yet, update index to include new bytes */
-    line_buffer.index += bytes_read;
+    /* Reached here: Either buffer full or no complete line yet */
+    if (space_left == 0)
+    {
+        /* Buffer full without finding terminator - error */
+        (void)snprintf(last_error, sizeof(last_error),
+                       "Line exceeds %d characters", GCODE_MAX_LINE_LENGTH);
+        line_buffer.index = 0;
+        memset(line_buffer.buffer, 0, sizeof(line_buffer.buffer));
+        return false;
+    }
 
+    /* No complete line yet - more data needed */
     return false;
 }
 
