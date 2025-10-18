@@ -410,6 +410,10 @@ typedef struct
 // Per-axis state (accessed from main code AND TMR1 interrupt @ 1kHz)
 static volatile scurve_state_t axis_state[NUM_AXES];
 
+// Coordinated move state (accessed from main code AND TMR1 interrupt @ 1kHz)
+// Stores dominant axis info and velocity scaling for synchronized motion
+static motion_coordinated_move_t coord_move;
+
 // *****************************************************************************
 // Math Helpers
 // *****************************************************************************
@@ -597,18 +601,23 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
         heartbeat = 0;
     }
 
-    // Update all active axes
-    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    // ═══════════════════════════════════════════════════════════════════════
+    // STEP 1: Update DOMINANT AXIS (Master) - Full S-Curve Profile
+    // ═══════════════════════════════════════════════════════════════════════
+    // The dominant axis (longest distance) controls timing for ALL axes.
+    // It calculates velocity from S-curve equations and generates OCR period.
+    // Subordinate axes will scale this OCR period to maintain synchronization.
+
+    axis_id_t dominant_axis = coord_move.dominant_axis;
+    volatile scurve_state_t *s = &axis_state[dominant_axis];
+    uint32_t dominant_ocr_period = 65000; // Default slow period
+
+    if (s->active && s->current_segment != SEGMENT_IDLE)
     {
-        volatile scurve_state_t *s = &axis_state[axis];
-
-        if (!s->active || s->current_segment == SEGMENT_IDLE)
-            continue;
-
         // Get per-axis motion limits (cached for efficiency in interrupt context)
-        float max_velocity = MotionMath_GetMaxVelocityStepsPerSec(axis);
-        float max_accel = MotionMath_GetAccelStepsPerSec2(axis);
-        float max_jerk = MotionMath_GetJerkStepsPerSec3(axis);
+        float max_velocity = MotionMath_GetMaxVelocityStepsPerSec(dominant_axis);
+        float max_accel = MotionMath_GetAccelStepsPerSec2(dominant_axis);
+        float max_jerk = MotionMath_GetJerkStepsPerSec3(dominant_axis);
 
         s->elapsed_time += UPDATE_PERIOD_SEC;
         s->total_elapsed += UPDATE_PERIOD_SEC;
@@ -711,8 +720,8 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
 
         case SEGMENT_COMPLETE:
             // CRITICAL: Stop timer then disable OCR
-            axis_hw[axis].TMR_Stop();
-            axis_hw[axis].OCMP_Disable();
+            axis_hw[dominant_axis].TMR_Stop();
+            axis_hw[dominant_axis].OCMP_Disable();
             // Clear state
             s->active = false;
             s->current_velocity = 0.0f;
@@ -732,25 +741,140 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
         if (s->current_velocity > max_velocity)
             s->current_velocity = max_velocity;
 
-        // Update OCR hardware for this axis (only if still active)
-        if (s->active && s->current_velocity > 1.0f)
+        // CRITICAL SAFETY: Check if dominant axis reached target steps
+        if (s->step_count >= s->total_steps)
         {
-            // Calculate OCR period: Timer_Clock / steps_per_sec
-            // Example @ 25MHz: 25000000 / 1000 steps/sec = 25000 counts
-            uint32_t period = (uint32_t)((float)TMR_CLOCK_HZ / s->current_velocity);
+            // Stop immediately - target reached
+            axis_hw[dominant_axis].TMR_Stop();
+            axis_hw[dominant_axis].OCMP_Disable();
+            s->active = false;
+            s->current_velocity = 0.0f;
+            s->current_accel = 0.0f;
+            s->current_segment = SEGMENT_IDLE;
+        }
+        else if (s->active && s->current_velocity > 1.0f)
+        {
+            // Calculate OCR period from dominant axis velocity
+            // This period will be scaled for subordinate axes
+            dominant_ocr_period = (uint32_t)((float)TMR_CLOCK_HZ / s->current_velocity);
 
-            if (period > 65485)
-                period = 65485;
-            if (period <= OCMP_PULSE_WIDTH)
-                period = OCMP_PULSE_WIDTH + 10;
+            if (dominant_ocr_period > 65485)
+                dominant_ocr_period = 65485;
+            if (dominant_ocr_period <= OCMP_PULSE_WIDTH)
+                dominant_ocr_period = OCMP_PULSE_WIDTH + 10;
 
-            axis_hw[axis].TMR_PeriodSet(period);
-            axis_hw[axis].OCMP_CompareValueSet(period - OCMP_PULSE_WIDTH);
-            axis_hw[axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
+            // Update dominant axis OCR hardware
+            axis_hw[dominant_axis].TMR_PeriodSet(dominant_ocr_period);
+            axis_hw[dominant_axis].OCMP_CompareValueSet(dominant_ocr_period - OCMP_PULSE_WIDTH);
+            axis_hw[dominant_axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
+
+#ifdef DEBUG_MOTION_BUFFER
+            // Debug: Print dominant axis OCR calculations (once per move, not every 1ms!)
+            static uint8_t debug_count = 0;
+            if (debug_count == 0 && s->current_segment == SEGMENT_ACCEL_1)
+            {
+                const char *axis_names[] = {"X", "Y", "Z", "A"};
+                UGS_Printf("[OCR-DOM] %s: vel=%.1f steps/s, period=%lu counts, steps=%ld/%ld\r\n",
+                           axis_names[dominant_axis],
+                           s->current_velocity,
+                           dominant_ocr_period,
+                           s->step_count,
+                           s->total_steps);
+                debug_count = 100; // Print once, then skip 100ms
+            }
+            if (debug_count > 0)
+                debug_count--;
+#endif
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // STEP 2: Update SUBORDINATE AXES (Slaves) - OCR Period Scaling
+    // ═══════════════════════════════════════════════════════════════════════
+    // Subordinate axes DO NOT calculate velocity from S-curve equations.
+    // Instead, they scale the dominant axis OCR period by their step ratio.
+    // This guarantees synchronized completion with exact step counts!
+    //
+    // Formula: subordinate_OCR_period = dominant_OCR_period × step_ratio
+    // Where:   step_ratio = dominant_steps / subordinate_steps
+    //
+    // Example: Dominant Y=800 steps, Subordinate X=400 steps
+    //          step_ratio = 800/400 = 2.0
+    //          If dominant_period = 3906, then subordinate_period = 7812
+    //          Result: X runs at half frequency, generates exactly 400 steps ✅
+
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        // Skip dominant axis (already handled above)
+        if (axis == dominant_axis)
+            continue;
+
+        volatile scurve_state_t *sub = &axis_state[axis];
+
+        // Skip inactive axes
+        if (!sub->active || sub->current_segment == SEGMENT_IDLE)
+            continue;
+
+        // Check if axis velocity scale is zero (axis not moving in this coordinated move)
+        if (coord_move.axis_velocity_scale[axis] == 0.0f)
+            continue;
+
+        // Update segment timing from dominant axis (time synchronization)
+        sub->current_segment = axis_state[dominant_axis].current_segment;
+        sub->elapsed_time = axis_state[dominant_axis].elapsed_time;
+        sub->total_elapsed = axis_state[dominant_axis].total_elapsed;
+
+        // CRITICAL SAFETY: Check if subordinate axis reached target steps
+        if (sub->step_count >= sub->total_steps)
+        {
+            // Stop immediately - target reached
+            axis_hw[axis].TMR_Stop();
+            axis_hw[axis].OCMP_Disable();
+            sub->active = false;
+            sub->current_velocity = 0.0f;
+            sub->current_accel = 0.0f;
+            sub->current_segment = SEGMENT_IDLE;
+            continue;
         }
 
-        // Direction control - TODO: will be handled by G-code parser later
-        // For now, direction is set in MultiAxis_MoveSingleAxis()
+        // Calculate subordinate OCR period by scaling dominant period
+        // step_ratio = dominant_steps / subordinate_steps
+        // subordinate_period = dominant_period × step_ratio
+        float step_ratio = (float)axis_state[dominant_axis].total_steps / (float)sub->total_steps;
+        uint32_t subordinate_ocr_period = (uint32_t)((float)dominant_ocr_period * step_ratio);
+
+        // Apply same safety limits as dominant axis
+        if (subordinate_ocr_period > 65485)
+            subordinate_ocr_period = 65485;
+        if (subordinate_ocr_period <= OCMP_PULSE_WIDTH)
+            subordinate_ocr_period = OCMP_PULSE_WIDTH + 10;
+
+        // Update subordinate axis OCR hardware
+        axis_hw[axis].TMR_PeriodSet(subordinate_ocr_period);
+        axis_hw[axis].OCMP_CompareValueSet(subordinate_ocr_period - OCMP_PULSE_WIDTH);
+        axis_hw[axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
+
+#ifdef DEBUG_MOTION_BUFFER
+        // Debug: Print subordinate axis OCR calculations
+        static uint8_t sub_debug_count[NUM_AXES] = {0};
+        if (sub_debug_count[axis] == 0 && sub->current_segment == SEGMENT_ACCEL_1)
+        {
+            const char *axis_names[] = {"X", "Y", "Z", "A"};
+            UGS_Printf("[OCR-SUB] %s: ratio=%.3f, period=%lu counts, steps=%ld/%ld\r\n",
+                       axis_names[axis],
+                       step_ratio,
+                       subordinate_ocr_period,
+                       sub->step_count,
+                       sub->total_steps);
+            sub_debug_count[axis] = 100; // Print once, then skip 100ms
+        }
+        if (sub_debug_count[axis] > 0)
+            sub_debug_count[axis]--;
+#endif
+
+        // Update velocity for informational purposes (not used for control!)
+        // velocity = TMR_CLOCK_HZ / period
+        sub->current_velocity = (float)TMR_CLOCK_HZ / (float)subordinate_ocr_period;
     }
 
     // No global motion_running flag needed - each axis manages its own state
@@ -949,8 +1073,7 @@ uint32_t MultiAxis_GetStepCount(axis_id_t axis)
   4. All axes use same segment times, different velocities
 *******************************************************************************/
 
-// Use centralized type from motion_types.h
-static motion_coordinated_move_t coord_move;
+// coord_move is now declared at file scope (line ~415) for ISR access
 
 /*! \brief Calculate coordinated multi-axis move with time synchronization
  *
@@ -1204,7 +1327,34 @@ void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES])
 
         axis_hw[axis].OCMP_Enable(); /* Enable OCR output */
         axis_hw[axis].TMR_Start();   /* Start timer (CRITICAL - must restart each move) */
+
+#ifdef DEBUG_MOTION_BUFFER
+        /* Debug: Print initial axis setup */
+        const char *axis_names[] = {"X", "Y", "Z", "A"};
+        UGS_Printf("[START] %s: steps=%ld dir=%s scale=%.3f initial_period=%lu\r\n",
+                   axis_names[axis],
+                   s->total_steps,
+                   s->direction_forward ? "FWD" : "REV",
+                   velocity_scale,
+                   initial_period);
+#endif
     }
+
+#ifdef DEBUG_MOTION_BUFFER
+    /* Print coordinated move summary */
+    const char *axis_names[] = {"X", "Y", "Z", "A"};
+    UGS_Printf("[COORD] Dominant=%s time=%.3fs active axes: ",
+               axis_names[coord_move.dominant_axis],
+               coord_move.total_move_time);
+    for (axis_id_t a = AXIS_X; a < NUM_AXES; a++)
+    {
+        if (axis_state[a].active)
+        {
+            UGS_Printf("%s(%ld) ", axis_names[a], axis_state[a].total_steps);
+        }
+    }
+    UGS_Printf("\r\n");
+#endif
 
     /* Visual feedback: LED1 solid during coordinated motion */
     LED1_Set();

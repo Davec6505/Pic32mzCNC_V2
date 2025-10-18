@@ -87,21 +87,22 @@ static void UART_RxDebugCallback(UART_EVENT event, uintptr_t context)
  */
 static void ProcessSerialRx(void)
 {
-  static char line_buffer[256];
+  static char line_buffer[256] = {0}; /* Initialize to zeros on first use */
 
-  /* Process ALL available lines (critical for UGS streaming!)
-   * UGS sends multiple lines rapidly, we must process them all
-   * or FIFO will overflow and lines will be lost */
-#ifdef DEBUG_MOTION_BUFFER
-  uint8_t lines_processed = 0;
-#endif
-
-  while (GCode_BufferLine(line_buffer, sizeof(line_buffer)))
+  /* V1 Pattern: Call GCode_BufferLine() ONCE per main loop iteration
+   * This matches the original V1 code pattern:
+   *   - V1 called Sample_Gocde_Line() once per loop
+   *   - Control characters handled INSIDE the function when no complete line
+   *   - Returns false when no data, but doesn't exit main loop
+   *
+   * CRITICAL: Do NOT use while loop! That causes every-2nd-query bug:
+   *   - First call: '?' received, handled, returns true
+   *   - Second call: UART empty (next '?' not arrived yet), returns false → loop exits
+   *   - Third call (next main loop): New '?' arrived, works again
+   *   - Result: Alternating success/fail pattern (10/20 = 50%)
+   */
+  if (GCode_BufferLine(line_buffer, sizeof(line_buffer)))
   {
-#ifdef DEBUG_MOTION_BUFFER
-    lines_processed++;
-#endif
-
     /* Trim leading whitespace (newlines, spaces, tabs) */
     char *line_start = line_buffer;
     while (*line_start == ' ' || *line_start == '\t' ||
@@ -114,15 +115,17 @@ static void ProcessSerialRx(void)
     if (*line_start == '\0')
     {
       memset(line_buffer, 0, sizeof(line_buffer));
-      continue;
+      return;
     }
 
-    /* Check for control characters at START of trimmed line */
+    /* Check for control characters at START of trimmed line
+     * Control characters are already handled in GCode_BufferLine(),
+     * but we need to skip tokenization for them here. */
     if (GCode_IsControlChar(line_start[0]))
     {
       /* Control char already handled in GCode_BufferLine() */
       memset(line_buffer, 0, sizeof(line_buffer)); /* Clear buffer */
-      continue;                                    /* Process next line */
+      return;                                      /* Return early */
     }
 
     /* Check for $ system commands (GRBL protocol) */
@@ -225,7 +228,7 @@ static void ProcessSerialRx(void)
 
       /* Clear buffer and continue to next line */
       memset(line_buffer, 0, sizeof(line_buffer));
-      continue;
+      return;
     }
 
     /* Tokenize regular G-code line */
@@ -274,9 +277,9 @@ static void ProcessSerialRx(void)
       }
       else
       {
-/* Command buffer full - DON'T send "ok"
- * UGS will wait and retry automatically
- * Normal flow control for streaming protocol */
+        /* Command buffer full - DON'T send "ok"
+         * UGS will wait and retry automatically
+         * Normal flow control for streaming protocol */
 #ifdef DEBUG_MOTION_BUFFER
         UGS_Printf("[WARN] Command buffer full, no commands added\r\n");
 #endif
@@ -284,7 +287,7 @@ static void ProcessSerialRx(void)
     }
     else
     {
-/* Tokenization error */
+      /* Tokenization error */
 #ifdef DEBUG_MOTION_BUFFER
       UGS_Printf("[ERROR] Tokenization failed for: '%s'\r\n", line_buffer);
 #endif
@@ -294,13 +297,7 @@ static void ProcessSerialRx(void)
     /* Clear buffer after processing to prevent reuse */
     memset(line_buffer, 0, sizeof(line_buffer));
   }
-
-#ifdef DEBUG_MOTION_BUFFER
-  // if (lines_processed > 0)
-  // {
-  //   UGS_Printf("[SERIAL] Processed %u lines this call\r\n", lines_processed);
-  // }
-#endif
+  /* If GCode_BufferLine() returned false, no data available - just return */
 }
 
 /**

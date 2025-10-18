@@ -226,14 +226,30 @@ void GCode_Initialize(void)
 
 bool GCode_BufferLine(char *line, size_t line_size)
 {
-    /* Proper ring buffer usage: Read ALL available bytes at once
-     * This is what V1 does - bulk copy from ring buffer, then process
-     * locally while new bytes continue arriving in the background */
+    /* V1 Pattern: Check UART once, process what's available, return
+     * Main loop calls this function once per iteration (NOT in while loop!)
+     *
+     * This matches original V1 code:
+     *   - Check if UART has data
+     *   - If no data: Check for control characters in buffer, return false
+     *   - If data: Read it, check for complete line or control char
+     *   - Return true if line/control char found, false otherwise
+     */
 
     size_t available = UART2_ReadCountGet();
     if (available == 0)
     {
-        return false;
+        /* No new UART data available
+         * V1 pattern: Check if we have a control character waiting in buffer */
+        if (line_buffer.index > 0 && GCode_IsControlChar(line_buffer.buffer[0]))
+        {
+            handle_control_char(line_buffer.buffer[0]);
+            line[0] = line_buffer.buffer[0];
+            line[1] = '\0';
+            line_buffer.index = 0;
+            return true;
+        }
+        return false; /* No data, nothing to process */
     }
 
     /* Calculate space left in our line buffer */
@@ -266,17 +282,43 @@ bool GCode_BufferLine(char *line, size_t line_size)
 #ifdef DEBUG_MOTION_BUFFER
             UGS_Printf("[CTRL] char='%c'\r\n", c);
 #endif
+            /* UGS sends control characters as SINGLE BYTES with NO line terminators!
+             * Example: UGS sends just '?' (0x3F), NOT "?\r\n"
+             *
+             * However, if a control char happens to be followed by line terminators
+             * (e.g., from a serial terminal), we should skip those too to prevent
+             * them from being processed as an empty line.
+             *
+             * CRITICAL: Must check bounds - don't read past bytes_read! */
+            size_t skip = 1;          /* Start by skipping the control char itself */
+            while (skip < bytes_read) /* BOUNDS CHECK: Don't read past what we received */
+            {
+                char next = line_buffer.buffer[skip];
+                if (next == GCODE_CTRL_LINE_FEED || next == GCODE_CTRL_CARRIAGE_RET)
+                {
+                    skip++; /* Also skip this terminator */
+                }
+                else
+                {
+                    break; /* Stop at first non-terminator */
+                }
+            }
+
             /* Shift remaining bytes to start of buffer */
-            size_t remaining = bytes_read - 1;
+            size_t remaining = bytes_read - skip;
             if (remaining > 0)
             {
-                memmove(line_buffer.buffer, &line_buffer.buffer[1], remaining);
+                memmove(line_buffer.buffer, &line_buffer.buffer[skip], remaining);
                 line_buffer.index = remaining;
             }
             else
             {
                 line_buffer.index = 0;
             }
+
+            /* Clear the rest of the buffer to prevent garbage */
+            memset(&line_buffer.buffer[line_buffer.index], 0, sizeof(line_buffer.buffer) - line_buffer.index);
+
             return true;
         }
 

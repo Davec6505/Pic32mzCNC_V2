@@ -142,7 +142,7 @@ ifeq ($(COMPILER),c99)
 CC := "$(COMPILER_LOCATION)/xc32-gcc"
 MCU := -mprocessor=$(DEVICE)
 STD := c99
-FLAGS := -Werror -Wall -MP -MMD
+FLAGS := -Werror -Wall -MP -MMD -DDEBUG_MOTION_BUFFER
 else
 CC := "$(COMPILER_LOCATION)/xc32"
 MCU := -mprocessor=$(DEVICE)
