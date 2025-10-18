@@ -236,6 +236,79 @@ TMR1 (1kHz) → Multi-Axis S-Curve State Machine
 | `docs/XC32_COMPLIANCE_GCODE_PARSER.md` | **MISRA/XC32 compliance documentation** | Memory usage, compiler optimization, MISRA C:2012 rules |
 | `docs/APP_CLEANUP_SUMMARY.md` | **App layer cleanup documentation** | SW1/SW2 removal, architecture changes |
 | `docs/MAKEFILE_QUIET_BUILD.md` | **Quiet build documentation** | make quiet target for filtered output |
+| `docs/CODING_STANDARDS.md` | **Coding standards & file organization** | ⚠️ MANDATORY: Variable declaration rules, ISR safety patterns |
+
+## Coding Standards (MANDATORY)
+
+⚠️ **CRITICAL**: See `docs/CODING_STANDARDS.md` for complete standards.
+
+### File-Level Variable Declaration Rule
+
+**ALL file-level variables (static or non-static) MUST be declared at the top of each file under this comment:**
+
+```c
+// *****************************************************************************
+// Local Variables
+// *****************************************************************************
+```
+
+**Rationale:**
+- ISR functions need access to file-scope variables
+- Variables must be declared BEFORE ISR definitions
+- Improves readability and maintainability
+
+**Example (CORRECT):**
+```c
+// multiaxis_control.c
+
+#include "definitions.h"
+
+// *****************************************************************************
+// Local Variables
+// *****************************************************************************
+
+// Coordinated move state (accessed by TMR1 ISR @ 1kHz)
+static motion_coordinated_move_t coord_move;
+
+// Per-axis state (accessed by TMR1 ISR @ 1kHz)  
+static volatile scurve_state_t axis_state[NUM_AXES];
+
+// *****************************************************************************
+// Function Implementations
+// *****************************************************************************
+
+static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
+{
+    // ✅ Can access coord_move and axis_state here!
+    axis_id_t dominant = coord_move.dominant_axis;
+}
+```
+
+**Example (WRONG - DO NOT DO THIS):**
+```c
+// ❌ Variable declared in middle of file
+
+static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
+{
+    // ❌ COMPILE ERROR: coord_move not yet declared!
+    axis_id_t dominant = coord_move.dominant_axis;
+}
+
+// ❌ Too late! ISR above already tried to use it
+static motion_coordinated_move_t coord_move;
+```
+
+**Real Bug Example:**
+```
+multiaxis_control.c:607:31: error: 'coord_move' undeclared (first use in this function)
+```
+This error occurred because `coord_move` was declared at line 1040, but the ISR at line 607 tried to access it.
+
+### ISR Safety Checklist
+- [ ] All ISR-accessed variables declared at file scope (top of file)
+- [ ] Use `volatile` qualifier for ISR-shared state
+- [ ] Document which ISR accesses each variable
+- [ ] Keep ISR code minimal (no printf, no malloc, no complex operations)
 
 ## Development Workflow
 
