@@ -28,17 +28,17 @@
  * @brief Timer clock frequency for OCR modules (TMR2/3/4/5)
  *
  * Configuration from MCC:
- * - Peripheral clock: 25 MHz
- * - Prescaler: 1:16
+ * - Peripheral clock (PBCLK3): 50 MHz
+ * - Prescaler: 1:32
  * - Effective frequency: 1.5625 MHz (640ns per tick)
  *
  * This constant is used for calculating OCR periods for step pulse generation.
- * 
- * NOTE: 1:16 prescaler chosen to prevent 16-bit timer overflow at slow speeds.
+ *
+ * NOTE: 1:32 prescaler chosen to prevent 16-bit timer overflow at slow speeds.
  * Min step rate: 1.5625MHz / 65535 = 23.8 steps/sec (excellent for slow Z-axis)
  * Max step rate: 1.5625MHz / 50 = 31,250 steps/sec (adequate for rapids)
  */
-#define TMR_CLOCK_HZ 1562500UL // 1.5625 MHz (25 MHz ÷ 16 prescaler)
+#define TMR_CLOCK_HZ 1562500UL // 1.5625 MHz (50 MHz PBCLK3 ÷ 32 prescaler)
 
 /**
  * @brief Stepper motor configuration

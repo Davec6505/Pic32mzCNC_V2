@@ -63,17 +63,17 @@ void TMR2_Initialize(void)
 
     /*
     SIDL = 0
-    TCKPS =1
+    TCKPS =5
     T32   = 0
     TCS = 0
     */
-    T2CONSET = 0x10;
+    T2CONSET = 0x50;
 
     /* Clear counter */
     TMR2 = 0x0;
 
     /*Set period */
-    PR2 = 249U;
+    PR2 = 14U;
 
 
 }
@@ -108,7 +108,7 @@ uint16_t TMR2_CounterGet(void)
 
 uint32_t TMR2_FrequencyGet(void)
 {
-    return (25000000);
+    return (1562500);
 }
 
 

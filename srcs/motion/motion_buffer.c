@@ -8,8 +8,18 @@
  * @date October 16, 2025
  */
 
+// Debug configuration
+// *****************************************************************************
+// Debug Configuration
+// *****************************************************************************
+#define DEBUG_MOTION_BUFFER // Enable debug output for motion buffer analysis
+
+// *****************************************************************************
+
 #include "motion/motion_buffer.h"
 #include "motion/motion_math.h"
+#include "motion/multiaxis_control.h" /* For MultiAxis_GetStepCount() */
+#include "ugs_interface.h"            /* For UGS_Printf() debug output */
 #include <string.h>
 #include <math.h>
 
@@ -39,6 +49,17 @@ static volatile uint32_t rdOutIndex = 0U; /* Read index (tail pointer) */
 static volatile buffer_state_t buffer_state = BUFFER_STATE_IDLE;
 static volatile bool paused = false;
 
+/**
+ * @brief Planned position tracker (NOT actual machine position)
+ *
+ * This tracks where the machine WILL BE after all queued moves complete.
+ * Updated when blocks are added to the buffer, NOT when they execute.
+ * This prevents race conditions where multiple moves are planned simultaneously.
+ *
+ * Formula: planned_position += delta for each new block added
+ */
+static float planned_position_mm[NUM_AXES] = {0.0f};
+
 //=============================================================================
 // FORWARD DECLARATIONS (MISRA Rule 8.4)
 //=============================================================================
@@ -67,6 +88,12 @@ void MotionBuffer_Initialize(void)
 
     /* Clear all buffer entries (MISRA Rule 21.6: memset acceptable for initialization) */
     (void)memset(motion_buffer, 0, sizeof(motion_buffer));
+
+    /* Sync planned position with actual machine position */
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        planned_position_mm[axis] = MotionMath_GetMachinePosition(axis);
+    }
 }
 
 //=============================================================================
@@ -337,6 +364,12 @@ void MotionBuffer_Clear(void)
 
     buffer_state = BUFFER_STATE_IDLE;
     paused = false;
+
+    /* Resync planned position with actual machine position after clear */
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        planned_position_mm[axis] = MotionMath_GetMachinePosition(axis);
+    }
 }
 
 /**
@@ -440,18 +473,32 @@ static void plan_buffer_line(motion_block_t *block, const parsed_move_t *move)
     // Clear block
     memset(block, 0, sizeof(motion_block_t));
 
-    // Convert mm to steps for each axis
+    // Convert work coordinates to machine coordinates and calculate delta
+    // CRITICAL: Use planned_position_mm (where we WILL BE) not actual position
+    // This prevents race conditions when queuing multiple moves rapidly
     for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
     {
         if (move->axis_words[axis])
         {
-            block->steps[axis] = MotionMath_MMToSteps(move->target[axis], axis);
+            // Convert target work coordinates to machine coordinates
+            // Formula: MPos = WPos + work_offset + g92_offset
+            float target_mm_machine = MotionMath_WorkToMachine(move->target[axis], axis);
+
+            // Calculate delta from planned position (NOT actual machine position!)
+            float delta_mm = target_mm_machine - planned_position_mm[axis];
+
+            // Convert delta to steps
+            block->steps[axis] = MotionMath_MMToSteps(delta_mm, axis);
             block->axis_active[axis] = true;
+
+            // Update planned position for next move
+            planned_position_mm[axis] = target_mm_machine;
         }
         else
         {
             block->steps[axis] = 0;
             block->axis_active[axis] = false;
+            // Planned position unchanged for this axis
         }
     }
 
@@ -469,6 +516,15 @@ static void plan_buffer_line(motion_block_t *block, const parsed_move_t *move)
 
     // Mark for recalculation
     block->recalculate_flag = true;
+
+    // DEBUG: Print what we're adding to the buffer
+#ifdef DEBUG_MOTION_BUFFER
+    UGS_Printf("[DEBUG] Motion block: X=%ld Y=%ld Z=%ld (active: %d%d%d)\r\n",
+               block->steps[AXIS_X], block->steps[AXIS_Y], block->steps[AXIS_Z],
+               block->axis_active[AXIS_X], block->axis_active[AXIS_Y], block->axis_active[AXIS_Z]);
+    UGS_Printf("[DEBUG] Planned pos: X=%.3f Y=%.3f Z=%.3f\r\n",
+               planned_position_mm[AXIS_X], planned_position_mm[AXIS_Y], planned_position_mm[AXIS_Z]);
+#endif
 }
 
 /**

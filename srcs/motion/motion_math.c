@@ -13,10 +13,12 @@
 *******************************************************************************/
 
 #include "motion/motion_math.h"
+#include "motion/multiaxis_control.h" /* For MultiAxis_GetStepCount() */
 #include <stddef.h>
 #include <math.h>
 #include <assert.h>
 #include <float.h>
+#include <stdio.h> /* For snprintf() */
 
 // *****************************************************************************
 // Constants
@@ -46,6 +48,39 @@
 // *****************************************************************************
 
 motion_settings_t motion_settings;
+
+// *****************************************************************************
+// Global Coordinate System Instance (GRBL v1.1f)
+// *****************************************************************************
+
+/**
+ * @brief Work coordinate system offsets (G54-G59) - PERSISTENT
+ *
+ * These are stored in EEPROM and survive reset/power cycle.
+ * Each WCS is an offset from machine coordinates.
+ *
+ * Formula: WPos = MPos - work_offsets[active_wcs] - g92_offset
+ */
+float work_offsets[6][NUM_AXES] = {{0.0f}}; /* 6 WCS (G54-G59) × 4 axes */
+
+/**
+ * @brief G28/G30 predefined positions - PERSISTENT
+ *
+ * Stored in machine coordinates, not offsets.
+ */
+float predefined_positions[2][NUM_AXES] = {{0.0f}}; /* 2 positions × 4 axes */
+
+/**
+ * @brief G92 temporary coordinate offset - NON-PERSISTENT
+ *
+ * Cleared on reset/power cycle.
+ */
+float g92_offset[NUM_AXES] = {0.0f}; /* 4 axes */
+
+/**
+ * @brief Active work coordinate system (0=G54, 1=G55, ..., 5=G59)
+ */
+uint8_t active_wcs = 0U; /* Default: G54 */
 
 // *****************************************************************************
 // Helper Functions (Static/Private)
@@ -840,4 +875,224 @@ void MotionMath_PlannerReversePass(
 
     // TODO: Implement reverse pass algorithm
     // Propagates deceleration constraints backward through buffer
+}
+
+// *****************************************************************************
+// Coordinate System Conversions (GRBL v1.1f)
+// *****************************************************************************
+
+float MotionMath_WorkToMachine(float work_pos, axis_id_t axis)
+{
+    assert(axis < NUM_AXES);
+
+    if (axis >= NUM_AXES)
+    {
+        return 0.0f; /* Defensive: invalid axis */
+    }
+
+    /* Formula: MPos = WPos + work_offset + g92_offset */
+    float machine_pos = work_pos + work_offsets[active_wcs][axis] + g92_offset[axis];
+
+    return machine_pos;
+}
+
+float MotionMath_MachineToWork(float machine_pos, axis_id_t axis)
+{
+    assert(axis < NUM_AXES);
+
+    if (axis >= NUM_AXES)
+    {
+        return 0.0f; /* Defensive: invalid axis */
+    }
+
+    /* Formula: WPos = MPos - work_offset - g92_offset */
+    float work_pos = machine_pos - work_offsets[active_wcs][axis] - g92_offset[axis];
+
+    return work_pos;
+}
+
+float MotionMath_GetMachinePosition(axis_id_t axis)
+{
+    assert(axis < NUM_AXES);
+
+    if (axis >= NUM_AXES)
+    {
+        return 0.0f; /* Defensive: invalid axis */
+    }
+
+    /* Get current position in steps from multiaxis_control */
+    uint32_t steps = MultiAxis_GetStepCount(axis);
+
+    /* Convert steps to mm */
+    float machine_pos_mm = MotionMath_StepsToMM((int32_t)steps, axis);
+
+    return machine_pos_mm;
+}
+
+float MotionMath_GetWorkPosition(axis_id_t axis)
+{
+    assert(axis < NUM_AXES);
+
+    if (axis >= NUM_AXES)
+    {
+        return 0.0f; /* Defensive: invalid axis */
+    }
+
+    /* Get machine position and convert to work coordinates */
+    float machine_pos = MotionMath_GetMachinePosition(axis);
+    float work_pos = MotionMath_MachineToWork(machine_pos, axis);
+
+    return work_pos;
+}
+
+void MotionMath_SetActiveWCS(uint8_t wcs_number)
+{
+    assert(wcs_number < 6U); /* Must be 0-5 for G54-G59 */
+
+    if (wcs_number < 6U)
+    {
+        active_wcs = wcs_number;
+    }
+}
+
+uint8_t MotionMath_GetActiveWCS(void)
+{
+    return active_wcs;
+}
+
+void MotionMath_SetWorkOffset(uint8_t wcs_number, const float offsets[NUM_AXES])
+{
+    assert(wcs_number < 6U);
+    assert(offsets != NULL);
+
+    if (wcs_number >= 6U || offsets == NULL)
+    {
+        return; /* Invalid parameters */
+    }
+
+    /* Copy offsets for specified WCS */
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        work_offsets[wcs_number][axis] = offsets[axis];
+    }
+}
+
+float MotionMath_GetWorkOffset(uint8_t wcs_number, axis_id_t axis)
+{
+    assert(wcs_number < 6U);
+    assert(axis < NUM_AXES);
+
+    if (wcs_number >= 6U || axis >= NUM_AXES)
+    {
+        return 0.0f; /* Invalid parameters */
+    }
+
+    return work_offsets[wcs_number][axis];
+}
+
+void MotionMath_SetG92Offset(const float offsets[NUM_AXES])
+{
+    assert(offsets != NULL);
+
+    if (offsets == NULL)
+    {
+        return;
+    }
+
+    /* Copy G92 offsets */
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        g92_offset[axis] = offsets[axis];
+    }
+}
+
+void MotionMath_ClearG92Offset(void)
+{
+    /* Clear all G92 offsets (G92.1 command) */
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        g92_offset[axis] = 0.0f;
+    }
+}
+
+void MotionMath_SetPredefinedPosition(uint8_t position_index, const float positions[NUM_AXES])
+{
+    assert(position_index < 2U); /* Must be 0 or 1 (G28 or G30) */
+    assert(positions != NULL);
+
+    if (position_index >= 2U || positions == NULL)
+    {
+        return; /* Invalid parameters */
+    }
+
+    /* Copy predefined position in machine coordinates */
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        predefined_positions[position_index][axis] = positions[axis];
+    }
+}
+
+float MotionMath_GetPredefinedPosition(uint8_t position_index, axis_id_t axis)
+{
+    assert(position_index < 2U);
+    assert(axis < NUM_AXES);
+
+    if (position_index >= 2U || axis >= NUM_AXES)
+    {
+        return 0.0f; /* Invalid parameters */
+    }
+
+    return predefined_positions[position_index][axis];
+}
+
+void MotionMath_PrintCoordinateParameters(void)
+{
+    /* Need to include ugs_interface.h for UGS_Print */
+    extern void UGS_Print(const char *str);
+
+    char buffer[80];
+
+    /* Print G54-G59 work coordinate offsets */
+    for (uint8_t i = 0U; i < 6U; i++)
+    {
+        (void)snprintf(buffer, sizeof(buffer), "[G%d:%.3f,%.3f,%.3f,%.3f]\r\n",
+                       54 + (int)i,
+                       (double)work_offsets[i][AXIS_X],
+                       (double)work_offsets[i][AXIS_Y],
+                       (double)work_offsets[i][AXIS_Z],
+                       (double)work_offsets[i][AXIS_A]);
+        UGS_Print(buffer);
+    }
+
+    /* Print G28 predefined position */
+    (void)snprintf(buffer, sizeof(buffer), "[G28:%.3f,%.3f,%.3f,%.3f]\r\n",
+                   (double)predefined_positions[0][AXIS_X],
+                   (double)predefined_positions[0][AXIS_Y],
+                   (double)predefined_positions[0][AXIS_Z],
+                   (double)predefined_positions[0][AXIS_A]);
+    UGS_Print(buffer);
+
+    /* Print G30 predefined position */
+    (void)snprintf(buffer, sizeof(buffer), "[G30:%.3f,%.3f,%.3f,%.3f]\r\n",
+                   (double)predefined_positions[1][AXIS_X],
+                   (double)predefined_positions[1][AXIS_Y],
+                   (double)predefined_positions[1][AXIS_Z],
+                   (double)predefined_positions[1][AXIS_A]);
+    UGS_Print(buffer);
+
+    /* Print G92 offset */
+    (void)snprintf(buffer, sizeof(buffer), "[G92:%.3f,%.3f,%.3f,%.3f]\r\n",
+                   (double)g92_offset[AXIS_X],
+                   (double)g92_offset[AXIS_Y],
+                   (double)g92_offset[AXIS_Z],
+                   (double)g92_offset[AXIS_A]);
+    UGS_Print(buffer);
+
+    /* Print tool length offset (TLO) - not implemented yet */
+    (void)snprintf(buffer, sizeof(buffer), "[TLO:0.000]\r\n");
+    UGS_Print(buffer);
+
+    /* Print probe result (PRB) - not implemented yet */
+    (void)snprintf(buffer, sizeof(buffer), "[PRB:0.000,0.000,0.000,0.000:0]\r\n");
+    UGS_Print(buffer);
 }

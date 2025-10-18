@@ -118,28 +118,22 @@ static void handle_control_char(char c)
     {
     case GCODE_CTRL_STATUS_REPORT:
     {
-        /* Read current step counts from motion controller */
-        int32_t steps_x = (int32_t)MultiAxis_GetStepCount(AXIS_X);
-        int32_t steps_y = (int32_t)MultiAxis_GetStepCount(AXIS_Y);
-        int32_t steps_z = (int32_t)MultiAxis_GetStepCount(AXIS_Z);
+        /* Get machine positions (absolute position from home) */
+        float mpos_x = MotionMath_GetMachinePosition(AXIS_X);
+        float mpos_y = MotionMath_GetMachinePosition(AXIS_Y);
+        float mpos_z = MotionMath_GetMachinePosition(AXIS_Z);
 #if (NUM_AXES > 3)
-        int32_t steps_a = (int32_t)MultiAxis_GetStepCount(AXIS_A);
+        float mpos_a = MotionMath_GetMachinePosition(AXIS_A);
 #endif
 
-        /* Convert steps to millimeters using motion_math */
-        float mpos_x = MotionMath_StepsToMM(steps_x, AXIS_X);
-        float mpos_y = MotionMath_StepsToMM(steps_y, AXIS_Y);
-        float mpos_z = MotionMath_StepsToMM(steps_z, AXIS_Z);
+        /* Get work positions (with coordinate system offsets applied) */
+        float wpos_x = MotionMath_GetWorkPosition(AXIS_X);
+        float wpos_y = MotionMath_GetWorkPosition(AXIS_Y);
+        float wpos_z = MotionMath_GetWorkPosition(AXIS_Z);
 #if (NUM_AXES > 3)
         /* A-axis position available but not reported in standard GRBL status */
-        (void)steps_a; /* Suppress unused warning - kept for future 4-axis status */
+        (void)mpos_a; /* Suppress unused warning - kept for future 4-axis status */
 #endif
-
-        /* Calculate work position (machine position - G54 offset)
-         * For now, use same as machine position (G54 offset = 0) */
-        float wpos_x = mpos_x;
-        float wpos_y = mpos_y;
-        float wpos_z = mpos_z;
 
         /* Determine machine state */
         const char *state;
@@ -156,7 +150,7 @@ static void handle_control_char(char c)
             state = "Idle"; /* Nothing moving, nothing queued */
         }
 
-        /* Send status report to UGS */
+        /* Send status report to UGS (shows both MPos and WPos) */
         UGS_SendStatusReport(state, mpos_x, mpos_y, mpos_z, wpos_x, wpos_y, wpos_z);
     }
     break;
@@ -232,67 +226,102 @@ void GCode_Initialize(void)
 
 bool GCode_BufferLine(char *line, size_t line_size)
 {
-    /* Check if data available (user's polling pattern) */
-    if (!UGS_RxHasData())
+    /* Proper ring buffer usage: Read ALL available bytes at once
+     * This is what V1 does - bulk copy from ring buffer, then process
+     * locally while new bytes continue arriving in the background */
+
+    size_t available = UART2_ReadCountGet();
+    if (available == 0)
     {
         return false;
     }
 
-    /* Read incoming bytes one at a time */
-    uint8_t byte;
-    while (UART2_ReadCountGet() > 0)
+    /* Calculate space left in our line buffer */
+    size_t space_left = GCODE_MAX_LINE_LENGTH - 1 - line_buffer.index;
+    if (space_left == 0)
     {
-        UART2_Read(&byte, 1);
-        char c = (char)byte;
+        /* Buffer full - error */
+        (void)snprintf(last_error, sizeof(last_error),
+                       "Line exceeds %d characters", GCODE_MAX_LINE_LENGTH);
+        line_buffer.index = 0;
+        return false;
+    }
 
-        /* PRIORITY CHECK: Control character at index[0] (user's requirement) */
-        if (line_buffer.index == 0 && GCode_IsControlChar(c))
+    /* Read as many bytes as we can fit
+     * This advances the UART ring buffer tail pointer automatically */
+    size_t to_read = (available < space_left) ? available : space_left;
+    size_t bytes_read = UART2_Read((uint8_t *)&line_buffer.buffer[line_buffer.index], to_read);
+
+    /* Now scan the newly read data for line terminators */
+    for (size_t i = 0; i < bytes_read; i++)
+    {
+        char c = line_buffer.buffer[line_buffer.index + i];
+
+        /* Check for control character at start of line */
+        if (line_buffer.index == 0 && i == 0 && GCode_IsControlChar(c))
         {
             handle_control_char(c);
-            /* Return empty line to signal control char handled */
             line[0] = c;
             line[1] = '\0';
+#ifdef DEBUG_MOTION_BUFFER
+            UGS_Printf("[CTRL] char='%c'\r\n", c);
+#endif
+            /* Shift remaining bytes to start of buffer */
+            size_t remaining = bytes_read - 1;
+            if (remaining > 0)
+            {
+                memmove(line_buffer.buffer, &line_buffer.buffer[1], remaining);
+                line_buffer.index = remaining;
+            }
+            else
+            {
+                line_buffer.index = 0;
+            }
             return true;
         }
 
-        /* Handle line terminators */
+        /* Check for line terminator */
         if (c == GCODE_CTRL_LINE_FEED || c == GCODE_CTRL_CARRIAGE_RET)
         {
-            if (line_buffer.index > 0)
+            size_t line_end_pos = line_buffer.index + i;
+            if (line_end_pos > 0)
             {
-                /* Complete line available */
-                line_buffer.buffer[line_buffer.index] = '\0';
+                /* Found complete line! */
+                line_buffer.buffer[line_end_pos] = '\0';
 
-                /* Copy to output buffer */
-                size_t copy_size = (line_buffer.index < line_size - 1) ? line_buffer.index : (line_size - 1);
+                /* Copy to output */
+                size_t copy_size = (line_end_pos < line_size - 1) ? line_end_pos : (line_size - 1);
                 memcpy(line, line_buffer.buffer, copy_size);
                 line[copy_size] = '\0';
 
-                /* Reset buffer for next line */
-                line_buffer.index = 0;
+#ifdef DEBUG_MOTION_BUFFER
+                UGS_Printf("[LINE] '%s' (len=%u)\r\n", line, line_end_pos);
+#endif
+
+                /* Shift remaining unprocessed data to start of buffer */
+                size_t remaining = bytes_read - i - 1;
+                if (remaining > 0)
+                {
+                    memmove(line_buffer.buffer,
+                            &line_buffer.buffer[line_end_pos + 1],
+                            remaining);
+                    line_buffer.index = remaining;
+                }
+                else
+                {
+                    line_buffer.index = 0;
+                }
 
                 return true;
             }
-            /* Ignore empty lines */
-            continue;
-        }
-
-        /* Buffer character */
-        if (line_buffer.index < GCODE_MAX_LINE_LENGTH - 1)
-        {
-            line_buffer.buffer[line_buffer.index++] = c;
-        }
-        else
-        {
-            /* Line too long - error */
-            (void)snprintf(last_error, sizeof(last_error),
-                           "Line exceeds %d characters", GCODE_MAX_LINE_LENGTH);
-            line_buffer.index = 0; /* Reset buffer */
-            return false;
+            /* Empty line, skip the terminator */
         }
     }
 
-    return false; /* Line not complete yet */
+    /* No complete line found yet, update index to include new bytes */
+    line_buffer.index += bytes_read;
+
+    return false;
 }
 
 //=============================================================================
@@ -631,24 +660,40 @@ static bool GCode_HandleG92_CoordinateOffset(const gcode_line_t *tokenized_line)
     axis_specified[AXIS_Y] = GCode_FindToken(tokenized_line, 'Y', &axis_values[AXIS_Y]);
     axis_specified[AXIS_Z] = GCode_FindToken(tokenized_line, 'Z', &axis_values[AXIS_Z]);
     axis_specified[AXIS_A] = GCode_FindToken(tokenized_line, 'A', &axis_values[AXIS_A]);
+
+    /* Calculate G92 offset to make current position appear as commanded values
+     *
+     * GRBL formula: G92_offset = current_work_position - commanded_position
+     *
+     * Example: Machine is at MPos=10.000 with G54 offset=5.000
+     *          Current WPos = 10.000 - 5.000 = 5.000
+     *          User sends: G92 X0
+     *          G92_offset = 5.000 - 0.000 = 5.000
+     *          New WPos = 10.000 - 5.000 (G54) - 5.000 (G92) = 0.000 ✓
+     */
     for (uint8_t axis = 0; axis < NUM_AXES; axis++)
     {
         if (axis_specified[axis])
         {
-            /* TODO: Calculate offset from current machine position */
-            /* For now, store the specified value directly */
-            modal_state.g92_offset[axis] = axis_values[axis];
+            /* Get current work position from motion system */
+            float current_work_pos = MotionMath_GetWorkPosition((axis_id_t)axis);
+
+            /* Calculate offset to make current position appear as commanded value */
+            modal_state.g92_offset[axis] = current_work_pos - axis_values[axis];
             axes_set = true;
         }
     }
 
     if (axes_set)
     {
+        /* Update motion system with new G92 offset */
+        MotionMath_SetG92Offset(modal_state.g92_offset);
+
         UGS_Printf(">> G92 (coordinate offset: X%.3f Y%.3f Z%.3f A%.3f)\r\n",
-                   modal_state.g92_offset[AXIS_X],
-                   modal_state.g92_offset[AXIS_Y],
-                   modal_state.g92_offset[AXIS_Z],
-                   modal_state.g92_offset[AXIS_A]);
+                   (double)modal_state.g92_offset[AXIS_X],
+                   (double)modal_state.g92_offset[AXIS_Y],
+                   (double)modal_state.g92_offset[AXIS_Z],
+                   (double)modal_state.g92_offset[AXIS_A]);
     }
     else
     {
@@ -666,6 +711,7 @@ static bool GCode_HandleG92_CoordinateOffset(const gcode_line_t *tokenized_line)
 static bool GCode_HandleG92_1_ClearOffset(void)
 {
     memset(modal_state.g92_offset, 0, sizeof(modal_state.g92_offset));
+    MotionMath_ClearG92Offset(); /* Update motion system */
     UGS_Print(">> G92.1 (clear coordinate offsets)\r\n");
     return true;
 }

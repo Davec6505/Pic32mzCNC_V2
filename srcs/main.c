@@ -23,6 +23,11 @@
 *******************************************************************************/
 
 // *****************************************************************************
+// Debug Configuration
+// *****************************************************************************
+#define DEBUG_MOTION_BUFFER // Re-enabled to see execution values
+
+// *****************************************************************************
 // Section: Included Files
 // *****************************************************************************
 
@@ -41,6 +46,18 @@
 #include "motion/multiaxis_control.h" // Multi-axis coordinated motion
 
 // *****************************************************************************
+// Debug: UART RX Callback
+// *****************************************************************************
+#ifdef DEBUG_MOTION_BUFFER
+static volatile uint32_t uart_rx_int_count = 0;
+static void UART_RxDebugCallback(UART_EVENT event, uintptr_t context)
+{
+  (void)event;   // Unused
+  (void)context; // Unused
+  uart_rx_int_count++;
+  /* This proves RX interrupts are firing */
+}
+#endif // *****************************************************************************
 // G-code Processing (Three-Stage Pipeline with Command Separation)
 // *****************************************************************************
 
@@ -72,28 +89,60 @@ static void ProcessSerialRx(void)
 {
   static char line_buffer[256];
 
-  /* Poll for incoming G-code line */
-  if (GCode_BufferLine(line_buffer, sizeof(line_buffer)))
-  {
+  /* Process ALL available lines (critical for UGS streaming!)
+   * UGS sends multiple lines rapidly, we must process them all
+   * or FIFO will overflow and lines will be lost */
+#ifdef DEBUG_MOTION_BUFFER
+  uint8_t lines_processed = 0;
+#endif
 
-    /* Check if control character was handled */
-    if (GCode_IsControlChar(line_buffer[0]))
+  while (GCode_BufferLine(line_buffer, sizeof(line_buffer)))
+  {
+#ifdef DEBUG_MOTION_BUFFER
+    lines_processed++;
+#endif
+
+    /* Trim leading whitespace (newlines, spaces, tabs) */
+    char *line_start = line_buffer;
+    while (*line_start == ' ' || *line_start == '\t' ||
+           *line_start == '\r' || *line_start == '\n')
+    {
+      line_start++;
+    }
+
+    /* Skip empty lines */
+    if (*line_start == '\0')
+    {
+      memset(line_buffer, 0, sizeof(line_buffer));
+      continue;
+    }
+
+    /* Check for control characters at START of trimmed line */
+    if (GCode_IsControlChar(line_start[0]))
     {
       /* Control char already handled in GCode_BufferLine() */
-      return;
+      memset(line_buffer, 0, sizeof(line_buffer)); /* Clear buffer */
+      continue;                                    /* Process next line */
     }
 
     /* Check for $ system commands (GRBL protocol) */
-    if (line_buffer[0] == '$')
+    if (line_start[0] == '$')
     {
-      /* Check for $xxx=value (setting assignment) */
-      if (line_buffer[1] >= '0' && line_buffer[1] <= '9')
+      /* Handle $I - Build info (CRITICAL for UGS version detection!) */
+      if (line_start[1] == 'I')
+      {
+        /* $I - Build info (CRITICAL for UGS version detection!) */
+        UGS_SendBuildInfo();
+        UGS_SendOK();
+      }
+      /* Handle $xxx=value (setting assignment) */
+      else if (line_start[1] >= '0' && line_start[1] <= '9')
       {
         uint32_t setting_id;
         float value;
 
         /* Parse "$100=250.0" format */
-        if (sscanf(&line_buffer[1], "%u=%f", &setting_id, &value) == 2)
+        if (sscanf(&line_start[1], "%u=%f", &setting_id, &value) == 2)
         {
           if (setting_id <= 255 && MotionMath_SetSetting((uint8_t)setting_id, value))
           {
@@ -111,21 +160,14 @@ static void ProcessSerialRx(void)
           /* Parse error - invalid format */
           UGS_SendError(3, "Invalid $ command format");
         }
-        return;
-      } /* Handle other $ commands */
-      if (line_buffer[1] == 'I')
-      {
-        /* $I - Build info (CRITICAL for UGS version detection!) */
-        UGS_SendBuildInfo();
-        UGS_SendOK();
       }
-      else if (line_buffer[1] == 'G')
+      else if (line_start[1] == 'G')
       {
         /* $G - Parser state */
         UGS_SendParserState();
         UGS_SendOK();
       }
-      else if (line_buffer[1] == '$')
+      else if (line_start[1] == '$')
       {
         /* $$ - View all settings */
         const uint8_t setting_ids[] = {
@@ -144,20 +186,20 @@ static void ProcessSerialRx(void)
         }
         UGS_SendOK();
       }
-      else if (line_buffer[1] == '#')
+      else if (line_start[1] == '#')
       {
-        /* $# - Coordinate offsets (TODO: implement) */
-        UGS_Print("[MSG:Coordinate offsets not yet implemented]\r\n");
+        /* $# - View coordinate offsets (GRBL v1.1f) */
+        MotionMath_PrintCoordinateParameters();
         UGS_SendOK();
       }
-      else if (line_buffer[1] == 'N')
+      else if (line_start[1] == 'N')
       {
         /* $N - Startup lines */
-        if (line_buffer[2] == '0')
+        if (line_start[2] == '0')
         {
           UGS_SendStartupLine(0);
         }
-        else if (line_buffer[2] == '1')
+        else if (line_start[2] == '1')
         {
           UGS_SendStartupLine(1);
         }
@@ -169,7 +211,7 @@ static void ProcessSerialRx(void)
         }
         UGS_SendOK();
       }
-      else if (line_buffer[1] == '\0' || line_buffer[1] == '\r' || line_buffer[1] == '\n')
+      else if (line_start[1] == '\0' || line_start[1] == '\r' || line_start[1] == '\n')
       {
         /* $ - Help */
         UGS_SendHelp();
@@ -180,43 +222,50 @@ static void ProcessSerialRx(void)
         /* Unknown $ command */
         UGS_SendError(3, "$ command not recognized");
       }
-      return;
+
+      /* Clear buffer and continue to next line */
+      memset(line_buffer, 0, sizeof(line_buffer));
+      continue;
     }
 
     /* Tokenize regular G-code line */
     gcode_line_t tokenized;
-    if (GCode_TokenizeLine(line_buffer, &tokenized))
+    if (GCode_TokenizeLine(line_start, &tokenized))
     {
+#ifdef DEBUG_MOTION_BUFFER
+      UGS_Printf("[TOKEN] Line: '%s' -> %u tokens\r\n", line_start, tokenized.token_count);
+#endif
+
       /* Split into individual commands
-       * 
+       *
        * Example: "G92G0X10Y10F200G1X20" splits into:
        *   Command 1: G92
        *   Command 2: G0 X10 Y10 F200
        *   Command 3: G1 X20
-       * 
+       *
        * This enables proper command separation for concatenated G-code.
        */
       uint8_t commands_added = CommandBuffer_SplitLine(&tokenized);
-      
+
       if (commands_added > 0)
       {
         /* Commands successfully added to buffer
-         * 
+         *
          * GRBL Character-Counting Protocol (Phase 2 - Deep Look-Ahead)
-         * 
+         *
          * Send "ok" immediately after command separation (NOT after execution!)
-         * 
+         *
          * Pipeline:
          *   - 64-command buffer (filled here)
          *   - 16-motion buffer (filled by ProcessCommandBuffer)
          *   - Total: 80 commands in pipeline!
-         * 
+         *
          * Benefits:
          *   - Fast "ok" (~175µs: tokenize + split, no parse/execute wait)
          *   - Deep look-ahead (80 commands for advanced optimization)
          *   - Background parsing (commands parse while moving)
          *   - Proper command separation (handles concatenated G-code)
-         * 
+         *
          * Flow Control:
          *   - Commands added → send "ok" immediately
          *   - Buffer full → DON'T send "ok" (UGS retries)
@@ -225,17 +274,33 @@ static void ProcessSerialRx(void)
       }
       else
       {
-        /* Command buffer full - DON'T send "ok"
-         * UGS will wait and retry automatically
-         * Normal flow control for streaming protocol */
+/* Command buffer full - DON'T send "ok"
+ * UGS will wait and retry automatically
+ * Normal flow control for streaming protocol */
+#ifdef DEBUG_MOTION_BUFFER
+        UGS_Printf("[WARN] Command buffer full, no commands added\r\n");
+#endif
       }
     }
     else
     {
-      /* Tokenization error */
+/* Tokenization error */
+#ifdef DEBUG_MOTION_BUFFER
+      UGS_Printf("[ERROR] Tokenization failed for: '%s'\r\n", line_buffer);
+#endif
       UGS_SendError(1, "Tokenization error");
     }
+
+    /* Clear buffer after processing to prevent reuse */
+    memset(line_buffer, 0, sizeof(line_buffer));
   }
+
+#ifdef DEBUG_MOTION_BUFFER
+  // if (lines_processed > 0)
+  // {
+  //   UGS_Printf("[SERIAL] Processed %u lines this call\r\n", lines_processed);
+  // }
+#endif
 }
 
 /**
@@ -269,16 +334,17 @@ static void ProcessCommandBuffer(void)
        */
       static char reconstructed_line[256];
       reconstructed_line[0] = '\0';
-      
+
       for (uint8_t i = 0; i < cmd.token_count && i < MAX_TOKENS_PER_COMMAND; i++)
       {
-        if (i > 0) {
-          strcat(reconstructed_line, " ");  // Add space between tokens
+        if (i > 0)
+        {
+          strcat(reconstructed_line, " "); // Add space between tokens
         }
-        strncat(reconstructed_line, cmd.tokens[i], 
+        strncat(reconstructed_line, cmd.tokens[i],
                 sizeof(reconstructed_line) - strlen(reconstructed_line) - 1);
       }
-      
+
       /* Parse command line into parsed_move_t */
       parsed_move_t move;
       if (GCode_ParseLine(reconstructed_line, &move))
@@ -288,7 +354,13 @@ static void ProcessCommandBuffer(void)
                           move.axis_words[AXIS_Y] ||
                           move.axis_words[AXIS_Z] ||
                           move.axis_words[AXIS_A];
-        
+
+#ifdef DEBUG_MOTION_BUFFER
+        UGS_Printf("[PARSE] '%s' -> motion=%d (X:%d Y:%d Z:%d)\r\n",
+                   reconstructed_line, has_motion,
+                   move.axis_words[AXIS_X], move.axis_words[AXIS_Y], move.axis_words[AXIS_Z]);
+#endif
+
         if (has_motion)
         {
           /* Add to motion buffer */
@@ -333,6 +405,13 @@ static void ExecuteMotion(void)
 
       if (MotionBuffer_GetNext(&block))
       {
+/* DEBUG: Print what we're executing */
+#ifdef DEBUG_MOTION_BUFFER
+        UGS_Printf("[EXEC] Steps: X=%ld Y=%ld Z=%ld (busy=%d)\r\n",
+                   block.steps[AXIS_X], block.steps[AXIS_Y], block.steps[AXIS_Z],
+                   MultiAxis_IsBusy());
+#endif
+
         /* Execute coordinated move with pre-calculated S-curve profile */
         MultiAxis_ExecuteCoordinatedMove(block.steps);
       }
@@ -375,6 +454,13 @@ int main(void)
 
   /* Initialize UGS serial interface */
   UGS_Initialize();
+
+#ifdef DEBUG_MOTION_BUFFER
+  /* Register RX notification callback to prove interrupts work */
+  UART2_ReadNotificationEnable(true, false);
+  UART2_ReadCallbackRegister(UART_RxDebugCallback, 0);
+  UGS_Printf("[INIT] UART2 RX callback registered\r\n");
+#endif
 
   /* Initialize G-code parser with modal defaults */
   GCode_Initialize();

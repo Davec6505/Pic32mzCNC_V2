@@ -64,17 +64,17 @@ void TMR4_Initialize(void)
 
     /*
     SIDL = 0
-    TCKPS =1
+    TCKPS =5
     T32   = 0
     TCS = 0
     */
-    T4CONSET = 0x10;
+    T4CONSET = 0x50;
 
     /* Clear counter */
     TMR4 = 0x0;
 
     /*Set period */
-    PR4 = 249U;
+    PR4 = 14U;
 
     /* Enable TMR Interrupt */
     IEC0SET = _IEC0_T4IE_MASK;
@@ -111,7 +111,7 @@ uint16_t TMR4_CounterGet(void)
 
 uint32_t TMR4_FrequencyGet(void)
 {
-    return (25000000);
+    return (1562500);
 }
 
 

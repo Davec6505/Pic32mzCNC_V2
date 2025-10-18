@@ -195,9 +195,9 @@ void SYS_Initialize ( void* data )
     CORETIMER_Initialize();
     TMR4_Initialize();
 
-	UART2_Initialize();
-
     TMR5_Initialize();
+
+	UART2_Initialize();
 
     TMR2_Initialize();
 

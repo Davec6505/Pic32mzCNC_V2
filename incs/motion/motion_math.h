@@ -8,11 +8,11 @@
     - Junction velocity for look-ahead planning
     - S-curve trajectory timing
     - Vector mathematics for multi-axis coordination
-    
+
   GRBL Compatibility:
     Uses GRBL v1.1f settings structure ($100-$132)
     Supports junction deviation ($11) for cornering
-    
+
   Design Philosophy:
     - Pure functions (no side effects)
     - MISRA C:2012 compliant
@@ -23,10 +23,26 @@
 #ifndef _MOTION_MATH_H
 #define _MOTION_MATH_H
 
-#include "motion_types.h"  // Centralized type definitions
+#include "motion_types.h" // Centralized type definitions
 
 // Global settings instance
 extern motion_settings_t motion_settings;
+
+// *****************************************************************************
+// Coordinate System Global Variables (GRBL v1.1f)
+// *****************************************************************************
+
+/* Work coordinate system offsets (G54-G59) - PERSISTENT */
+extern float work_offsets[6][NUM_AXES];
+
+/* G28/G30 predefined positions - PERSISTENT */
+extern float predefined_positions[2][NUM_AXES];
+
+/* G92 temporary coordinate offset - NON-PERSISTENT */
+extern float g92_offset[NUM_AXES];
+
+/* Active work coordinate system (0=G54, 1=G55, ..., 5=G59) */
+extern uint8_t active_wcs;
 
 // *****************************************************************************
 // Settings Management
@@ -176,6 +192,111 @@ float MotionMath_GetJerkStepsPerSec3(axis_id_t axis);
 float MotionMath_CalculateMoveTime(float distance_mm, float feedrate_mm_min, float accel_mm_sec2);
 
 // *****************************************************************************
+// Coordinate System Conversions (GRBL v1.1f)
+// *****************************************************************************
+
+/*! \brief Convert work coordinates to machine coordinates
+ *
+ *  Formula: MPos = WPos + work_offsets[active_wcs] + g92_offset
+ *
+ *  \param work_pos Work position in mm (or degrees for rotary)
+ *  \param axis Axis identifier
+ *  \return Machine position in mm (or degrees)
+ */
+float MotionMath_WorkToMachine(float work_pos, axis_id_t axis);
+
+/*! \brief Convert machine coordinates to work coordinates
+ *
+ *  Formula: WPos = MPos - work_offsets[active_wcs] - g92_offset
+ *
+ *  \param machine_pos Machine position in mm (or degrees for rotary)
+ *  \param axis Axis identifier
+ *  \return Work position in mm (or degrees)
+ */
+float MotionMath_MachineToWork(float machine_pos, axis_id_t axis);
+
+/*! \brief Get current work position for status reports
+ *
+ *  Reads current machine position from multiaxis_control and converts to work coordinates.
+ *
+ *  \param axis Axis identifier
+ *  \return Current work position in mm (or degrees)
+ */
+float MotionMath_GetWorkPosition(axis_id_t axis);
+
+/*! \brief Get current machine position for status reports
+ *
+ *  Reads step count from multiaxis_control and converts to mm.
+ *
+ *  \param axis Axis identifier
+ *  \return Current machine position in mm (or degrees)
+ */
+float MotionMath_GetMachinePosition(axis_id_t axis);
+
+/*! \brief Set active work coordinate system (G54-G59)
+ *
+ *  \param wcs_number WCS index (0=G54, 1=G55, ..., 5=G59)
+ */
+void MotionMath_SetActiveWCS(uint8_t wcs_number);
+
+/*! \brief Get active work coordinate system
+ *
+ *  \return WCS index (0=G54, 1=G55, ..., 5=G59)
+ */
+uint8_t MotionMath_GetActiveWCS(void);
+
+/*! \brief Set work coordinate system offset (G10 L2)
+ *
+ *  \param wcs_number WCS index (0=G54, 1=G55, ..., 5=G59)
+ *  \param offsets Array of offsets in mm (one per axis)
+ */
+void MotionMath_SetWorkOffset(uint8_t wcs_number, const float offsets[NUM_AXES]);
+
+/*! \brief Get work coordinate system offset
+ *
+ *  \param wcs_number WCS index (0=G54, 1=G55, ..., 5=G59)
+ *  \param axis Axis identifier
+ *  \return Offset in mm (or degrees)
+ */
+float MotionMath_GetWorkOffset(uint8_t wcs_number, axis_id_t axis);
+
+/*! \brief Set G92 temporary offset
+ *
+ *  \param offsets Array of offsets in mm (one per axis)
+ */
+void MotionMath_SetG92Offset(const float offsets[NUM_AXES]);
+
+/*! \brief Clear G92 temporary offset (G92.1)
+ */
+void MotionMath_ClearG92Offset(void);
+
+/*! \brief Set predefined position (G28.1 or G30.1)
+ *
+ *  \param position_index 0 for G28, 1 for G30
+ *  \param positions Array of positions in machine coordinates (mm)
+ */
+void MotionMath_SetPredefinedPosition(uint8_t position_index, const float positions[NUM_AXES]);
+
+/*! \brief Get predefined position (G28 or G30)
+ *
+ *  \param position_index 0 for G28, 1 for G30
+ *  \param axis Axis identifier
+ *  \return Position in machine coordinates (mm)
+ */
+float MotionMath_GetPredefinedPosition(uint8_t position_index, axis_id_t axis);
+
+/*! \brief Print coordinate parameters ($# command)
+ *
+ *  Sends formatted output via UGS interface showing:
+ *  - G54-G59 work coordinate offsets
+ *  - G28/G30 predefined positions
+ *  - G92 temporary offset
+ *  - Tool length offset (TLO)
+ *  - Probe result (PRB)
+ */
+void MotionMath_PrintCoordinateParameters(void);
+
+// *****************************************************************************
 // Vector Mathematics (Multi-Axis Coordination)
 // *****************************************************************************
 
@@ -237,8 +358,7 @@ float MotionMath_CalculateJunctionVelocity(
     float entry_angle_rad,
     float feedrate1_mm_min,
     float feedrate2_mm_min,
-    float junction_deviation_mm
-);
+    float junction_deviation_mm);
 
 /*! \brief Calculate angle between two move vectors
  *
@@ -252,8 +372,7 @@ float MotionMath_CalculateJunctionVelocity(
  */
 float MotionMath_CalculateJunctionAngle(
     float prev_dx, float prev_dy, float prev_dz,
-    float next_dx, float next_dy, float next_dz
-);
+    float next_dx, float next_dy, float next_dz);
 
 /*! \brief Calculate maximum entry velocity given exit velocity
  *
@@ -298,8 +417,7 @@ bool MotionMath_CalculateVelocityProfile(
     float exit_velocity_mm_min,
     float max_velocity_mm_min,
     float acceleration_mm_sec2,
-    velocity_profile_t *profile
-);
+    velocity_profile_t *profile);
 
 // *****************************************************************************
 // S-Curve Trajectory Planning
@@ -335,8 +453,7 @@ bool MotionMath_CalculateSCurveTiming(
     float max_velocity_mm_min,
     float acceleration_mm_sec2,
     float jerk_mm_sec3,
-    scurve_timing_t *timing
-);
+    scurve_timing_t *timing);
 
 /*! \brief Calculate cruise velocity for S-curve profile
  *
@@ -378,8 +495,7 @@ float MotionMath_CalculateSegmentTime(float velocity_delta, float accel, float j
 void MotionMath_PlannerForwardPass(
     velocity_profile_t *blocks,
     uint8_t block_count,
-    float junction_deviation_mm
-);
+    float junction_deviation_mm);
 
 /*! \brief Reverse pass: Propagate velocity constraints backward
  *
@@ -391,7 +507,6 @@ void MotionMath_PlannerForwardPass(
  */
 void MotionMath_PlannerReversePass(
     velocity_profile_t *blocks,
-    uint8_t block_count
-);
+    uint8_t block_count);
 
 #endif // _MOTION_MATH_H
