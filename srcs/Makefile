@@ -114,7 +114,7 @@ $(wildcard $(1)/*.c) $(wildcard $(1)/*/*.c) $(wildcard $(1)/*/*/*.c) $(wildcard 
 endef
 # Get all source files and filter out test files for production CNC build
 ALL_SRCS := $(call get_c_files,$(SRC_DIR))
-EXCLUDED_FILES := $(SRC_DIR)/gcode_test_app.c $(SRC_DIR)/gcode_test_framework.c $(SRC_DIR)/gcode_parser_dma.c $(SRC_DIR)/config/default/peripheral/dmac/plib_dmac.c
+EXCLUDED_FILES := $(SRC_DIR)/gcode_test_app.c $(SRC_DIR)/gcode_test_framework.c $(SRC_DIR)/gcode_parser_dma.c
 SRCS := $(filter-out $(EXCLUDED_FILES),$(ALL_SRCS))
 OBJS := $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
