@@ -8,6 +8,9 @@
  * @date October 16, 2025
  */
 
+// TEMPORARY: Enable debug output for position tracking investigation
+#define DEBUG_MOTION_BUFFER
+
 #include "motion/motion_buffer.h"
 #include "motion/motion_math.h"
 #include "motion/multiaxis_control.h" /* For MultiAxis_GetStepCount() */
@@ -125,6 +128,25 @@ bool MotionBuffer_Add(const parsed_move_t *move)
 
     /* Plan this block (convert mm to steps, calculate velocities) */
     plan_buffer_line(block, move);
+
+    /* ═══════════════════════════════════════════════════════════════
+     * CRITICAL: Filter zero-step blocks (October 19, 2025)
+     * ═══════════════════════════════════════════════════════════════
+     * G0 X0 Y0 (when already at origin) creates blocks with no motion.
+     * These clog the buffer and prevent real moves from executing.
+     * Discard them here instead of during execution.
+     * ═══════════════════════════════════════════════════════════════ */
+    bool has_steps = (block->steps[AXIS_X] != 0) || (block->steps[AXIS_Y] != 0) ||
+                     (block->steps[AXIS_Z] != 0) || (block->steps[AXIS_A] != 0);
+
+    if (!has_steps)
+    {
+#ifdef DEBUG_MOTION_BUFFER
+        UGS_Printf("[PLAN] Zero-step block filtered (not added to buffer)\r\n");
+#endif
+        /* Don't add to buffer, but return success (command was processed) */
+        return true;
+    }
 
     /* ═══════════════════════════════════════════════════════════════
      * CRITICAL: Commit to buffer (UART pattern)
@@ -482,6 +504,15 @@ static void plan_buffer_line(motion_block_t *block, const parsed_move_t *move)
             // Convert delta to steps
             block->steps[axis] = MotionMath_MMToSteps(delta_mm, axis);
             block->axis_active[axis] = true;
+
+#ifdef DEBUG_MOTION_BUFFER
+            // Debug: Show position calculation
+            if (axis < AXIS_Z)
+            { // Only X and Y for brevity
+                UGS_Printf("[PLAN] Axis %d: target=%.3f planned=%.3f delta=%.3f steps=%ld\r\n",
+                           axis, target_mm_machine, planned_position_mm[axis], delta_mm, block->steps[axis]);
+            }
+#endif
 
             // Update planned position for next move
             planned_position_mm[axis] = target_mm_machine;

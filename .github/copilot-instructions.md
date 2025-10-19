@@ -147,6 +147,31 @@ void GCode_HandleControlChar(char c) {
 }
 ```
 
+### Single-Axis Motion Fix (October 19, 2025)
+
+**Fixed: Diagonal motion during single-axis moves** (G1 Y10 was moving both X and Y):
+
+**Problem**: Axes not moving in current command retained `active` flag from previous moves
+- `MultiAxis_ExecuteCoordinatedMove()` skipped axes with `velocity_scale == 0.0f`
+- But didn't explicitly deactivate them
+- TMR1 ISR continued controlling inactive axes with stale state
+
+**Solution**: Explicitly deactivate axes with zero motion before starting move:
+```c
+if (coord_move.axis_velocity_scale[axis] == 0.0f)
+{
+    /* Explicitly deactivate - not part of this move */
+    volatile scurve_state_t *s = &axis_state[axis];
+    s->active = false;
+    s->current_segment = SEGMENT_IDLE;
+    axis_hw[axis].TMR_Stop();
+    axis_hw[axis].OCMP_Disable();
+    continue;
+}
+```
+
+**Result**: ✅ Single-axis moves now execute correctly (Y-only, X-only, etc.)
+
 ### UGS Test Results (October 19, 2025) ✅
 
 ```
@@ -161,6 +186,8 @@ void GCode_HandleControlChar(char c) {
 ✅ Position feedback: Real-time updates during motion
 ✅ Feed hold: ! pauses motion immediately
 ✅ Modal commands: G90, G21, G17, G94, M3, M5 all functional
+✅ Serial robustness: No more "error:1 - Invalid G-code: G" errors
+✅ Single-axis motion: G1 Y10 moves Y-only (no diagonal drift)
 ```
 
 ### Serial Processing Robustness Fix (October 19, 2025)
@@ -317,24 +344,36 @@ After rebuild with 512-byte buffers:
 - **Documentation**: See `docs/TIMER_PRESCALER_ANALYSIS.md` for full analysis
 - **Status**: ✅ Ready for rebuild and hardware testing!
 
-## ⚠️ CURRENT STATUS: Direct Hardware Testing Phase (October 18, 2025)
+## ⚠️ CURRENT STATUS: Motion Execution Debug (October 19, 2025)
 
-**Latest Progress**: Built and flashed **test_ocr_direct.c** to verify OCR period scaling works correctly with known step counts, bypassing coordinate system bugs.
+**Latest Progress**: Fixed command buffer starvation and zero-step block filtering. Most issues resolved, one remaining bug with incomplete motion execution.
 
 **Current Testing Focus** 🎯:
-- **✅ COORDINATED MOVE BUG FIXED!** - October 18, 2025
-- **Test Results**: All 3 tests completed successfully!
-  - Test 1: Y-axis 800 steps ✓ (10.000mm exact, ±1 step rounding)
-  - Test 2: Coordinated X/Y diagonal ✓ (both axes completed, no hang!)
-  - Test 3: Return to origin ✓ (negative moves work, completed)
-- **Bug Fixed**: Subordinate axis now stops when dominant completes
-  - Problem: Subordinate copied SEGMENT_COMPLETE but never handled it
-  - Solution: Check dominant's `active` flag (not segment state)
-  - Location: multiaxis_control.c lines 837-851
-- **Position Tracking Note**: `step_count` is per-move (resets each move)
-  - This is correct for relative motion controller
-  - Absolute position tracking is handled by G-code parser (future)
-- **Status**: ✅ OCR period scaling verified! Time-based S-curve works!
+- **✅ SERIAL COMMUNICATION** - Robust, no more parsing errors
+- **✅ COMMAND PROCESSING** - 16x ProcessCommandBuffer() per loop drains buffer efficiently  
+- **✅ ZERO-STEP FILTERING** - G0 X0 Y0 blocks no longer clog motion buffer
+- **✅ SINGLE-AXIS MOTION** - Axes with zero velocity explicitly deactivated
+- **✅ ALL COMMANDS PARSED** - G1 Y10, G1 X10, G1 Y0, G1 X0 all reach parser
+- **❌ INCOMPLETE EXECUTION** - Final command (G1 X0) parsed but never executed
+
+**Critical Bug** (October 19, 2025):
+- **Symptom**: Machine stops at (10, 10, 5) instead of completing square to (0, 0, 5)
+- **Root Cause**: ExecuteMotion() only dequeues ONE block per loop iteration
+- **Analysis**: When machine enters RUN state with 3+ blocks queued:
+  1. Motion system stays busy for multiple loop iterations
+  2. New commands get tokenized/parsed and added to motion buffer
+  3. Machine completes first 3 blocks and goes IDLE
+  4. Last block (G1 X0) remains in motion buffer, never dequeued
+- **Solution** (for tomorrow): Modify ExecuteMotion() to drain all available blocks:
+  ```c
+  while (!MultiAxis_IsBusy() && MotionBuffer_HasData()) {
+      motion_block_t block;
+      if (MotionBuffer_GetNext(&block)) {
+          MultiAxis_ExecuteCoordinatedMove(block.steps);
+      }
+  }
+  ```
+- **Documentation**: See docs/MOTION_EXECUTION_DEBUG_OCT19.md for complete analysis
 
 **Current Working System** ✅:
 - **Full GRBL v1.1f protocol**: All system commands ($I, $G, $$, $#, $N, $), real-time commands (?, !, ~, ^X)

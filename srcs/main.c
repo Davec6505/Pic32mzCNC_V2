@@ -22,6 +22,9 @@
     Harmony3 peripherals (OCR, TMR, GPIO, UART)
 *******************************************************************************/
 
+// TEMPORARY: Enable debug output for motion execution investigation
+#define DEBUG_MOTION_BUFFER
+
 // *****************************************************************************
 // Section: Included Files
 // *****************************************************************************
@@ -370,12 +373,30 @@ static void ProcessSerialRx(void)
 static void ProcessCommandBuffer(void)
 {
   /* Only process commands if motion buffer has space
-   * Keep 4-block margin to prevent buffer starvation */
-  if (MotionBuffer_GetCount() < 12)
+   * Process aggressively - only block when buffer is truly full (15/16 blocks) */
+  uint8_t motion_count = MotionBuffer_GetCount();
+
+#ifdef DEBUG_MOTION_BUFFER
+  static uint32_t debug_counter = 0;
+  if (++debug_counter > 10000)
+  {
+    if (motion_count >= 15)
+    {
+      UGS_Printf("[PROCBUF] Motion buffer near full (%d blocks), waiting...\r\n", motion_count);
+    }
+    debug_counter = 0;
+  }
+#endif
+
+  if (motion_count < 15) /* Changed from 12 to 15 - process more aggressively */
   {
     command_entry_t cmd;
     if (CommandBuffer_GetNext(&cmd))
     {
+#ifdef DEBUG_MOTION_BUFFER
+      UGS_Printf("[PROCBUF] Got command from buffer (motion_count=%d)\r\n", motion_count);
+#endif
+
       /* Reconstruct line from tokens for parser
        * Example: ["G0", "X10", "Y20", "F1500"] → "G0 X10 Y20 F1500"
        */
@@ -452,18 +473,62 @@ static void ExecuteMotion(void)
 
       if (MotionBuffer_GetNext(&block))
       {
-/* DEBUG: Print what we're executing */
 #ifdef DEBUG_MOTION_BUFFER
+        /* DEBUG: Print what we're executing */
         UGS_Printf("[EXEC] Steps: X=%ld Y=%ld Z=%ld (busy=%d)\r\n",
                    block.steps[AXIS_X], block.steps[AXIS_Y], block.steps[AXIS_Z],
                    MultiAxis_IsBusy());
 #endif
 
-        /* Execute coordinated move with pre-calculated S-curve profile */
-        MultiAxis_ExecuteCoordinatedMove(block.steps);
+        /* Check if this is a zero-step block (no actual motion)
+         * These can occur when moving to current position (G0 X0 Y0 when already at origin)
+         * Skip them to avoid clogging the execution pipeline */
+        bool has_steps = (block.steps[AXIS_X] != 0) || (block.steps[AXIS_Y] != 0) ||
+                         (block.steps[AXIS_Z] != 0) || (block.steps[AXIS_A] != 0);
+
+        if (!has_steps)
+        {
+#ifdef DEBUG_MOTION_BUFFER
+          UGS_Printf("[EXEC] Skipping zero-step block\r\n");
+#endif
+          /* Don't execute, just discard and continue */
+        }
+        else
+        {
+          /* Execute coordinated move with pre-calculated S-curve profile */
+          MultiAxis_ExecuteCoordinatedMove(block.steps);
+
+#ifdef DEBUG_MOTION_BUFFER
+          UGS_Printf("[EXEC] Coordinated move started\r\n");
+#endif
+        }
+      }
+#ifdef DEBUG_MOTION_BUFFER
+      else
+      {
+        UGS_Printf("[EXEC] MotionBuffer_GetNext() returned false!\r\n");
+      }
+#endif
+    }
+#ifdef DEBUG_MOTION_BUFFER
+    else
+    {
+      // Only print occasionally to avoid flooding
+      static uint32_t idle_count = 0;
+      if (++idle_count > 10000)
+      {
+        UGS_Printf("[EXEC] No data in motion buffer (idle)\r\n");
+        idle_count = 0;
       }
     }
+#endif
   }
+#ifdef DEBUG_MOTION_BUFFER
+  else
+  {
+    // Motion system is busy - this is normal during moves
+  }
+#endif
 }
 
 // *****************************************************************************
@@ -564,8 +629,20 @@ int main(void)
      * - Parses tokens → parsed_move_t
      * - Adds to motion buffer for execution
      * - Happens in background while machine moves
+     *
+     * CRITICAL: Process ALL available commands each loop iteration!
+     * This prevents commands from getting stuck in the command buffer
+     * when the motion buffer fills up. GRBL pattern: drain command buffer
+     * as fast as possible to maintain flow control.
+     *
+     * Limit to 16 iterations to prevent infinite loop if something goes wrong.
      */
-    ProcessCommandBuffer();
+    for (uint8_t i = 0; i < 16; i++) /* Process up to 16 commands per iteration */
+    {
+      /* ProcessCommandBuffer() will return early if motion buffer is full (15/16)
+       * or if command buffer is empty, so this loop will exit naturally */
+      ProcessCommandBuffer();
+    }
 
     /* Stage 3: Execute Motion Buffer → Hardware
      * - Dequeues motion blocks

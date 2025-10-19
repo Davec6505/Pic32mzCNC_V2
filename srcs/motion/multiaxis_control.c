@@ -1237,9 +1237,22 @@ void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES])
     /* MISRA Rule 17.4: Loop bounds checked against NUM_AXES constant */
     for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
     {
-        /* Skip axes with zero motion (velocity_scale == 0.0f indicates no movement) */
+        /* Skip axes with zero motion (velocity_scale == 0.0f indicates no movement)
+         * CRITICAL: Must explicitly deactivate these axes to prevent them from
+         * continuing with state from previous moves! */
         if (coord_move.axis_velocity_scale[axis] == 0.0f)
         {
+            /* Explicitly deactivate this axis - it's not part of this move */
+            volatile scurve_state_t *s = &axis_state[axis];
+            s->active = false;
+            s->current_segment = SEGMENT_IDLE;
+            s->current_velocity = 0.0f;
+            s->current_accel = 0.0f;
+            
+            /* Stop hardware if it was running */
+            axis_hw[axis].TMR_Stop();
+            axis_hw[axis].OCMP_Disable();
+            
             continue; /* MISRA Rule 14.5: Continue acceptable for skip logic */
         }
 

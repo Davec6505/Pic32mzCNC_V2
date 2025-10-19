@@ -1,88 +1,7 @@
-../objs/main.o: ../srcs/main.c ../incs/config/default/definitions.h \
- ../incs/config/default/peripheral/clk/plib_clk.h \
- ../incs/config/default/peripheral/gpio/plib_gpio.h \
- ../incs/config/default/device.h \
- ../incs/config/default/toolchain_specifics.h \
- ../incs/config/default/peripheral/cache/plib_cache.h \
- ../incs/config/default/peripheral/evic/plib_evic.h \
- ../incs/config/default/peripheral/ocmp/plib_ocmp1.h \
- ../incs/config/default/peripheral/ocmp/plib_ocmp_common.h \
- ../incs/config/default/peripheral/ocmp/plib_ocmp4.h \
- ../incs/config/default/peripheral/ocmp/plib_ocmp5.h \
- ../incs/config/default/peripheral/ocmp/plib_ocmp3.h \
- ../incs/config/default/peripheral/coretimer/plib_coretimer.h \
- ../incs/config/default/peripheral/tmr/plib_tmr4.h \
- ../incs/config/default/peripheral/tmr/plib_tmr_common.h \
- ../incs/config/default/peripheral/uart/plib_uart2.h \
- ../incs/config/default/peripheral/uart/plib_uart_common.h \
- ../incs/config/default/peripheral/tmr/plib_tmr5.h \
- ../incs/config/default/peripheral/tmr/plib_tmr2.h \
- ../incs/config/default/peripheral/tmr/plib_tmr3.h \
- ../incs/config/default/peripheral/tmr1/plib_tmr1.h \
- ../incs/config/default/peripheral/tmr1/plib_tmr1_common.h ../srcs/app.h \
- ../incs/serial_wrapper.h ../incs/ugs_interface.h ../incs/gcode_parser.h \
- ../incs/motion/motion_types.h ../incs/command_buffer.h \
- ../incs/gcode_parser.h ../incs/motion/motion_buffer.h \
- ../incs/motion/motion_types.h ../incs/motion/motion_math.h \
- ../incs/motion/multiaxis_control.h
-
-../incs/config/default/definitions.h:
-
-../incs/config/default/peripheral/clk/plib_clk.h:
-
-../incs/config/default/peripheral/gpio/plib_gpio.h:
-
-../incs/config/default/device.h:
-
-../incs/config/default/toolchain_specifics.h:
-
-../incs/config/default/peripheral/cache/plib_cache.h:
-
-../incs/config/default/peripheral/evic/plib_evic.h:
-
-../incs/config/default/peripheral/ocmp/plib_ocmp1.h:
-
-../incs/config/default/peripheral/ocmp/plib_ocmp_common.h:
-
-../incs/config/default/peripheral/ocmp/plib_ocmp4.h:
-
-../incs/config/default/peripheral/ocmp/plib_ocmp5.h:
-
-../incs/config/default/peripheral/ocmp/plib_ocmp3.h:
-
-../incs/config/default/peripheral/coretimer/plib_coretimer.h:
-
-../incs/config/default/peripheral/tmr/plib_tmr4.h:
-
-../incs/config/default/peripheral/tmr/plib_tmr_common.h:
-
-../incs/config/default/peripheral/uart/plib_uart2.h:
-
-../incs/config/default/peripheral/uart/plib_uart_common.h:
-
-../incs/config/default/peripheral/tmr/plib_tmr5.h:
-
-../incs/config/default/peripheral/tmr/plib_tmr2.h:
-
-../incs/config/default/peripheral/tmr/plib_tmr3.h:
-
-../incs/config/default/peripheral/tmr1/plib_tmr1.h:
-
-../incs/config/default/peripheral/tmr1/plib_tmr1_common.h:
-
-../srcs/app.h:
-
-../incs/serial_wrapper.h:
-
-../incs/ugs_interface.h:
-
-../incs/gcode_parser.h:
-
-../incs/motion/motion_types.h:
-
-../incs/command_buffer.h:
-
-../incs/gcode_parser.h:
+../objs/motion/motion_buffer.o: ../srcs/motion/motion_buffer.c \
+ ../incs/motion/motion_buffer.h ../incs/motion/motion_types.h \
+ ../incs/motion/motion_math.h ../incs/motion/multiaxis_control.h \
+ ../incs/ugs_interface.h
 
 ../incs/motion/motion_buffer.h:
 
@@ -91,3 +10,5 @@
 ../incs/motion/motion_math.h:
 
 ../incs/motion/multiaxis_control.h:
+
+../incs/ugs_interface.h:
