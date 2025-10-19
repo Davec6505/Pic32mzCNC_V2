@@ -35,12 +35,12 @@
 #include <stdio.h>                    // For sscanf
 #include <string.h>                   // For strcat, strncat
 #include "definitions.h"              // SYS function prototypes
-#include "app.h"                      // Application layer
 #include "serial_wrapper.h"           // GRBL serial using MCC plib_uart2
 #include "ugs_interface.h"            // UGS protocol layer (uses serial_wrapper)
 #include "gcode_parser.h"             // G-code parsing
 #include "command_buffer.h"           // Command separation and buffering (NEW!)
-#include "motion/motion_buffer.h"     // Motion planning ring buffer
+#include "motion/motion_buffer.h"     // Motion planning ring buffer (OLD - being replaced)
+#include "motion/grbl_planner.h"      // GRBL planner (NEW - Phase 1)
 #include "motion/motion_math.h"       // GRBL settings management
 #include "motion/multiaxis_control.h" // Multi-axis coordinated motion
 
@@ -431,15 +431,62 @@ static void ProcessCommandBuffer(void)
 
         if (has_motion)
         {
-          /* Add to motion buffer */
-          if (!MotionBuffer_Add(&move))
+          /* ═══════════════════════════════════════════════════════════════
+           * GRBL PLANNER INTEGRATION (Phase 1)
+           * ═══════════════════════════════════════════════════════════════
+           * Convert parsed_move_t (G-code parser) to GRBL planner format:
+           *   - target[NUM_AXES]: float array in mm (absolute machine coords)
+           *   - grbl_plan_line_data_t: feedrate, spindle, condition flags
+           *
+           * Parser handles coordinate systems (work offsets, G92).
+           * Planner receives ready-to-execute machine coordinates.
+           */
+
+          /* Convert parsed_move_t to GRBL float array format */
+          float target[NUM_AXES];
+          target[AXIS_X] = move.target[AXIS_X];
+          target[AXIS_Y] = move.target[AXIS_Y];
+          target[AXIS_Z] = move.target[AXIS_Z];
+          target[AXIS_A] = move.target[AXIS_A];
+
+          /* Prepare GRBL planner input data */
+          grbl_plan_line_data_t pl_data;
+          pl_data.feed_rate = move.feedrate; /* mm/min from F word */
+          pl_data.spindle_speed = 0.0f;      /* Future: M3/M4 spindle control */
+
+          /* Set condition flags based on motion mode */
+          pl_data.condition = 0;
+          if (move.motion_mode == 0) /* G0 rapid positioning */
           {
-            /* Motion buffer full (shouldn't happen with 4-block margin)
-             * Log error but continue (command already processed) */
-            UGS_Print("[MSG:Motion buffer full during background parse]\r\n");
+            /* G0 rapid positioning - ignore feedrate, use machine max */
+            pl_data.condition |= PL_COND_FLAG_RAPID_MOTION;
           }
+          /* Future: PL_COND_FLAG_SYSTEM_MOTION for G28/G30 */
+
+          /* Add to GRBL planner (replaces MotionBuffer_Add) */
+          if (!GRBLPlanner_BufferLine(target, &pl_data))
+          {
+            /* Planner rejected move (zero-length or buffer full)
+             * Log warning but continue (command already parsed) */
+            UGS_Print("[MSG:GRBL planner rejected move - zero length or buffer full]\r\n");
+
+#ifdef DEBUG_MOTION_BUFFER
+            UGS_Printf("[GRBL] Rejected: X:%.3f Y:%.3f Z:%.3f F:%.1f mode:%d\r\n",
+                       target[AXIS_X], target[AXIS_Y], target[AXIS_Z],
+                       pl_data.feed_rate, move.motion_mode);
+#endif
+          }
+#ifdef DEBUG_MOTION_BUFFER
+          else
+          {
+            UGS_Printf("[GRBL] Buffered: X:%.3f Y:%.3f Z:%.3f F:%.1f rapid:%d\r\n",
+                       target[AXIS_X], target[AXIS_Y], target[AXIS_Z],
+                       pl_data.feed_rate,
+                       (pl_data.condition & PL_COND_FLAG_RAPID_MOTION) ? 1 : 0);
+          }
+#endif
         }
-        /* Modal-only commands (G90, M3, etc.) don't need motion buffer */
+        /* Modal-only commands (G90, M3, etc.) don't need planner */
       }
       else
       {
@@ -505,7 +552,18 @@ int main(void)
   /* Initialize command buffer (64-entry ring buffer for command separation) */
   CommandBuffer_Initialize();
 
-  /* Initialize motion buffer ring buffer */
+  /* ═══════════════════════════════════════════════════════════════
+   * GRBL PLANNER INITIALIZATION (Phase 1)
+   * ═══════════════════════════════════════════════════════════════
+   * Initialize GRBL v1.1f motion planner:
+   *   - 16-block ring buffer for look-ahead planning
+   *   - Junction deviation algorithm for smooth cornering
+   *   - Forward/reverse pass optimization
+   *   - Position tracking in steps (pl.sys_position[])
+   */
+  GRBLPlanner_Initialize();
+
+  /* Initialize old motion buffer (Phase 2: will be removed) */
   MotionBuffer_Initialize();
 
   /* Initialize multi-axis control subsystem
@@ -515,8 +573,6 @@ int main(void)
    * - Starts TMR1 control loop
    */
   MultiAxis_Initialize();
-
-
 
   /* Send startup message to UGS */
   UGS_Print("\r\n");
@@ -575,22 +631,21 @@ int main(void)
     /* Stage 3: Motion Execution → Hardware
      * GRBL-STYLE AUTO-START (October 19, 2025):
      * ExecuteMotion() REMOVED from main loop!
-     * 
+     *
      * Motion buffer feeding now handled by CoreTimer @ 10ms ISR:
      *   - MotionManager_CoreTimerISR() checks if machine idle
      *   - Automatically dequeues next block from motion buffer
      *   - Starts coordinated move with S-curve profile
      *   - Ensures continuous motion without gaps
-     * 
+     *
      * Benefits:
      *   - True GRBL architecture (like st_prep_buffer())
      *   - Guaranteed timing (10ms ±0ms jitter)
      *   - Main loop freed for real-time commands
      *   - Clean separation of concerns
-     * 
+     *
      * See: motion_manager.c for implementation
      */
-
 
     /* Maintain state machines of all polled Harmony modules
      * - UART, timers, GPIO, etc.

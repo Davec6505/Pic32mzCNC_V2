@@ -503,6 +503,51 @@ float MotionMath_GetJerkStepsPerSec3(axis_id_t axis)
     return motion_settings.jerk_limit * motion_settings.steps_per_mm[axis];
 }
 
+// *****************************************************************************
+// GRBL Planner Helper Functions (GRBL v1.1f compatibility)
+// *****************************************************************************
+
+float MotionMath_GetAccelMMPerSec2(axis_id_t axis)
+{
+    assert(axis < NUM_AXES);
+
+    if (axis >= NUM_AXES)
+    {
+        return 0.0f;
+    }
+
+    return motion_settings.acceleration[axis];
+}
+
+float MotionMath_GetMaxVelocityMMPerMin(axis_id_t axis)
+{
+    assert(axis < NUM_AXES);
+
+    if (axis >= NUM_AXES)
+    {
+        return 0.0f;
+    }
+
+    return motion_settings.max_rate[axis];
+}
+
+float MotionMath_GetJunctionDeviation(void)
+{
+    return motion_settings.junction_deviation;
+}
+
+float MotionMath_GetStepsPerMM(axis_id_t axis)
+{
+    assert(axis < NUM_AXES);
+
+    if (axis >= NUM_AXES)
+    {
+        return 1.0f; /* Avoid divide-by-zero */
+    }
+
+    return motion_settings.steps_per_mm[axis];
+}
+
 float MotionMath_CalculateMoveTime(float distance_mm, float feedrate_mm_min, float accel_mm_sec2)
 {
     if (!float_is_valid(distance_mm) || !float_is_valid(feedrate_mm_min) ||

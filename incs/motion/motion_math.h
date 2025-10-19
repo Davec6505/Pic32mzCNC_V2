@@ -182,6 +182,45 @@ float MotionMath_GetAccelStepsPerSec2(axis_id_t axis);
  */
 float MotionMath_GetJerkStepsPerSec3(axis_id_t axis);
 
+// *****************************************************************************
+// GRBL Planner Helper Functions (for GRBL v1.1f compatibility)
+// *****************************************************************************
+
+/*! \brief Get acceleration in mm/sec² for specified axis
+ *
+ *  Returns GRBL $120-$123 setting directly without conversion.
+ *
+ *  \param axis Axis identifier
+ *  \return Acceleration in mm/sec²
+ */
+float MotionMath_GetAccelMMPerSec2(axis_id_t axis);
+
+/*! \brief Get maximum velocity in mm/min for specified axis
+ *
+ *  Returns GRBL $110-$113 setting directly without conversion.
+ *
+ *  \param axis Axis identifier
+ *  \return Max velocity in mm/min
+ */
+float MotionMath_GetMaxVelocityMMPerMin(axis_id_t axis);
+
+/*! \brief Get junction deviation setting
+ *
+ *  Returns GRBL $11 setting for junction velocity calculation.
+ *
+ *  \return Junction deviation in mm
+ */
+float MotionMath_GetJunctionDeviation(void);
+
+/*! \brief Get steps per mm for specified axis
+ *
+ *  Returns GRBL $100-$103 setting directly.
+ *
+ *  \param axis Axis identifier
+ *  \return Steps per mm
+ */
+float MotionMath_GetStepsPerMM(axis_id_t axis);
+
 /*! \brief Calculate move duration with trapezoidal profile
  *
  *  \param distance_mm Move distance

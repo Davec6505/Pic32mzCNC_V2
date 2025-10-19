@@ -134,7 +134,7 @@ typedef struct
     // ═════════════════════════════════════════════════════════════════════
 
     /*! Step count along each axis (absolute difference from start to end) */
-    uint32_t steps[N_AXIS];
+    uint32_t steps[NUM_AXES];
 
     /*! Maximum step count in any single axis (determines Bresenham iterations) */
     uint32_t step_event_count;
