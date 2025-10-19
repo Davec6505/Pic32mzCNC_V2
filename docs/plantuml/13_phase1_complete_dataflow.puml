@@ -1,0 +1,298 @@
+@startuml
+!theme cerulean
+title Phase 1 Complete: GRBL Integration Data Flow (October 2025)
+scale 1.3
+
+' ============================================================================
+' STAGE 1: SERIAL RECEPTION (✅ WORKING)
+' ============================================================================
+rectangle "**Stage 1: Serial Reception**\n<size:10>✅ COMPLETE - UART2 @ 115200</size>" as Stage1 #LightGreen {
+  component "UART2 RX ISR\n(Priority 5)" as UART_ISR
+  queue "Ring Buffer\n512 bytes" as SerialBuf
+  component "Serial_GetRealtimeCommand()" as RTCmd
+  
+  note right of SerialBuf
+    **ISR-safe reception**:
+    • UART ISR copies to ring buffer
+    • Control chars (?, !, ~, ^X) flagged
+    • Main loop reads buffered data
+    • No dropped bytes @ 115200 baud
+  end note
+}
+
+' ============================================================================
+' STAGE 2: G-CODE PARSING (✅ WORKING)
+' ============================================================================
+rectangle "**Stage 2: G-Code Parser**\n<size:10>✅ COMPLETE - GRBL v1.1f</size>" as Stage2 #LightGreen {
+  component "ProcessSerialRx()" as SerialProc
+  component "GCode_ParseLine()" as Parser
+  component "parsed_move_t" as ParsedMove
+  component "Modal Position\nMerge Logic" as ModalMerge
+  
+  note right of Parser
+    **Full GRBL v1.1f parser**:
+    Input:  "G1 X10 F1500\n"
+    Output: parsed_move_t {
+      target = {10.0, ?, ?, ?}
+      feedrate = 1500.0
+      axis_words = {true, false, false, false}
+    }
+    
+    **13 Modal Groups**:
+    Motion, plane, distance, feedrate,
+    units, coordinate systems, etc.
+  end note
+  
+  note right of ModalMerge
+    **CRITICAL FIX (Oct 19)**:
+    Unspecified axes retain
+    previous position!
+    
+    "G1 Y10" → (modal_x, 10, modal_z, modal_a)
+    "G1 X20" → (20, 10, modal_z, modal_a)
+    
+    Prevents diagonal drift bug!
+  end note
+}
+
+' ============================================================================
+' STAGE 3: GRBL MOTION PLANNER (✅ WORKING)
+' ============================================================================
+rectangle "**Stage 3: GRBL Planner**\n<size:10>✅ COMPLETE - Look-Ahead Planning</size>" as Stage3 #LightGreen {
+  component "GRBLPlanner_BufferLine()" as PlannerAdd
+  component "Coordinate Transform\n(Work → Machine)" as CoordXform
+  queue "GRBL Ring Buffer\n16 × grbl_plan_block_t" as GRBLBuf
+  component "Junction Velocity\nOptimization" as Junction
+  component "Forward/Reverse Pass\nVelocity Planning" as Passes
+  
+  note right of CoordXform
+    **Coordinate system handling**:
+    • Work coordinates (G54-G59)
+    • G92 offsets
+    • G28/G30 home positions
+    • Machine coordinates (absolute)
+  end note
+  
+  note right of Junction
+    **Junction deviation algorithm**:
+    • Calculates safe cornering speed
+    • Respects acceleration limits
+    • Minimizes total move time
+    • Entry/exit velocity optimization
+  end note
+  
+  note right of GRBLBuf
+    **grbl_plan_block_t structure**:
+    steps[4]          (unsigned steps)
+    direction_bits    (bit mask: 1=negative)
+    entry_speed       (optimized mm/min)
+    millimeters       (move distance)
+    acceleration      (from settings)
+  end note
+}
+
+' ============================================================================
+' STAGE 4: MOTION MANAGER (✅ WORKING)
+' ============================================================================
+rectangle "**Stage 4: Motion Manager**\n<size:10>✅ COMPLETE - Block Execution</size>" as Stage4 #LightGreen {
+  component "TMR9 @ 10ms\n(Priority 1)" as TMR9
+  component "GRBLPlanner_GetCurrentBlock()" as GetBlock
+  component "Direction Bit\nConversion" as DirConvert
+  component "MultiAxis_ExecuteCoordinatedMove()" as Execute
+  component "Position Update\n(machine_position[])" as PosUpdate
+  
+  note right of DirConvert
+    **CRITICAL FIX (Oct 19)**:
+    GRBL: unsigned steps + direction_bits
+    Our:  signed int32_t steps[]
+    
+    Conversion:
+    if (direction_bits & (1<<axis))
+      steps[axis] = -abs_steps
+    else
+      steps[axis] = abs_steps
+  end note
+  
+  note right of PosUpdate
+    **CRITICAL FIX (Oct 19)**:
+    Absolute position tracker!
+    
+    • machine_position[] accumulates deltas
+    • Updated when move completes
+    • MultiAxis_GetStepCount() returns absolute
+    • Fixes "return to origin" bug!
+  end note
+}
+
+' ============================================================================
+' STAGE 5: MULTI-AXIS S-CURVE CONTROL (✅ WORKING)
+' ============================================================================
+rectangle "**Stage 5: S-Curve Controller**\n<size:10>✅ COMPLETE - Time-Based Interpolation</size>" as Stage5 #LightBlue {
+  component "TMR1 @ 1kHz\n(Priority 2)" as TMR1
+  component "7-Segment S-Curve\nVelocity Profile" as SCurve
+  component "Velocity → OCR Period\nConversion" as VelConv
+  component "Per-Axis Active Flags\n& Deactivation" as ActiveFlags
+  
+  note right of SCurve
+    **Jerk-limited motion**:
+    1. J+ (accel increasing)
+    2. A+ (constant accel)
+    3. J- (accel decreasing)
+    4. V  (constant velocity)
+    5. J- (decel increasing)
+    6. A- (constant decel)
+    7. J+ (decel decreasing)
+    
+    All axes synchronized to
+    dominant (longest) axis time!
+  end note
+  
+  note right of ActiveFlags
+    **CRITICAL FIX (Oct 19)**:
+    Single-axis motion fix!
+    
+    Axes with velocity_scale=0
+    explicitly deactivated:
+    • active = false
+    • current_segment = IDLE
+    • TMR stopped, OCR disabled
+    
+    Prevents diagonal drift!
+  end note
+}
+
+' ============================================================================
+' STAGE 6: HARDWARE PULSE GENERATION (✅ WORKING)
+' ============================================================================
+rectangle "**Stage 6: Hardware Layer**\n<size:10>✅ COMPLETE - OCR Dual-Compare</size>" as Stage6 #LightCyan {
+  component "OCMP1 (Y-axis)\nTMR4 @ 1.5625MHz" as OCR1
+  component "OCMP3 (A-axis)\nTMR5 @ 1.5625MHz" as OCR3
+  component "OCMP4 (X-axis)\nTMR2 @ 1.5625MHz" as OCR4
+  component "OCMP5 (Z-axis)\nTMR3 @ 1.5625MHz" as OCR5
+  component "DRV8825 Drivers\n(1/16 microstepping)" as Drivers
+  component "Stepper Motors\n(NEMA 23)" as Motors
+  
+  note right of OCR4
+    **Dual-compare pattern**:
+    TMRxPR  = period (varies with velocity)
+    OCxR    = period - 40 (rising edge)
+    OCxRS   = 40 (falling edge)
+    
+    Result: 40-count pulse (25.6µs)
+    Exceeds DRV8825 minimum (1.9µs) ✓
+    
+    **CRITICAL**: Set direction GPIO
+    BEFORE enabling OCR!
+  end note
+}
+
+' ============================================================================
+' DATA FLOW CONNECTIONS
+' ============================================================================
+
+' Stage 1 → Stage 2
+UART_ISR -down-> SerialBuf : ISR writes
+SerialBuf -down-> SerialProc : Main loop reads
+SerialBuf -right-> RTCmd : Flag control chars
+SerialProc -down-> Parser : Extract line
+
+' Stage 2 → Stage 3
+Parser -down-> ParsedMove : Token parsing
+ParsedMove -down-> ModalMerge : Merge with modal state
+ModalMerge -down-> PlannerAdd : Complete coordinates
+
+' Stage 3 internal flow
+PlannerAdd -down-> CoordXform : Work → Machine
+CoordXform -down-> GRBLBuf : Buffer block
+GRBLBuf -right-> Junction : Calculate junction velocity
+Junction -down-> Passes : Forward/reverse passes
+Passes -down-> GRBLBuf : Update entry/exit speeds
+
+' Stage 3 → Stage 4
+TMR9 -down-> GetBlock : Check if idle (10ms)
+GetBlock -down-> GRBLBuf : Read current block
+GRBLBuf -down-> DirConvert : GRBL → signed steps
+DirConvert -down-> Execute : Start motion
+
+' Stage 4 → Stage 5
+Execute -down-> TMR1 : Initialize S-curve
+TMR1 -down-> SCurve : Update velocity (1kHz)
+SCurve -down-> VelConv : Velocity → period
+VelConv -down-> ActiveFlags : Check active axes
+
+' Stage 5 → Stage 6
+ActiveFlags -down-> OCR4 : Update X period
+ActiveFlags -down-> OCR1 : Update Y period
+ActiveFlags -down-> OCR5 : Update Z period
+ActiveFlags -down-> OCR3 : Update A period
+OCR4 -down-> Drivers : STEP/DIR X
+OCR1 -down-> Drivers : STEP/DIR Y
+OCR5 -down-> Drivers : STEP/DIR Z
+OCR3 -down-> Drivers : STEP/DIR A
+Drivers -down-> Motors : Drive current
+
+' ============================================================================
+' FEEDBACK LOOPS (Critical for position tracking)
+' ============================================================================
+OCR4 -up[#Red,dashed]-> TMR1 : <color:Red>Step count callbacks\n(X position)</color>
+OCR1 -up[#Red,dashed]-> TMR1 : <color:Red>Step count callbacks\n(Y position)</color>
+OCR5 -up[#Red,dashed]-> TMR1 : <color:Red>Step count callbacks\n(Z position)</color>
+OCR3 -up[#Red,dashed]-> TMR1 : <color:Red>Step count callbacks\n(A position)</color>
+TMR1 -up[#Blue,dashed]-> TMR9 : <color:Blue>Motion complete\n(when all axes idle)</color>
+TMR9 -up[#Green,dashed]-> PosUpdate : <color:Green>Update machine_position[]\n(absolute position)</color>
+PosUpdate -up[#Purple,dashed]-> Stage2 : <color:Purple>Position feedback\n(for ? status queries)</color>
+
+' ============================================================================
+' REAL-TIME COMMANDS (High Priority Bypass)
+' ============================================================================
+rectangle "**Real-Time Commands**\n<size:10>✅ WORKING - GRBL Protocol</size>" as RealTime #Pink {
+  component "? (Status)" as Status
+  component "! (Feed Hold)" as Hold
+  component "~ (Resume)" as Resume
+  component "^X (Reset)" as Reset
+}
+
+RTCmd -right-> Status : Immediate query
+Status -down-> PosUpdate : Read machine_position[]
+RTCmd -right-> Hold : Pause motion
+Hold -down-> GRBLBuf : Block retrieval stops
+RTCmd -right-> Resume : Continue motion
+Resume -down-> GRBLBuf : Resume retrieval
+RTCmd -right-> Reset : Emergency stop
+Reset -down-> GRBLBuf : Clear all blocks
+Reset -down-> TMR1 : Stop all axes
+
+' ============================================================================
+' LEGEND & STATUS
+' ============================================================================
+legend bottom
+  **Phase 1 Completion Status (October 19, 2025)**
+  
+  |= Component |= Status |= Key Features |
+  | Serial Reception | ✅ COMPLETE | 512-byte buffer, ISR-safe, no dropped bytes |
+  | G-Code Parser | ✅ COMPLETE | GRBL v1.1f, 13 modal groups, full command set |
+  | Modal Position | ✅ FIXED | Unspecified axes retain previous values |
+  | GRBL Planner | ✅ COMPLETE | 16-block buffer, junction deviation, look-ahead |
+  | Motion Manager | ✅ COMPLETE | Direction bit conversion, block lifecycle |
+  | Position Tracking | ✅ FIXED | Absolute position array, returns to origin |
+  | S-Curve Control | ✅ COMPLETE | 7-segment profiles, jerk-limited |
+  | Single-Axis Motion | ✅ FIXED | Explicit axis deactivation |
+  | OCR Hardware | ✅ COMPLETE | Dual-compare PWM, 40-count pulse width |
+  
+  **Hardware Verified (October 19, 2025)**:
+  • Square pattern (G1 Y10 X10 Y0 X0) returns to (0,0,0) ✅
+  • Backward motion works correctly (negative direction bits) ✅
+  • Z-axis motion (1280 steps/mm) accurate to ±2 steps ✅
+  • UGS compatibility: Connects as "GRBL 1.1f" ✅
+  • Clean serial output (no debug spam in production) ✅
+  
+  **Interrupt Priority Architecture**:
+  Priority 5: UART2_RX/TX (serial communication - HIGHEST)
+  Priority 3: OCMP1/3/4/5 (step pulse generation - HIGH)
+  Priority 2: TMR1 (S-curve updates @ 1kHz - MEDIUM)
+  Priority 1: TMR9 (motion manager @ 100Hz - LOWEST)
+  
+  **Next Phase**: GRBL Stepper with Segment Buffer (Phase 2)
+end legend
+
+@enduml

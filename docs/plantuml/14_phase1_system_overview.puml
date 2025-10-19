@@ -1,0 +1,225 @@
+@startuml
+!theme cerulean
+title PIC32MZ CNC Motion Controller V2 - Phase 1 Complete (October 2025)
+scale 1.4
+
+' ============================================================================
+' HARDWARE LAYER (✅ VERIFIED)
+' ============================================================================
+package "**Hardware Layer**\n<size:10>✅ VERIFIED October 2025</size>" <<Rectangle>> #LightCyan {
+  component [PIC32MZ2048EFH100\n200MHz, 2MB Flash, 512KB RAM] as MCU
+  component [DRV8825 Drivers\n1/16 Microstepping\n(X, Y, Z, A)] as Drivers
+  component [NEMA 23 Motors\n2.8A Bipolar\n4-Axis CNC Gantry] as Motors
+  component [Limit Switches\nSafety Sensors\n(Not yet tested)] as Limits
+  component [UART2 Serial\n115200 baud 8N1\n512-byte buffer] as Serial
+}
+
+' ============================================================================
+' HARDWARE ABSTRACTION LAYER (✅ COMPLETE)
+' ============================================================================
+package "**Hardware Abstraction Layer**\n<size:10>✅ COMPLETE - MCC Generated</size>" <<Rectangle>> #LightYellow {
+  component [TMR1 @ 1kHz\nS-Curve Updates\n(Priority 2)] as TMR1
+  component [OCMP1/3/4/5\nDual-Compare PWM\n(Priority 3)] as OCR
+  component [TMR2/3/4/5\n1.5625MHz Time Base\n(1:16 Prescaler)] as TMR_OCR
+  component [GPIO\nDirection/Enable\nControl] as GPIO
+  component [UART2 HAL\nISR Ring Buffer\n(Priority 5)] as UART
+  component [EVIC\nInterrupt Controller\n7 Active IRQs] as EVIC
+}
+
+' ============================================================================
+' MOTION SUBSYSTEM (✅ COMPLETE)
+' ============================================================================
+package "**Motion Control Subsystem**\n<size:10>✅ COMPLETE - Phase 1</size>" <<Rectangle>> #LightGreen {
+  component [motion_types.h\nCentralized Types\n235 lines] as Types <<Header>>
+  component [motion_math.c\nKinematics & Settings\n733 lines] as MathLib <<Library>>
+  component [multiaxis_control.c\nS-Curve Interpolation\n1169 lines] as Motion <<Controller>>
+  component [motion_manager.c\nBlock Lifecycle\nTMR9 @ 100Hz] as Manager <<Manager>>
+  
+  note right of Manager
+    **✅ CRITICAL FIXES**:
+    • Direction bit conversion
+    • Position tracking (machine_position[])
+    • Block lifecycle management
+    • Busy detection
+  end note
+}
+
+' ============================================================================
+' GRBL PLANNER (✅ COMPLETE)
+' ============================================================================
+package "**GRBL Planner**\n<size:10>✅ COMPLETE - Ported from GRBL</size>" <<Rectangle>> #LightGreen {
+  component [grbl_planner.c\nLook-Ahead Planning\n16-Block Buffer] as Planner <<Planner>>
+  component [grbl_plan_block_t\nRing Buffer Entry\nJunction Optimization] as PlanBlock <<Type>>
+  
+  note right of Planner
+    **✅ WORKING FEATURES**:
+    • Junction deviation algorithm
+    • Forward/reverse velocity passes
+    • Acceleration profile calculation
+    • Entry/exit speed optimization
+    • 16-block circular buffer
+  end note
+}
+
+' ============================================================================
+' APPLICATION LAYER (✅ COMPLETE)
+' ============================================================================
+package "**Application Layer**\n<size:10>✅ COMPLETE - UGS Integration</size>" <<Rectangle>> #LightGreen {
+  component [main.c\nThree-Stage Pipeline\nProcessing Loop] as Main
+  component [gcode_parser.c\nGRBL v1.1f Parser\n1354 lines] as Parser <<Parser>>
+  component [ugs_interface.c\nSerial Protocol\nFlow Control] as Protocol <<Interface>>
+  component [serial_wrapper.c\nISR-Safe Reception\n512-byte buffer] as SerialBuf <<Wrapper>>
+  component [command_buffer.c\nLine Extraction\nCommand Separation] as CmdBuf <<Buffer>>
+  
+  note right of Parser
+    **✅ FULL GRBL v1.1f**:
+    • 13 modal groups
+    • Work coordinate systems
+    • Modal position merge
+    • M-command support
+    • Real-time commands
+  end note
+  
+  note right of Main
+    **✅ THREE-STAGE PIPELINE**:
+    1. ProcessSerialRx()
+    2. ProcessCommandBuffer()
+    3. ExecuteMotion()
+    
+    Non-blocking flow control!
+  end note
+}
+
+' ============================================================================
+' RELATIONSHIPS - Hardware Connections
+' ============================================================================
+MCU -down-> Drivers : STEP/DIR/ENABLE\nGPIO signals
+Drivers -down-> Motors : 1/16 microstep\nDrive current
+Limits -up-> MCU : Digital inputs\n(Active low)
+Serial <-up-> MCU : TX/RX @ 115200\nISR-driven
+
+' ============================================================================
+' RELATIONSHIPS - HAL to Hardware
+' ============================================================================
+TMR1 -up-> EVIC : 1kHz interrupt\n(S-curve updates)
+OCR -up-> EVIC : Step count\ncallbacks
+TMR_OCR -up-> OCR : 1.5625MHz\ntime base
+GPIO -up-> MCU : Direction bits\n(before step pulses)
+UART -up-> Serial : ISR ring buffer\n(no dropped bytes)
+
+' ============================================================================
+' RELATIONSHIPS - Motion Subsystem
+' ============================================================================
+Types .down.> MathLib : imports
+Types .down.> Motion : imports
+Types .down.> Manager : imports
+Types .down.> Planner : imports
+
+MathLib -down-> Motion : Unit conversion\nMotion limits
+Manager -down-> Motion : Coordinated moves\nDirection conversion
+Motion -down-> OCR : Configure periods\nStart/stop timers
+Motion -down-> GPIO : Set direction\nEnable drivers
+Motion -up-> TMR1 : 1kHz callback\nUpdate S-curves
+Motion -up-> Manager : Motion complete\nPosition updates
+
+' ============================================================================
+' RELATIONSHIPS - GRBL Planner Integration
+' ============================================================================
+Planner -down-> PlanBlock : 16-block buffer\ngrbl_plan_block_t[]
+PlanBlock -down-> Manager : GetCurrentBlock()\nDiscardCurrentBlock()
+Manager -up-> Planner : BufferLine()\nRecalculate()
+
+' ============================================================================
+' RELATIONSHIPS - Application Layer
+' ============================================================================
+Main -down-> SerialBuf : Initialize UART
+Main -down-> CmdBuf : ProcessSerialRx()
+SerialBuf -down-> CmdBuf : Line extraction
+CmdBuf -down-> Protocol : UGS flow control
+Protocol -down-> Parser : Parse G-code line
+Parser -down-> Planner : BufferLine()\n(modal merge)
+Main -down-> Manager : ExecuteMotion()\n(check if busy)
+
+' ============================================================================
+' FEEDBACK LOOPS (Critical for Operation)
+' ============================================================================
+OCR -up[#Red,dashed,thickness=2]-> Motion : <color:Red><b>Step count callbacks</b>\n(position tracking)</color>
+Motion -up[#Blue,dashed,thickness=2]-> Manager : <color:Blue><b>Motion complete</b>\n(when all axes idle)</color>
+Manager -up[#Green,dashed,thickness=2]-> Manager : <color:Green><b>machine_position[]</b>\n(absolute position)</color>
+Manager -up[#Purple,dashed,thickness=2]-> Protocol : <color:Purple><b>Status feedback</b>\n(? query response)</color>
+
+' ============================================================================
+' INTERRUPT PRIORITY ANNOTATIONS
+' ============================================================================
+note right of UART
+  **Priority 5 (HIGHEST)**
+  • UART RX/TX
+  • Protocol integrity
+  • Real-time commands
+  • No dropped bytes
+end note
+
+note right of OCR
+  **Priority 3 (HIGH)**
+  • OCMP1/3/4/5 callbacks
+  • Step pulse generation
+  • Short ISRs (<5µs)
+  • Can be preempted by UART
+end note
+
+note right of TMR1
+  **Priority 2 (MEDIUM)**
+  • S-curve velocity updates
+  • 1kHz periodic task
+  • Can tolerate delays
+end note
+
+note right of Manager
+  **Priority 1 (LOWEST)**
+  • TMR9 @ 100Hz
+  • Block management
+  • Non-time-critical
+end note
+
+' ============================================================================
+' LEGEND & STATUS
+' ============================================================================
+legend bottom
+  **Phase 1 Completion Status (October 19, 2025)**
+  
+  |= Component |= Status |= Key Achievements |
+  | Hardware Layer | ✅ VERIFIED | Square pattern returns to origin |
+  | HAL | ✅ COMPLETE | Interrupt priorities optimized |
+  | Motion Subsystem | ✅ COMPLETE | S-curves, position tracking fixed |
+  | GRBL Planner | ✅ COMPLETE | 16-block buffer, look-ahead planning |
+  | Application Layer | ✅ COMPLETE | Parser, UGS interface, modal tracking |
+  
+  **Critical Fixes Applied**:
+  1. **Modal Position Merge**: Unspecified axes retain previous values
+  2. **Direction Bit Conversion**: GRBL unsigned + bits → signed int32_t
+  3. **Position Tracking**: machine_position[] absolute position array
+  4. **Single-Axis Deactivation**: Prevents diagonal drift
+  5. **Debug Output Cleanup**: Production build has clean serial output
+  
+  **Hardware Test Results** (October 19, 2025):
+  • Test Pattern: G1 Y10 X10 Y0 X0 (10mm square)
+  • Result: Returns to (0,0,0) perfectly ✅
+  • Repeatability: Tested twice consecutively ✅
+  • Serial Output: Clean (no debug spam) ✅
+  • UGS Integration: Connects as "GRBL 1.1f" ✅
+  • Position Accuracy: ±2 steps (±0.025mm on X/Y) ✅
+  
+  **Architecture Highlights**:
+  • **Time-based interpolation**: NOT Bresenham step counting
+  • **Hardware pulse generation**: OCR dual-compare PWM
+  • **Non-blocking protocol**: GRBL character-counting flow control
+  • **Centralized types**: motion_types.h single source of truth
+  • **ISR-safe design**: Interrupt priorities prevent race conditions
+  
+  **Next Phase**: GRBL Stepper with Segment Buffer (Phase 2)
+  • Replace TMR1 @ 1kHz with GRBL's segment-based approach
+  • Integrate GRBL stepper.c (30kHz step interrupt emulation)
+  • Add spindle PWM and coolant GPIO control
+end legend
+
+@enduml

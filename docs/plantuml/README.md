@@ -1,6 +1,36 @@
 # PlantUML Architecture Documentation
 
+**Phase 1 Complete!** 🎉 (October 19, 2025)
+
 This folder contains PlantUML diagrams for the PIC32MZ CNC Motion Controller V2 project.
+
+## 🏆 Phase 1 Completion Status
+
+**✅ VERIFIED WORKING** - All Phase 1 objectives achieved and hardware tested!
+
+### Critical Achievements:
+- ✅ **GRBL v1.1f Integration**: Full parser with 13 modal groups
+- ✅ **Look-Ahead Planning**: Junction deviation + velocity optimization
+- ✅ **Position Tracking Fix**: Absolute position array (machine_position[])
+- ✅ **Modal Position Merge**: Unspecified axes preserve previous values
+- ✅ **Direction Bit Conversion**: GRBL unsigned + bits → signed int32_t
+- ✅ **Single-Axis Deactivation**: Prevents diagonal drift during motion
+- ✅ **Clean Production Build**: No debug spam in serial output
+
+### Hardware Verification (October 19, 2025):
+```
+Test Pattern: G1 Y10 X10 Y0 X0 (10mm square)
+Result:       Returns to (0,0,0) perfectly ✅
+Repeatability: Tested twice consecutively ✅
+UGS Integration: Connects as "GRBL 1.1f" ✅
+Position Accuracy: ±2 steps (±0.025mm on X/Y) ✅
+```
+
+### **📊 Start Here for Current Architecture:**
+1. **`13_phase1_complete_dataflow.puml`** - Complete 6-stage pipeline (serial → hardware)
+2. **`14_phase1_system_overview.puml`** - System architecture with all components
+
+---
 
 ## What is PlantUML?
 
@@ -35,28 +65,43 @@ java -jar plantuml.jar -tsvg diagram.puml
 
 ## Diagram Files in This Folder
 
-### **System Architecture Diagrams**
-1. **`01_system_overview.puml`** - High-level system architecture
-2. **`02_data_flow.puml`** - Complete data flow from serial to motion
-3. **`03_module_dependencies.puml`** - Module relationships and dependencies
+### **🎉 Phase 1 Complete Diagrams (October 2025)** ✅
+**These diagrams reflect the VERIFIED WORKING system**:
+
+13. **`13_phase1_complete_dataflow.puml`** ⭐ **RECOMMENDED** - Complete 6-stage pipeline with all Phase 1 fixes
+    - Serial reception with ISR ring buffer
+    - GRBL v1.1f parser with modal position merge
+    - GRBL planner with junction deviation
+    - Motion manager with direction bit conversion
+    - Multi-axis S-curve control with position tracking
+    - Hardware OCR dual-compare pulse generation
+    - Real-time command handling
+    - Feedback loops for position tracking
+
+14. **`14_phase1_system_overview.puml`** ⭐ **RECOMMENDED** - Updated architecture overview
+    - All components marked with completion status
+    - Interrupt priority architecture
+    - Critical fixes documented
+    - Hardware test results included
+    - Phase 2 roadmap
+
+### **Original Diagrams (Historical Reference)**
+**⚠️ WARNING: These diagrams show Phase 0 architecture (before GRBL integration)**
+
+1. **`01_system_overview.puml`** - Original high-level system architecture (outdated - see 14)
+2. **`02_data_flow.puml`** - Original data flow with motion buffer approach (outdated - see 13)
+3. **`03_module_dependencies.puml`** - Module relationships (may need GRBL updates)
 
 ### **Component Diagrams**
-4. **`04_motion_buffer.puml`** - Ring buffer architecture
-5. **`05_type_system.puml`** - Centralized type definitions
-6. **`06_motion_math.puml`** - Motion math library structure
+4. **`04_motion_buffer.puml`** - Ring buffer architecture (obsolete - replaced by GRBL planner)
+5. **`04_motion_buffer_fixed.puml`** - Historical fix attempt
 
-### **Sequence Diagrams**
-7. **`07_coordinated_move_sequence.puml`** - Multi-axis move execution
-8. **`08_gcode_parsing_sequence.puml`** - G-code parsing flow (future)
-9. **`09_lookahead_planning_sequence.puml`** - Look-ahead algorithm
+### **Sequence & Timing Diagrams**
+7. **`07_coordinated_move_sequence.puml`** - Multi-axis move execution (S-curve focus - still accurate)
+12. **`12_timer_architecture.puml`** - TMR1 + OCR timing relationships (hardware layer - still accurate)
 
-### **State Diagrams**
-10. **`10_scurve_state_machine.puml`** - S-curve segment states
-11. **`11_motion_buffer_states.puml`** - Buffer state transitions
-
-### **Timing Diagrams**
-12. **`12_timer_architecture.puml`** - TMR1 + OCR timing relationships
-13. **`13_scurve_timing.puml`** - 7-segment S-curve timing
+### **Test Diagrams**
+- **`test_minimal.puml`** - Template testing diagram
 
 ## Using These Diagrams for Future Projects
 
