@@ -163,6 +163,19 @@ extern "C"
      */
     bool GCode_IsControlChar(char c);
 
+    /**
+     * @brief Handle real-time control character (called from ISR)
+     *
+     * GRBL Pattern: Processes real-time commands immediately in ISR context.
+     * - '?' (0x3F) = Status report
+     * - '!' (0x21) = Feed hold
+     * - '~' (0x7E) = Cycle start/resume
+     * - Ctrl-X (0x18) = Soft reset
+     *
+     * @param c Control character to handle
+     */
+    void GCode_HandleControlChar(char c);
+
     //=============================================================================
     // INITIALIZATION
     //=============================================================================

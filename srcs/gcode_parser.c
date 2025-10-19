@@ -29,7 +29,8 @@
  */
 
 #include "gcode_parser.h"
-#include "ugs_interface.h"
+#include "serial_wrapper.h"
+#include "ugs_interface.h" // For UGS_SendStatusReport, UGS_Print, UGS_Printf
 #include "motion/motion_math.h"
 #include "motion/motion_buffer.h"                      /* For MotionBuffer_Pause/Resume/Clear */
 #include "motion/multiaxis_control.h"                  /* For MultiAxis_EmergencyStop */
@@ -112,7 +113,7 @@ bool GCode_IsControlChar(char c)
  *
  * @param c Control character
  */
-static void handle_control_char(char c)
+void GCode_HandleControlChar(char c)
 {
     switch (c)
     {
@@ -236,20 +237,11 @@ bool GCode_BufferLine(char *line, size_t line_size)
      *   - Return true if line/control char found, false otherwise
      */
 
-    size_t available = UART2_ReadCountGet();
-    if (available == 0)
+    /* Check if serial ring buffer has data available */
+    if (Serial_Available() == 0)
     {
-        /* No new UART data available
-         * V1 pattern: Check if we have a control character waiting in buffer */
-        if (line_buffer.index > 0 && GCode_IsControlChar(line_buffer.buffer[0]))
-        {
-            handle_control_char(line_buffer.buffer[0]);
-            line[0] = line_buffer.buffer[0];
-            line[1] = '\0';
-            line_buffer.index = 0;
-            return true;
-        }
-        return false; /* No data, nothing to process */
+        /* No new serial data available - return false (no line ready) */
+        return false;
     }
 
     /* Calculate space left in our line buffer */
@@ -263,18 +255,16 @@ bool GCode_BufferLine(char *line, size_t line_size)
         return false;
     }
 
-    /* DIAGNOSTIC: Read ONE BYTE AT A TIME with detailed logging
-     * This will help us see EXACTLY what bytes are received and in what order
+    /* Read ONE BYTE AT A TIME from serial ring buffer
+     * Control characters are already filtered in ISR - they won't appear here
      */
     while (space_left > 0)
     {
-        uint8_t byte;
-
-        /* Read ONE byte from UART ring buffer */
-        size_t bytes_read = UART2_Read(&byte, 1);
-        if (bytes_read == 0)
+        /* Read ONE byte from serial wrapper ring buffer (NOT hardware UART) */
+        int16_t byte_result = Serial_Read();
+        if (byte_result == -1)
         {
-            /* No more data available */
+            /* No more data available in ring buffer */
 #ifdef DEBUG_MOTION_BUFFER
             if (line_buffer.index > 0)
             {
@@ -284,7 +274,7 @@ bool GCode_BufferLine(char *line, size_t line_size)
             break;
         }
 
-        char c = (char)byte;
+        char c = (char)byte_result;
 
         /* DIAGNOSTIC: Log every byte received */
 #ifdef DEBUG_MOTION_BUFFER
@@ -298,18 +288,17 @@ bool GCode_BufferLine(char *line, size_t line_size)
         }
 #endif
 
-        /* Check for control character at start of line */
-        if (line_buffer.index == 0 && GCode_IsControlChar(c))
+        /* NOTE: Control characters (?, !, ~, Ctrl-X) are handled in ISR.
+         * They should NEVER appear here since they're filtered before
+         * being added to the ring buffer. This check is defensive.
+         */
+        if (GCode_IsControlChar(c))
         {
-            handle_control_char(c);
-            line[0] = c;
-            line[1] = '\0';
+            /* Should not happen - control chars are ISR-handled! */
 #ifdef DEBUG_MOTION_BUFFER
-            UGS_Printf("[CTRL] char='%c'\r\n", c);
+            UGS_Printf("[ERROR] Control char '%c' in buffer (should be ISR-handled!)\r\n", c);
 #endif
-            /* Control characters are single bytes, no terminators to skip */
-            line_buffer.index = 0;
-            return true;
+            continue; /* Skip and continue reading */
         }
 
         /* Check for line terminator */

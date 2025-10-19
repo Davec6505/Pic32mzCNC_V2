@@ -69,11 +69,8 @@
 void CORE_TIMER_Handler (void);
 void TIMER_1_Handler (void);
 void OUTPUT_COMPARE_1_Handler (void);
-void TIMER_3_Handler (void);
 void OUTPUT_COMPARE_3_Handler (void);
-void TIMER_4_Handler (void);
 void OUTPUT_COMPARE_4_Handler (void);
-void TIMER_5_Handler (void);
 void OUTPUT_COMPARE_5_Handler (void);
 void UART2_FAULT_Handler (void);
 void UART2_RX_Handler (void);
@@ -100,19 +97,9 @@ void __attribute__((used)) __ISR(_OUTPUT_COMPARE_1_VECTOR, ipl3SRS) OUTPUT_COMPA
     OUTPUT_COMPARE_1_InterruptHandler();
 }
 
-void __attribute__((used)) __ISR(_TIMER_3_VECTOR, ipl3SRS) TIMER_3_Handler (void)
-{
-    TIMER_3_InterruptHandler();
-}
-
-void __attribute__((used)) __ISR(_OUTPUT_COMPARE_3_VECTOR, ipl1SRS) OUTPUT_COMPARE_3_Handler (void)
+void __attribute__((used)) __ISR(_OUTPUT_COMPARE_3_VECTOR, ipl3SRS) OUTPUT_COMPARE_3_Handler (void)
 {
     OUTPUT_COMPARE_3_InterruptHandler();
-}
-
-void __attribute__((used)) __ISR(_TIMER_4_VECTOR, ipl3SRS) TIMER_4_Handler (void)
-{
-    TIMER_4_InterruptHandler();
 }
 
 void __attribute__((used)) __ISR(_OUTPUT_COMPARE_4_VECTOR, ipl3SRS) OUTPUT_COMPARE_4_Handler (void)
@@ -120,27 +107,22 @@ void __attribute__((used)) __ISR(_OUTPUT_COMPARE_4_VECTOR, ipl3SRS) OUTPUT_COMPA
     OUTPUT_COMPARE_4_InterruptHandler();
 }
 
-void __attribute__((used)) __ISR(_TIMER_5_VECTOR, ipl1SRS) TIMER_5_Handler (void)
-{
-    TIMER_5_InterruptHandler();
-}
-
 void __attribute__((used)) __ISR(_OUTPUT_COMPARE_5_VECTOR, ipl3SRS) OUTPUT_COMPARE_5_Handler (void)
 {
     OUTPUT_COMPARE_5_InterruptHandler();
 }
 
-void __attribute__((used)) __ISR(_UART2_FAULT_VECTOR, ipl3SRS) UART2_FAULT_Handler (void)
+void __attribute__((used)) __ISR(_UART2_FAULT_VECTOR, ipl1SRS) UART2_FAULT_Handler (void)
 {
     UART2_FAULT_InterruptHandler();
 }
 
-void __attribute__((used)) __ISR(_UART2_RX_VECTOR, ipl3SRS) UART2_RX_Handler (void)
+void __attribute__((used)) __ISR(_UART2_RX_VECTOR, ipl5SRS) UART2_RX_Handler (void)
 {
     UART2_RX_InterruptHandler();
 }
 
-void __attribute__((used)) __ISR(_UART2_TX_VECTOR, ipl3SRS) UART2_TX_Handler (void)
+void __attribute__((used)) __ISR(_UART2_TX_VECTOR, ipl5SRS) UART2_TX_Handler (void)
 {
     UART2_TX_InterruptHandler();
 }

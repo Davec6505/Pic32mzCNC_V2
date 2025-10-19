@@ -18,10 +18,10 @@
  */
 
 #include "ugs_interface.h"
-#include "config/default/peripheral/uart/plib_uart2.h"
-#include <stdio.h>  /* For vsnprintf */
-#include <stdarg.h> /* For va_list */
-#include <string.h> /* For strlen, strncpy */
+#include "serial_wrapper.h" /* GRBL serial using MCC plib_uart2 */
+#include <stdio.h>          /* For vsnprintf */
+#include <stdarg.h>         /* For va_list */
+#include <string.h>         /* For strlen, strncpy */
 
 //=============================================================================
 // STATIC BUFFERS (MISRA Rule 8.7)
@@ -43,8 +43,8 @@ static char tx_format_buffer[UGS_SERIAL_TX_BUFFER_SIZE];
 
 void UGS_Initialize(void)
 {
-    /* MCC-generated UART2 initialization (already configures ring buffers) */
-    UART2_Initialize();
+    /* GRBL serial initialization (direct UART register access) */
+    Serial_Initialize();
 
     /* Clear format buffer */
     (void)memset(tx_format_buffer, 0, sizeof(tx_format_buffer));
@@ -65,7 +65,6 @@ size_t UGS_Printf(const char *format, ...)
 {
     va_list args;
     int formatted_length;
-    size_t bytes_written;
 
     /* MISRA Rule 17.4: Parameter validation */
     if (format == NULL)
@@ -95,13 +94,13 @@ size_t UGS_Printf(const char *format, ...)
         formatted_length = (int)(UGS_SERIAL_TX_BUFFER_SIZE - 1U);
     }
 
-    /* Queue to UART2 TX ring buffer
-     * MISRA Rule 10.3: Explicit cast to uint8_t* */
-    bytes_written = UART2_Write(
-        (uint8_t *)tx_format_buffer,
-        (size_t)formatted_length);
+    /* Queue to GRBL serial TX ring buffer */
+    for (int i = 0; i < formatted_length; i++)
+    {
+        Serial_Write((uint8_t)tx_format_buffer[i]);
+    }
 
-    return bytes_written;
+    return (size_t)formatted_length;
 }
 
 /**
@@ -121,11 +120,12 @@ size_t UGS_Print(const char *str)
         return 0U;
     }
 
-    /* Get string length (MISRA Rule 21.6: strlen acceptable) */
-    length = strlen(str);
+    /* Send string via GRBL serial */
+    Serial_WriteString(str);
 
-    /* MISRA Rule 10.3: Explicit cast to uint8_t* */
-    return UART2_Write((uint8_t *)str, length);
+    /* Return length for compatibility */
+    length = strlen(str);
+    return length;
 }
 
 /**
@@ -135,8 +135,8 @@ size_t UGS_Print(const char *str)
  */
 size_t UGS_PutChar(char c)
 {
-    uint8_t byte = (uint8_t)c;
-    return UART2_Write(&byte, 1U);
+    Serial_Write((uint8_t)c);
+    return 1U;
 }
 
 //=============================================================================
@@ -325,16 +325,18 @@ size_t UGS_ReadLine(char *buffer, size_t buffer_size)
         return 0U;
     }
 
-    /* Read characters until newline or buffer full
-     * MISRA Rule 14.2: Loop bound validated */
+    /* Read characters until newline or buffer full */
     while (bytes_read < (buffer_size - 1U))
     {
-        /* Try to read one byte from UART2 RX ring buffer */
-        if (UART2_Read(&byte, 1U) == 0U)
+        /* Try to read one byte from GRBL serial RX ring buffer */
+        int16_t c = Serial_Read();
+        if (c == -1)
         {
             /* No more data available */
             break;
         }
+
+        byte = (uint8_t)c;
 
         /* Check for line terminator */
         if ((byte == (uint8_t)'\n') || (byte == (uint8_t)'\r'))
@@ -343,9 +345,10 @@ size_t UGS_ReadLine(char *buffer, size_t buffer_size)
             buffer[bytes_read] = '\0'; /* Null terminate */
 
             /* Consume any additional line terminators (handle \r\n or \n\r) */
-            uint8_t next_byte;
-            if (UART2_Read(&next_byte, 1U) == 1U)
+            int16_t next = Serial_Read();
+            if (next != -1)
             {
+                uint8_t next_byte = (uint8_t)next;
                 if ((next_byte != (uint8_t)'\n') && (next_byte != (uint8_t)'\r'))
                 {
                     /* Not a line terminator - would need to put back
@@ -377,17 +380,17 @@ size_t UGS_ReadLine(char *buffer, size_t buffer_size)
  */
 bool UGS_RxHasData(void)
 {
-    return (UART2_ReadCountGet() > 0U);
+    return (Serial_Available() > 0U);
 }
 
 /**
  * @brief Check if TX buffer has space
  *
- * Pattern from UART2_WriteFreeBufferCountGet().
+ * Note: GRBL serial always has space (blocks if full)
  */
 bool UGS_TxHasSpace(void)
 {
-    return (UART2_WriteFreeBufferCountGet() > 0U);
+    return true; /* GRBL serial blocks on write if full */
 }
 
 /**
@@ -395,15 +398,17 @@ bool UGS_TxHasSpace(void)
  */
 size_t UGS_RxAvailable(void)
 {
-    return UART2_ReadCountGet();
+    return (size_t)Serial_Available();
 }
 
 /**
  * @brief Get TX free space
+ *
+ * Note: GRBL serial doesn't expose this, return large value
  */
 size_t UGS_TxFreeSpace(void)
 {
-    return UART2_WriteFreeBufferCountGet();
+    return 256U; /* Assume space available (GRBL blocks if full) */
 }
 
 //=============================================================================
@@ -445,9 +450,11 @@ void UGS_Debug(const char *format, ...)
             formatted_length = (int)(UGS_SERIAL_TX_BUFFER_SIZE - 1U);
         }
 
-        (void)UART2_Write(
-            (uint8_t *)tx_format_buffer,
-            (size_t)formatted_length);
+        /* Send via GRBL serial */
+        for (int i = 0; i < formatted_length; i++)
+        {
+            Serial_Write((uint8_t)tx_format_buffer[i]);
+        }
     }
 }
 #endif

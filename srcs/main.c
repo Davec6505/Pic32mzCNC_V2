@@ -33,13 +33,13 @@
 #include <string.h>                   // For strcat, strncat
 #include "definitions.h"              // SYS function prototypes
 #include "app.h"                      // Application layer
-#include "ugs_interface.h"            // Universal G-code Sender communication
+#include "serial_wrapper.h"           // GRBL serial using MCC plib_uart2
+#include "ugs_interface.h"            // UGS protocol layer (uses serial_wrapper)
 #include "gcode_parser.h"             // G-code parsing
 #include "command_buffer.h"           // Command separation and buffering (NEW!)
 #include "motion/motion_buffer.h"     // Motion planning ring buffer
 #include "motion/motion_math.h"       // GRBL settings management
 #include "motion/multiaxis_control.h" // Multi-axis coordinated motion
-#include "serial_dma.h"               // DMA-based serial reception (NEW!)
 
 // *****************************************************************************
 // External Test Functions (test_ocr_direct.c)
@@ -100,22 +100,39 @@ static void ProcessSerialRx(void)
 {
   static char line_buffer[256] = {0}; /* Initialize to zeros on first use */
 
-  /* DMA-based reception: Check if complete line available in ring buffer
-   * mikroC Reference: Serial_Dma.c lines 182-193 (Get_Difference)
-   * This replaces the broken polling approach with hardware-guaranteed reception
+  /* Check if serial data available in RX ring buffer
+   * GRBL serial: Interrupt-driven RX (Priority 5/0), 256-byte buffer
    */
-  if (Get_Difference() > 0)
+  if (Serial_Available() > 0)
   {
-    /* Get line from DMA ring buffer
-     * mikroC Reference: Serial_Dma.c lines 195-209 (Get_Line)
-     * This copies exactly the available bytes from ring buffer
-     */
-    int line_length = Get_Difference();
-    Get_Line(line_buffer, line_length);
+    /* Read characters until newline or buffer full */
+    static size_t line_pos = 0;
+    int16_t c;
 
-#ifdef DEBUG_MOTION_BUFFER
-    UGS_Printf("[MAIN] Received line (%d bytes): %s\r\n", line_length, line_buffer);
-#endif
+    while ((c = Serial_Read()) != -1)
+    {
+      if (c == '\n' || c == '\r')
+      {
+        if (line_pos > 0)
+        {
+          line_buffer[line_pos] = '\0'; /* Null terminate */
+          line_pos = 0;                 /* Reset for next line */
+          break;                        /* Process this line */
+        }
+        continue; /* Skip empty lines */
+      }
+
+      if (line_pos < (sizeof(line_buffer) - 1))
+      {
+        line_buffer[line_pos++] = (char)c;
+      }
+    }
+
+    /* If no complete line yet, continue */
+    if (line_buffer[0] == '\0')
+    {
+      return;
+    }
 
     /* Trim leading whitespace (newlines, spaces, tabs) */
     char *line_start = line_buffer;
@@ -463,25 +480,16 @@ int main(void)
   UART2_Read(uart_rx_buffer, 1); // Start first read
 #endif
 
-  /* Initialize UGS serial interface */
-  UGS_Initialize();
-
-  /* Initialize DMA-based serial reception (replaces polling approach)
-   * DMA Channel 0: UART2 RX with pattern match on '?'
-   * mikroC Reference: Serial_Dma.c lines 35-88 (DMA0 function)
-   *
-   * Pattern Match Strategy:
-   *   - Primary: '?' (0x3F) - Handles UGS first message "?" without '\n'
-   *   - Fallback: Buffer full (500 bytes) - Handles long lines
-   *   - Auto-enable: DMA restarts after each transfer
-   *
-   * This fixes all polling-based corruption issues:
-   *   - No byte loss (hardware-guaranteed)
-   *   - No timing dependencies
-   *   - No race conditions
-   *   - Proven working in mikroC V1 for years
+  /* Initialize UGS serial interface
+   * This calls Serial_Initialize() internally for:
+   *   - Direct UART2 register access (no MCC, no DMA)
+   *   - 115200 baud, 8N1
+   *   - RX interrupt (Priority 5/0)
+   *   - TX interrupt (Priority 5/1, on-demand)
+   *   - 256-byte ring buffers
+   *   - Real-time command detection ('?', '!', '~', Ctrl-X)
    */
-  DMA_global(); /* mikroC V1 API: Initialize both DMA0 and DMA1 */
+  UGS_Initialize();
 
   /* Initialize G-code parser with modal defaults */
   GCode_Initialize();
@@ -506,9 +514,7 @@ int main(void)
   /* Send startup message to UGS */
   UGS_Print("\r\n");
   UGS_Print("Grbl 1.1f ['$' for help]\r\n");
-  UGS_SendOK();
-
-  /* Main application loop - Three-stage pipeline */
+  UGS_SendOK(); /* Main application loop - Three-stage pipeline */
   while (true)
   {
     /* OCR Direct Hardware Test - Check for 'T' command */
@@ -523,6 +529,16 @@ int main(void)
      * - Sends "ok" immediately (~175µs response time)
      */
     ProcessSerialRx();
+
+    /* Real-Time Command Processing (GRBL Pattern)
+     * ISR sets flag when control character received, main loop handles it.
+     * Cannot call blocking functions (UGS_Print) from ISR context!
+     */
+    uint8_t realtime_cmd = Serial_GetRealtimeCommand();
+    if (realtime_cmd != 0)
+    {
+      GCode_HandleControlChar(realtime_cmd);
+    }
 
     /* Stage 2: Process Command Buffer → Motion Buffer (16 blocks)
      * - Dequeues commands from 64-entry buffer

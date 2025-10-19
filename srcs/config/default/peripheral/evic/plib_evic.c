@@ -59,15 +59,12 @@ void EVIC_Initialize( void )
     IPC0SET = 0x4U | 0x0U;  /* CORE_TIMER:  Priority 1 / Subpriority 0 */
     IPC1SET = 0x8U | 0x0U;  /* TIMER_1:  Priority 2 / Subpriority 0 */
     IPC1SET = 0xc000000U | 0x0U;  /* OUTPUT_COMPARE_1:  Priority 3 / Subpriority 0 */
-    IPC3SET = 0xc0000U | 0x0U;  /* TIMER_3:  Priority 3 / Subpriority 0 */
-    IPC4SET = 0x400U | 0x0U;  /* OUTPUT_COMPARE_3:  Priority 1 / Subpriority 0 */
-    IPC4SET = 0xc000000U | 0x0U;  /* TIMER_4:  Priority 3 / Subpriority 0 */
+    IPC4SET = 0xc00U | 0x0U;  /* OUTPUT_COMPARE_3:  Priority 3 / Subpriority 0 */
     IPC5SET = 0xc0000U | 0x0U;  /* OUTPUT_COMPARE_4:  Priority 3 / Subpriority 0 */
-    IPC6SET = 0x4U | 0x0U;  /* TIMER_5:  Priority 1 / Subpriority 0 */
     IPC6SET = 0xc000000U | 0x0U;  /* OUTPUT_COMPARE_5:  Priority 3 / Subpriority 0 */
-    IPC36SET = 0xc00U | 0x0U;  /* UART2_FAULT:  Priority 3 / Subpriority 0 */
-    IPC36SET = 0xc0000U | 0x10000U;  /* UART2_RX:  Priority 3 / Subpriority 1 */
-    IPC36SET = 0xc000000U | 0x2000000U;  /* UART2_TX:  Priority 3 / Subpriority 2 */
+    IPC36SET = 0x400U | 0x0U;  /* UART2_FAULT:  Priority 1 / Subpriority 0 */
+    IPC36SET = 0x140000U | 0x0U;  /* UART2_RX:  Priority 5 / Subpriority 0 */
+    IPC36SET = 0x14000000U | 0x1000000U;  /* UART2_TX:  Priority 5 / Subpriority 1 */
 
 
 

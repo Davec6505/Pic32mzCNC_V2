@@ -4,7 +4,7 @@ param(
     [int]$BaudRate = 115200
 )
 
-# Open serial port
+# Open serial port with error handling
 $serialPort = New-Object System.IO.Ports.SerialPort
 $serialPort.PortName = $Port
 $serialPort.BaudRate = $BaudRate
@@ -15,8 +15,20 @@ $serialPort.ReadTimeout = 1000
 $serialPort.WriteTimeout = 1000
 
 Write-Host "Connecting to $Port @ $BaudRate baud..." -ForegroundColor Cyan
-$serialPort.Open()
-Write-Host "✓ Connected!" -ForegroundColor Green
+try {
+    $serialPort.Open()
+    Write-Host "✓ Connected!" -ForegroundColor Green
+}
+catch {
+    Write-Host "✗ Failed to open $Port" -ForegroundColor Red
+    Write-Host "Error: $_" -ForegroundColor Red
+    Write-Host "`nPossible fixes:" -ForegroundColor Yellow
+    Write-Host "1. Run: .\close_com_ports.ps1" -ForegroundColor White
+    Write-Host "2. Close all PowerShell windows" -ForegroundColor White
+    Write-Host "3. Close UGS/Arduino IDE/other serial terminals" -ForegroundColor White
+    Write-Host "4. Unplug and replug USB cable" -ForegroundColor White
+    exit 1
+}
 
 Start-Sleep -Milliseconds 500
 

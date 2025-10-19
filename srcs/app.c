@@ -31,14 +31,15 @@ void APP_Initialize(void)
 {
     appData.state = APP_STATE_INIT;
 
-    // Initialize multi-axis stepper control subsystem
-    MultiAxis_Initialize();
+    // TEMP: MultiAxis_Initialize() disabled for testing
+    // (It's now called in main.c before APP_Initialize)
+    // MultiAxis_Initialize();
 
-    // Enable all axis stepper drivers (DRV8825 ENABLE pin active LOW)
-    MultiAxis_EnableDriver(AXIS_X);
-    MultiAxis_EnableDriver(AXIS_Y);
-    MultiAxis_EnableDriver(AXIS_Z);
-    MultiAxis_EnableDriver(AXIS_A);
+    // TEMP: Disable driver enables for testing
+    // MultiAxis_EnableDriver(AXIS_X);
+    // MultiAxis_EnableDriver(AXIS_Y);
+    // MultiAxis_EnableDriver(AXIS_Z);
+    // MultiAxis_EnableDriver(AXIS_A);
 
     // Power-on indicator
     LED2_Set();

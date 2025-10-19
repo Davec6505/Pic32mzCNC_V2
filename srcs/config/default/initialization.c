@@ -184,8 +184,6 @@ void SYS_Initialize ( void* data )
 
 	GPIO_Initialize();
 
-    DMAC_Initialize();
-
     OCMP1_Initialize();
 
     OCMP4_Initialize();

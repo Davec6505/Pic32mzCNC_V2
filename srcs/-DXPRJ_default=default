@@ -1,17 +1,21 @@
-../objs/config/default/peripheral/uart/plib_uart2.o: \
- ../srcs/config/default/peripheral/uart/plib_uart2.c \
+../objs/serial_wrapper.o: ../srcs/serial_wrapper.c \
+ ../incs/serial_wrapper.h ../incs/gcode_parser.h \
+ ../incs/motion/motion_types.h \
+ ../incs/config/default/peripheral/uart/plib_uart2.h \
  ../incs/config/default/device.h \
  ../incs/config/default/toolchain_specifics.h \
- ../incs/config/default/peripheral/uart/plib_uart2.h \
- ../incs/config/default/peripheral/uart/plib_uart_common.h \
- ../incs/config/default/interrupts.h
+ ../incs/config/default/peripheral/uart/plib_uart_common.h
+
+../incs/serial_wrapper.h:
+
+../incs/gcode_parser.h:
+
+../incs/motion/motion_types.h:
+
+../incs/config/default/peripheral/uart/plib_uart2.h:
 
 ../incs/config/default/device.h:
 
 ../incs/config/default/toolchain_specifics.h:
 
-../incs/config/default/peripheral/uart/plib_uart2.h:
-
 ../incs/config/default/peripheral/uart/plib_uart_common.h:
-
-../incs/config/default/interrupts.h:
