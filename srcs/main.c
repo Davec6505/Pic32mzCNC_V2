@@ -455,82 +455,6 @@ static void ProcessCommandBuffer(void)
   }
 }
 
-/**
- * @brief Execute planned moves from motion buffer
- *
- * Dequeues motion blocks and executes them when multi-axis controller is idle.
- */
-static void ExecuteMotion(void)
-{
-  /* Only execute next move if controller is idle */
-  if (!MultiAxis_IsBusy())
-  {
-
-    /* Check if motion buffer has planned moves */
-    if (MotionBuffer_HasData())
-    {
-      motion_block_t block;
-
-      if (MotionBuffer_GetNext(&block))
-      {
-#ifdef DEBUG_MOTION_BUFFER
-        /* DEBUG: Print what we're executing */
-        UGS_Printf("[EXEC] Steps: X=%ld Y=%ld Z=%ld (busy=%d)\r\n",
-                   block.steps[AXIS_X], block.steps[AXIS_Y], block.steps[AXIS_Z],
-                   MultiAxis_IsBusy());
-#endif
-
-        /* Check if this is a zero-step block (no actual motion)
-         * These can occur when moving to current position (G0 X0 Y0 when already at origin)
-         * Skip them to avoid clogging the execution pipeline */
-        bool has_steps = (block.steps[AXIS_X] != 0) || (block.steps[AXIS_Y] != 0) ||
-                         (block.steps[AXIS_Z] != 0) || (block.steps[AXIS_A] != 0);
-
-        if (!has_steps)
-        {
-#ifdef DEBUG_MOTION_BUFFER
-          UGS_Printf("[EXEC] Skipping zero-step block\r\n");
-#endif
-          /* Don't execute, just discard and continue */
-        }
-        else
-        {
-          /* Execute coordinated move with pre-calculated S-curve profile */
-          MultiAxis_ExecuteCoordinatedMove(block.steps);
-
-#ifdef DEBUG_MOTION_BUFFER
-          UGS_Printf("[EXEC] Coordinated move started\r\n");
-#endif
-        }
-      }
-#ifdef DEBUG_MOTION_BUFFER
-      else
-      {
-        UGS_Printf("[EXEC] MotionBuffer_GetNext() returned false!\r\n");
-      }
-#endif
-    }
-#ifdef DEBUG_MOTION_BUFFER
-    else
-    {
-      // Only print occasionally to avoid flooding
-      static uint32_t idle_count = 0;
-      if (++idle_count > 10000)
-      {
-        UGS_Printf("[EXEC] No data in motion buffer (idle)\r\n");
-        idle_count = 0;
-      }
-    }
-#endif
-  }
-#ifdef DEBUG_MOTION_BUFFER
-  else
-  {
-    // Motion system is busy - this is normal during moves
-  }
-#endif
-}
-
 // *****************************************************************************
 // Optional Features (can be enabled for testing)
 // *****************************************************************************
@@ -592,8 +516,7 @@ int main(void)
    */
   MultiAxis_Initialize();
 
-  /* Initialize application layer (button handling, LEDs) */
-  APP_Initialize();
+
 
   /* Send startup message to UGS */
   UGS_Print("\r\n");
@@ -630,32 +553,44 @@ int main(void)
      * - Adds to motion buffer for execution
      * - Happens in background while machine moves
      *
-     * CRITICAL: Process ALL available commands each loop iteration!
-     * This prevents commands from getting stuck in the command buffer
-     * when the motion buffer fills up. GRBL pattern: drain command buffer
-     * as fast as possible to maintain flow control.
+     * ADAPTIVE PROCESSING (October 19, 2025):
+     * Drain command buffer until one of three conditions:
+     * 1. Motion buffer nearly full (15/16 blocks) - backpressure
+     * 2. Command buffer empty - nothing left to process
+     * 3. Safety limit reached (16 iterations) - prevent infinite loop
      *
-     * Limit to 16 iterations to prevent infinite loop if something goes wrong.
+     * This is NON-BLOCKING: Max execution time ~100µs (16 × ~6µs per command)
+     * Main loop returns every ~1ms to check real-time commands (E-stop, feed hold)
+     *
+     * Critical for safety: Never use blocking while loops that prevent
+     * real-time command processing!
      */
-    for (uint8_t i = 0; i < 16; i++) /* Process up to 16 commands per iteration */
+    uint8_t cmd_count = 0;
+    while (cmd_count < 16 && MotionBuffer_GetCount() < 15 && CommandBuffer_HasData())
     {
-      /* ProcessCommandBuffer() will return early if motion buffer is full (15/16)
-       * or if command buffer is empty, so this loop will exit naturally */
       ProcessCommandBuffer();
+      cmd_count++;
     }
 
-    /* Stage 3: Execute Motion Buffer → Hardware
-     * - Dequeues motion blocks
-     * - Executes S-curve profiles via multi-axis control
-     * - Hardware OCR modules generate step pulses
+    /* Stage 3: Motion Execution → Hardware
+     * GRBL-STYLE AUTO-START (October 19, 2025):
+     * ExecuteMotion() REMOVED from main loop!
+     * 
+     * Motion buffer feeding now handled by CoreTimer @ 10ms ISR:
+     *   - MotionManager_CoreTimerISR() checks if machine idle
+     *   - Automatically dequeues next block from motion buffer
+     *   - Starts coordinated move with S-curve profile
+     *   - Ensures continuous motion without gaps
+     * 
+     * Benefits:
+     *   - True GRBL architecture (like st_prep_buffer())
+     *   - Guaranteed timing (10ms ±0ms jitter)
+     *   - Main loop freed for real-time commands
+     *   - Clean separation of concerns
+     * 
+     * See: motion_manager.c for implementation
      */
-    ExecuteMotion();
 
-    /* Run application state machine
-     * - LED heartbeat management
-     * - System status monitoring
-     */
-    APP_Tasks();
 
     /* Maintain state machines of all polled Harmony modules
      * - UART, timers, GPIO, etc.

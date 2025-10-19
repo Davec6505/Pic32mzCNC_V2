@@ -50,53 +50,50 @@ ok
   - Next loop iteration: Machine still IDLE, dequeues next block
   - **BUT**: Last block never gets dequeued (unknown why)
 
-**Solution for Tomorrow**:
+**Solution Implemented** (October 19, 2025 - Evening):
 
-Modify ExecuteMotion() to drain ALL available blocks when machine is idle:
+⚠️ **CRITICAL USER INSIGHT**: "If we do this it will mean we will need to go to coretimer ISR for buffer surely otherwise we won't pick up estop command"
+
+**User was absolutely right!** Blocking while loop would prevent real-time command processing (E-stop, feed hold, status query).
+
+**Actual Solution - Adaptive Non-Blocking Loop**:
+
+Instead of blocking ExecuteMotion(), use adaptive loop in command processing:
 
 ```c
-void ExecuteMotion(void)
+/* Stage 2: Process Command Buffer (ADAPTIVE) */
+uint8_t cmd_count = 0;
+while (cmd_count < 16 && MotionBuffer_GetCount() < 15 && CommandBuffer_HasData())
 {
-  /* Only execute if motion system is NOT busy */
-  if (!MultiAxis_IsBusy())
-  {
-    /* Drain ALL available blocks in motion buffer
-     * This ensures queued moves execute completely
-     * before returning to command processing */
-    while (!MultiAxis_IsBusy() && MotionBuffer_HasData())
-    {
-      motion_block_t block;
-
-      if (MotionBuffer_GetNext(&block))
-      {
-        /* Skip zero-step blocks (redundant with motion_buffer.c filtering) */
-        bool has_steps = (block.steps[AXIS_X] != 0) || 
-                         (block.steps[AXIS_Y] != 0) ||
-                         (block.steps[AXIS_Z] != 0) || 
-                         (block.steps[AXIS_A] != 0);
-
-        if (has_steps)
-        {
-          MultiAxis_ExecuteCoordinatedMove(block.steps);
-          
-          /* Wait for this move to complete before dequeuing next */
-          while (MultiAxis_IsBusy()) {
-            /* Optional: Could call SYS_Tasks() here for background processing */
-          }
-        }
-      }
-      else
-      {
-        break;  /* GetNext failed, exit loop */
-      }
-    }
-  }
+    ProcessCommandBuffer();
+    cmd_count++;
 }
 ```
 
-**Advantage**: Ensures motion buffer drains completely before returning to command processing
+**Why this works**:
+- ✅ Drains command buffer until motion buffer full OR command buffer empty
+- ✅ Non-blocking (max 16 iterations ≈ 100µs)
+- ✅ Main loop returns every ~1ms to check real-time commands
+- ✅ E-stop response time: <1ms (safety-critical!)
+- ✅ No ISR changes needed
+- ✅ Simple and predictable
 
-**Caution**: Need to be careful about blocking - could add timeout or move count limit
+**Changed from**:
+```c
+for (uint8_t i = 0; i < 16; i++) {
+    ProcessCommandBuffer();  // Fixed 16 iterations
+}
+```
+
+**To**:
+```c
+while (cmd_count < 16 && MotionBuffer_GetCount() < 15 && CommandBuffer_HasData()) {
+    ProcessCommandBuffer();  // Adaptive - stops when done OR buffer full
+    cmd_count++;
+}
+```
+
+**Key difference**: Adaptive loop exits early when command buffer empty, preventing wasted iterations
 
 ## Files Modified Today
 

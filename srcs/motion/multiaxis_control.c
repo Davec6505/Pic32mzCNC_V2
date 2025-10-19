@@ -17,6 +17,7 @@
 
 #include "motion/multiaxis_control.h"
 #include "motion/motion_math.h"
+#include "motion/motion_manager.h"  // GRBL-style motion buffer feeding (CoreTimer @ 10ms)
 #include "config/default/peripheral/gpio/plib_gpio.h"
 #include "ugs_interface.h"
 
@@ -914,9 +915,13 @@ void MultiAxis_Initialize(void)
     axis_hw[AXIS_Y].OCMP_CallbackRegister(OCMP1_StepCounter_Y, 0);
     axis_hw[AXIS_Z].OCMP_CallbackRegister(OCMP4_StepCounter_Z, 0);
 
-    // Register TMR1 callback for multi-axis control
+    // Register TMR1 callback for multi-axis S-curve control (1kHz)
     TMR1_CallbackRegister(TMR1_MultiAxisControl, 0);
     TMR1_Start();
+
+    // Initialize motion manager (GRBL-style auto-start with CoreTimer @ 10ms)
+    // Must be called LAST after all motion subsystems initialized
+    MotionManager_Initialize();
 }
 
 /*! \brief Execute single-axis motion with S-curve profile
