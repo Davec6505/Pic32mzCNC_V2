@@ -21,7 +21,7 @@
       2. Check if machine idle AND buffer has data
       3. Dequeue block and start coordinated move
       4. Clear interrupt flags and re-enable interrupt
-      
+
     This prevents ISR re-entrancy and CPU stall while maintaining guaranteed
     timing (10ms ±0ms jitter).
 
@@ -38,7 +38,8 @@
 
 #include "definitions.h"              // SYS function prototypes
 #include "motion/motion_manager.h"    // Own header (MISRA Rule 8.8)
-#include "motion/motion_buffer.h"     // MotionBuffer_GetNext(), HasData()
+#include "motion/motion_buffer.h"     // MotionBuffer_GetNext(), HasData() (OLD - Phase 2: remove)
+#include "motion/grbl_planner.h"      // GRBLPlanner_GetCurrentBlock() (NEW - Phase 1)
 #include "motion/multiaxis_control.h" // MultiAxis_IsBusy(), ExecuteCoordinatedMove()
 #include "ugs_interface.h"            // UGS_Printf() for debug output
 
@@ -82,14 +83,14 @@
 void MotionManager_CoreTimerISR(uint32_t status, uintptr_t context)
 {
     /* MISRA Rule 2.7: Explicitly document unused parameters */
-    (void)status;   // CoreTimer status not used
-    (void)context;  // User context not used
+    (void)status;  // CoreTimer status not used
+    (void)context; // User context not used
 
     /* ═══════════════════════════════════════════════════════════════════════
      * CRITICAL: Disable CoreTimer interrupt immediately on entry
      * Prevents re-entry if ISR execution takes longer than 10ms period
      * ═══════════════════════════════════════════════════════════════════════ */
-    IEC0CLR = _IEC0_CTIE_MASK;  // Disable CoreTimer interrupt enable
+    IEC0CLR = _IEC0_CTIE_MASK; // Disable CoreTimer interrupt enable
 
     /* ═══════════════════════════════════════════════════════════════════════
      * Motion Buffer Feeding Logic (GRBL st_prep_buffer() pattern)
@@ -98,65 +99,81 @@ void MotionManager_CoreTimerISR(uint32_t status, uintptr_t context)
     /* Step 1: Check if ALL axes are idle (no motion in progress) */
     if (!MultiAxis_IsBusy())
     {
-        /* Step 2: Check if motion buffer has planned blocks available */
-        if (MotionBuffer_HasData())
+        /* Step 2: Get next planned block from GRBL planner (Phase 1 - NEW!)
+         *
+         * GRBL INTEGRATION (October 19, 2025):
+         *   - Changed from MotionBuffer_HasData()/GetNext() to GRBLPlanner_GetCurrentBlock()
+         *   - GRBL planner ring buffer now feeds motion execution
+         *   - Block contains: target position (steps), entry/exit velocities, acceleration
+         *
+         * Returns: Pointer to grbl_plan_block_t, or NULL if buffer empty */
+        grbl_plan_block_t *grbl_block = GRBLPlanner_GetCurrentBlock();
+
+        if (grbl_block != NULL)
         {
-            motion_block_t block;
+            /* Step 3: Convert GRBL block to coordinated move format
+             *
+             * GRBL stores target position in steps[] array (same layout as our system).
+             * Extract steps for all axes and pass to motion controller. */
+            int32_t steps[NUM_AXES];
+            steps[AXIS_X] = grbl_block->steps[AXIS_X];
+            steps[AXIS_Y] = grbl_block->steps[AXIS_Y];
+            steps[AXIS_Z] = grbl_block->steps[AXIS_Z];
+            steps[AXIS_A] = grbl_block->steps[AXIS_A];
 
-            /* Step 3: Dequeue next planned block from ring buffer
-             * MISRA Rule 17.7: Return value checked before proceeding */
-            if (MotionBuffer_GetNext(&block))
+            /* Step 4: Filter zero-step blocks (no actual motion)
+             * These can occur when moving to current position:
+             *   Example: G0 X0 Y0 when already at origin (0,0)
+             * Skip execution to avoid clogging the pipeline */
+            bool has_steps = (steps[AXIS_X] != 0) ||
+                             (steps[AXIS_Y] != 0) ||
+                             (steps[AXIS_Z] != 0) ||
+                             (steps[AXIS_A] != 0);
+
+            if (has_steps)
             {
-                /* Step 4: Filter zero-step blocks (no actual motion)
-                 * These can occur when moving to current position:
-                 *   Example: G0 X0 Y0 when already at origin (0,0)
-                 * Skip execution to avoid clogging the pipeline */
-                bool has_steps = (block.steps[AXIS_X] != 0) ||
-                                (block.steps[AXIS_Y] != 0) ||
-                                (block.steps[AXIS_Z] != 0) ||
-                                (block.steps[AXIS_A] != 0);
-
-                if (has_steps)
-                {
-                    /* Step 5: Start coordinated move with pre-calculated S-curve
-                     * This function returns immediately (non-blocking):
-                     *   - Sets up axis states with S-curve timing
-                     *   - Configures OCR hardware for pulse generation
-                     *   - Starts timers for all active axes
-                     * TMR1 @ 1kHz handles actual motion execution */
-                    MultiAxis_ExecuteCoordinatedMove(block.steps);
+                /* Step 5: Start coordinated move with pre-calculated S-curve
+                 * This function returns immediately (non-blocking):
+                 *   - Sets up axis states with S-curve timing
+                 *   - Configures OCR hardware for pulse generation
+                 *   - Starts timers for all active axes
+                 * TMR1 @ 1kHz handles actual motion execution */
+                MultiAxis_ExecuteCoordinatedMove(steps);
 
 #ifdef DEBUG_MOTION_BUFFER
-                    /* Debug: Report motion started from CoreTimer ISR */
-                    UGS_Printf("[CORETIMER] Started: X=%ld Y=%ld Z=%ld A=%ld\r\n",
-                               block.steps[AXIS_X],
-                               block.steps[AXIS_Y],
-                               block.steps[AXIS_Z],
-                               block.steps[AXIS_A]);
-#endif
-                }
-#ifdef DEBUG_MOTION_BUFFER
-                else
-                {
-                    /* Debug: Zero-step block filtered (not executed) */
-                    UGS_Printf("[CORETIMER] Filtered zero-step block\r\n");
-                }
+                /* Debug: Report motion started from CoreTimer ISR */
+                UGS_Printf("[CORETIMER] Started: X=%ld Y=%ld Z=%ld A=%ld\r\n",
+                           steps[AXIS_X],
+                           steps[AXIS_Y],
+                           steps[AXIS_Z],
+                           steps[AXIS_A]);
 #endif
             }
-            /* else: MotionBuffer_GetNext() returned false
-             * This should not happen if HasData() returned true,
-             * but defensive check prevents undefined behavior */
-        }
-        /* else: Motion buffer empty - machine will remain idle */
-    }
-    /* else: Machine busy - wait for current move to complete */
+#ifdef DEBUG_MOTION_BUFFER
+            else
+            {
+                /* Debug: Zero-step block filtered (not executed) */
+                UGS_Printf("[CORETIMER] Filtered zero-step block\r\n");
+            }
+#endif
 
-    /* ═══════════════════════════════════════════════════════════════════════
-     * CRITICAL: Re-arm CoreTimer interrupt before exit
-     * Clear any pending interrupt flags, then re-enable interrupt
-     * ═══════════════════════════════════════════════════════════════════════ */
-    IFS0CLR = _IFS0_CTIF_MASK;  // Clear CoreTimer interrupt flag (if set during work)
-    IEC0SET = _IEC0_CTIE_MASK;  // Re-enable CoreTimer interrupt
+            /* Step 6: Discard block from GRBL planner (Phase 1 - NEW!)
+             *
+             * CRITICAL: Must discard after starting motion (or filtering zero-step).
+             * This advances GRBL planner's tail pointer, making room for new blocks.
+             *
+             * GRBL Pattern: Blocks remain in planner until fully executed.
+             * Our hybrid system: Discard immediately after starting S-curve setup. */
+            GRBLPlanner_DiscardCurrentBlock();
+        }
+        /* else: GRBL planner empty - machine will remain idle */
+    }
+    /* else: Machine busy - wait for current move to complete */ /* ═══════════════════════════════════════════════════════════════════════
+                                                                  * CRITICAL: Re-arm CoreTimer interrupt before exit
+                                                                  * Clear any pending interrupt flags, then re-enable interrupt
+                                                                  * ═══════════════════════════════════════════════════════════════════════ */
+    IFS0CLR = _IFS0_CTIF_MASK;                                   // Clear CoreTimer interrupt flag (if set during work)
+    IEC0SET = _IEC0_CTIE_MASK;                                   // Re-enable CoreTimer interrupt
 }
 
 // *****************************************************************************

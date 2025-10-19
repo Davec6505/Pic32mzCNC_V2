@@ -175,3 +175,7 @@ endif
 
 
 .PHONY: all quiet build_dir clean install find-source grep-pattern list-files debug platform cmdlets 
+
+
+# TODOS
+# add make all 2>&1 | Select-String -Pattern "error:|warning:|BUILD COMPLETE" as a feature.

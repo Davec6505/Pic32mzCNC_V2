@@ -372,6 +372,11 @@ static void ProcessSerialRx(void)
  */
 static void ProcessCommandBuffer(void)
 {
+  /* Modal position tracking - preserve unspecified axes (CRITICAL for GRBL planner!)
+   * In G90 absolute mode, when "G1 X10" is sent, Y/Z should maintain last position.
+   * Parser only fills in specified axes, so we must merge with modal position. */
+  static float modal_position[NUM_AXES] = {0.0f, 0.0f, 0.0f, 0.0f};
+
   /* Only process commands if motion buffer has space
    * Process aggressively - only block when buffer is truly full (15/16 blocks) */
   uint8_t motion_count = MotionBuffer_GetCount();
@@ -438,16 +443,26 @@ static void ProcessCommandBuffer(void)
            *   - target[NUM_AXES]: float array in mm (absolute machine coords)
            *   - grbl_plan_line_data_t: feedrate, spindle, condition flags
            *
-           * Parser handles coordinate systems (work offsets, G92).
-           * Planner receives ready-to-execute machine coordinates.
+           * CRITICAL: Merge with modal position to preserve unspecified axes!
+           * Example: "G1 X10" should move X to 10 while Y/Z stay at current position.
            */
 
-          /* Convert parsed_move_t to GRBL float array format */
+          /* Merge parsed move with modal position (preserve unspecified axes) */
           float target[NUM_AXES];
-          target[AXIS_X] = move.target[AXIS_X];
-          target[AXIS_Y] = move.target[AXIS_Y];
-          target[AXIS_Z] = move.target[AXIS_Z];
-          target[AXIS_A] = move.target[AXIS_A];
+          for (uint8_t axis = 0; axis < NUM_AXES; axis++)
+          {
+            if (move.axis_words[axis])
+            {
+              /* Axis specified in command - use parsed value */
+              target[axis] = move.target[axis];
+              modal_position[axis] = move.target[axis]; /* Update modal state */
+            }
+            else
+            {
+              /* Axis not specified - use modal position */
+              target[axis] = modal_position[axis];
+            }
+          }
 
           /* Prepare GRBL planner input data */
           grbl_plan_line_data_t pl_data;
@@ -479,10 +494,18 @@ static void ProcessCommandBuffer(void)
 #ifdef DEBUG_MOTION_BUFFER
           else
           {
+            /* Get planner's internal position after buffering */
+            float planner_pos[NUM_AXES];
+            GRBLPlanner_GetPosition(planner_pos);
+            uint8_t buffer_count = GRBLPlanner_GetBufferCount();
+
             UGS_Printf("[GRBL] Buffered: X:%.3f Y:%.3f Z:%.3f F:%.1f rapid:%d\r\n",
                        target[AXIS_X], target[AXIS_Y], target[AXIS_Z],
                        pl_data.feed_rate,
                        (pl_data.condition & PL_COND_FLAG_RAPID_MOTION) ? 1 : 0);
+            UGS_Printf("       Planner pos: X:%.3f Y:%.3f Z:%.3f (buffer:%d/16)\r\n",
+                       planner_pos[AXIS_X], planner_pos[AXIS_Y], planner_pos[AXIS_Z],
+                       buffer_count);
           }
 #endif
         }
