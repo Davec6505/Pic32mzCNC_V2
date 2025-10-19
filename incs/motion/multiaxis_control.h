@@ -2,6 +2,36 @@
 #define _MULTIAXIS_CONTROL_H
 
 #include "motion_types.h" // Centralized type definitions
+#include "grbl_stepper.h" // For st_segment_t
+
+// *****************************************************************************
+// Step Execution Strategy Function Pointer
+// *****************************************************************************
+
+/*! \brief Function signature for step execution strategies
+ *
+ *  Allows dynamic dispatch between different interpolation methods:
+ *  - Linear (Bresenham) for G0/G1 moves
+ *  - Circular for G2/G3 arcs
+ *  - Future: Spline, helical, etc.
+ *
+ *  \param axis Axis being executed
+ *  \param seg Current segment being executed
+ *
+ *  CPU Overhead: 1 extra cycle vs direct call (~5ns @ 200MHz) - negligible!
+ */
+typedef void (*step_execution_func_t)(axis_id_t axis, const st_segment_t *seg);
+
+/*! \brief Set step execution strategy for an axis
+ *
+ *  \param axis Axis to configure
+ *  \param strategy Function pointer to execution strategy
+ *
+ *  Example:
+ *    MultiAxis_SetStepStrategy(AXIS_X, Execute_Bresenham_Strategy);
+ *    MultiAxis_SetStepStrategy(AXIS_X, Execute_ArcInterpolation_Strategy);
+ */
+void MultiAxis_SetStepStrategy(axis_id_t axis, step_execution_func_t strategy);
 
 // *****************************************************************************
 // Public Multi-Axis API
@@ -102,6 +132,21 @@ bool MultiAxis_IsAxisBusy(axis_id_t axis);
  */
 void MultiAxis_StopAll(void);
 
+/*! \brief Start segment execution from GRBL stepper buffer (Phase 2B)
+ *
+ *  Kicks off hardware execution of pre-calculated segments.
+ *  Called by motion_manager when segment buffer has segments ready.
+ *
+ *  Dave's Understanding:
+ *    - TMR9 @ 100Hz has prepared segments in background
+ *    - This starts OCR hardware executing those segments
+ *    - Each axis pulls segments independently from shared buffer
+ *    - OCR callbacks auto-advance when segment complete
+ *
+ *  \return true if execution started, false if no segments available
+ */
+bool MultiAxis_StartSegmentExecution(void);
+
 /*! \brief Get absolute machine position for an axis
  *
  *  CRITICAL FIX (October 19, 2025): Returns absolute position from power-on/homing,
@@ -144,6 +189,41 @@ void MultiAxis_SetDirection(axis_id_t axis);
  *  \param axis Axis to clear direction for (AXIS_X, AXIS_Y, AXIS_Z)
  */
 void MultiAxis_ClearDirection(axis_id_t axis);
+
+// *****************************************************************************
+// Step Execution Strategies (for function pointer dispatch)
+// *****************************************************************************
+
+/*! \brief Execute subordinate axes using Bresenham algorithm
+ *
+ *  Called from dominant axis ISR to bit-bang subordinate axis step pulses.
+ *  Uses integer-only Bresenham algorithm for proportional stepping.
+ *
+ *  \param axis Axis being executed (typically dominant, but generic)
+ *  \param seg Current segment with step counts and Bresenham state
+ *
+ *  CPU Cost: ~10-20 cycles per subordinate axis (integer add/compare/GPIO)
+ *
+ *  Example (X dominant @ 25,000 steps, Y subordinate @ 12,500 steps):
+ *    Execute_Bresenham_Strategy(AXIS_X, seg);
+ *    // In ISR loop:
+ *    //   Y_counter += 12,500;
+ *    //   if (Y_counter >= 25,000) {
+ *    //     Y_counter -= 25,000;
+ *    //     StepY_Toggle();  // Bit-bang Y step pulse
+ *    //   }
+ */
+void Execute_Bresenham_Strategy(axis_id_t axis, const st_segment_t *seg);
+
+/*! \brief Execute circular interpolation (future: G2/G3 arcs)
+ *
+ *  Placeholder for arc interpolation strategy.
+ *  When implemented, will calculate arc trajectory in real-time.
+ *
+ *  \param axis Axis being executed
+ *  \param seg Current segment with arc parameters (radius, center, etc.)
+ */
+void Execute_ArcInterpolation_Strategy(axis_id_t axis, const st_segment_t *seg);
 
 // *****************************************************************************
 // Stepper Driver Enable Control

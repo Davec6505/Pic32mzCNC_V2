@@ -697,6 +697,16 @@ int main(void)
      * See: motion_manager.c for implementation
      */
 
+    /* LED1 Heartbeat - Simple CPU alive indicator
+     * Toggles every ~32768 loops (approximately 1Hz at typical loop rate)
+     * Shows main loop is running (not stuck in ISR or crashed)
+     */
+    static uint16_t heartbeat_counter = 0;
+    if (++heartbeat_counter == 0)
+    { // Rolls over every 65536 iterations
+      // LED1_Toggle();
+    }
+
     /* Maintain state machines of all polled Harmony modules
      * - UART, timers, GPIO, etc.
      */

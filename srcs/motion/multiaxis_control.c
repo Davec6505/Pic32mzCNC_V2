@@ -18,6 +18,7 @@
 #include "motion/multiaxis_control.h"
 #include "motion/motion_math.h"
 #include "motion/motion_manager.h" // GRBL-style motion buffer feeding (CoreTimer @ 10ms)
+#include "motion/grbl_stepper.h"   // PHASE 2B: Segment execution from GRBL stepper buffer
 #include "config/default/peripheral/gpio/plib_gpio.h"
 #include "ugs_interface.h"
 
@@ -420,6 +421,46 @@ static volatile scurve_state_t axis_state[NUM_AXES];
 // - Used by MultiAxis_GetStepCount() for position feedback to GRBL/UGS
 static int32_t machine_position[NUM_AXES] = {0, 0, 0, 0};
 
+// *****************************************************************************
+// PHASE 2B: Segment Execution State (Per-Axis)
+// *****************************************************************************
+
+/**
+ * @brief Per-axis segment execution state
+ *
+ * Tracks hardware execution of GRBL segments using Bresenham algorithm.
+ * Each axis independently executes segments from the shared segment buffer.
+ */
+typedef struct
+{
+    const st_segment_t *current_segment; ///< Pointer to segment being executed (NULL if idle)
+    uint32_t step_count;                 ///< Steps executed in current segment
+    int32_t bresenham_counter;           ///< Bresenham error accumulator
+    bool active;                         ///< Axis currently executing segment
+} axis_segment_state_t;
+
+// Per-axis segment execution state (accessed from OCR ISR callbacks)
+static volatile axis_segment_state_t segment_state[NUM_AXES] = {0};
+
+// Segment completion control (Dave's scalable bitmask approach)
+// Bit N set = Axis N is the dominant axis and should call SegmentComplete()
+// This ensures only ONE axis completes each segment, preventing buffer corruption
+// Scalable to 8 axes (or 32 with uint32_t), supports future circular interpolation
+static volatile uint8_t segment_completed_by_axis = 0;
+
+// *****************************************************************************
+// Step Execution Strategy Function Pointers (Dave's dispatch pattern)
+// *****************************************************************************
+
+// Per-axis function pointers for step execution strategies
+// Allows dynamic dispatch: Bresenham (G0/G1), Arc (G2/G3), etc.
+// CPU overhead: 1 extra cycle vs direct call (~5ns @ 200MHz) - negligible!
+static step_execution_func_t axis_step_executor[NUM_AXES];
+
+// Forward declarations of strategy implementations
+static void Execute_Bresenham_Strategy_Internal(axis_id_t axis, const st_segment_t *seg);
+static void Execute_ArcInterpolation_Strategy_Internal(axis_id_t axis, const st_segment_t *seg);
+
 // Coordinated move state (accessed from main code AND TMR1 interrupt @ 1kHz)
 // Stores dominant axis info and velocity scaling for synchronized motion
 static motion_coordinated_move_t coord_move;
@@ -444,6 +485,226 @@ static float cbrt_approx(float x)
     }
 
     return sign * guess;
+}
+
+// *****************************************************************************
+// Step Execution Strategies (for function pointer dispatch)
+// *****************************************************************************
+
+/*! \brief Bresenham execution strategy for linear interpolation
+ *
+ *  Bit-bangs subordinate axes using Bresenham algorithm.
+ *  Called from dominant axis ISR - runs in INTERRUPT CONTEXT!
+ *
+ *  Algorithm:
+ *    For each step on dominant axis:
+ *      bresenham_counter[axis] += steps[axis]
+ *      if (bresenham_counter[axis] >= n_step)
+ *        bresenham_counter[axis] -= n_step
+ *        Toggle step pin (GPIO bit-bang)
+ *
+ *  CPU Cost per subordinate axis per step: ~10-20 cycles
+ *    - Integer add: 1 cycle
+ *    - Comparison: 1 cycle
+ *    - Conditional subtract: 1-2 cycles
+ *    - GPIO toggle (if step needed): 2-3 cycles
+ *
+ *  Example: X dominant @ 25,000 steps, Y subordinate @ 12,500 steps
+ *    - X uses OCR hardware (zero CPU)
+ *    - Y bit-banged every 2nd X step (12,500 GPIO toggles)
+ *    - Total CPU: 12,500 × 15 cycles = 187,500 cycles = 0.94ms @ 200MHz
+ */
+static void Execute_Bresenham_Strategy_Internal(axis_id_t dominant_axis, const st_segment_t *seg)
+{
+    /* REFACTORED (Oct 19, 2025): All axis coordination happens here!
+     *
+     * This function handles:
+     * 1. Dominant axis position tracking (OCR generates pulse, we track position)
+     * 2. Dominant axis step counting
+     * 3. Subordinate axes Bresenham + bit-bang + position tracking
+     *
+     * Called from dominant axis ISR only - subordinate ISRs are disabled
+     */
+
+    // Sanity checks - CRITICAL for ISR safety!
+    if (seg == NULL)
+        return; // NULL segment pointer
+
+    if (dominant_axis >= NUM_AXES)
+        return; // Invalid axis ID
+
+    const st_segment_t *segment = seg;
+    uint32_t n_step = segment->n_step; // Dominant axis step count
+
+    // Additional safety: n_step must be non-zero for Bresenham
+    if (n_step == 0)
+        return; // Avoid division by zero in Bresenham
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // STEP 1: Update DOMINANT axis position and step count
+    // ═════════════════════════════════════════════════════════════════════════
+    volatile axis_segment_state_t *dom_state = &segment_state[dominant_axis];
+
+    // Update dominant axis position (hardware generated the pulse already)
+    if (segment->direction_bits & (1 << dominant_axis))
+    {
+        machine_position[dominant_axis]--; // NEGATIVE direction
+    }
+    else
+    {
+        machine_position[dominant_axis]++; // POSITIVE direction
+    }
+
+    // Increment dominant axis step counter
+    dom_state->step_count++;
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // STEP 2: Handle all SUBORDINATE axes (Bresenham + bit-bang)
+    // ═════════════════════════════════════════════════════════════════════════
+    for (axis_id_t sub_axis = AXIS_X; sub_axis < NUM_AXES; sub_axis++)
+    {
+        if (sub_axis == dominant_axis)
+            continue; // Skip dominant axis (hardware handles it)
+
+        volatile axis_segment_state_t *sub_state = &segment_state[sub_axis];
+
+        if (!sub_state->active || sub_state->current_segment != segment)
+            continue;
+
+        // Bresenham algorithm
+        uint32_t steps_sub = segment->steps[sub_axis];
+        if (steps_sub == 0)
+            continue; // No motion on this subordinate axis
+
+        sub_state->bresenham_counter += (int32_t)steps_sub;
+
+        if (sub_state->bresenham_counter >= (int32_t)n_step)
+        {
+            sub_state->bresenham_counter -= (int32_t)n_step;
+
+            // ═════════════════════════════════════════════════════════════════════
+            // BIT-BANG: Generate step pulse on subordinate axis GPIO
+            // ═════════════════════════════════════════════════════════════════════
+            // Pulse generation: Set HIGH → delay → Set LOW
+            // DRV8825 requires minimum 1.9µs pulse width
+            // At 200MHz: ~400 NOPs = 2µs (safe margin)
+            // ═════════════════════════════════════════════════════════════════════
+            switch (sub_axis)
+            {
+            case AXIS_Y:
+                // Generate pulse on PulseY pin (RD5)
+                GPIO_PinSet(PulseY_PIN);
+                // Delay for pulse width (~2µs)
+                for (volatile int i = 0; i < 100; i++)
+                    ; // ~2µs @ 200MHz
+                GPIO_PinClear(PulseY_PIN);
+
+                // Update machine position for subordinate axis
+                if (segment->direction_bits & (1 << AXIS_Y))
+                {
+                    machine_position[AXIS_Y]--; // NEGATIVE
+                }
+                else
+                {
+                    machine_position[AXIS_Y]++; // POSITIVE
+                }
+                break;
+
+            case AXIS_Z:
+                // Generate pulse on PulseZ pin (RF0)
+                GPIO_PinSet(PulseZ_PIN);
+                for (volatile int i = 0; i < 100; i++)
+                    ;
+                GPIO_PinClear(PulseZ_PIN);
+
+                if (segment->direction_bits & (1 << AXIS_Z))
+                {
+                    machine_position[AXIS_Z]--;
+                }
+                else
+                {
+                    machine_position[AXIS_Z]++;
+                }
+                break;
+
+            case AXIS_A:
+                // Generate pulse on PulseA pin (RF1)
+                GPIO_PinSet(PulseA_PIN);
+                for (volatile int i = 0; i < 100; i++)
+                    ;
+                GPIO_PinClear(PulseA_PIN);
+
+                if (segment->direction_bits & (1 << AXIS_A))
+                {
+                    machine_position[AXIS_A]--;
+                }
+                else
+                {
+                    machine_position[AXIS_A]++;
+                }
+                break;
+
+            default:
+                break;
+            }
+
+            sub_state->step_count++; // Track subordinate progress
+        }
+    }
+}
+
+/*! \brief Arc interpolation strategy (placeholder for G2/G3)
+ *
+ *  Future implementation for circular interpolation.
+ *  Will calculate arc trajectory in real-time.
+ */
+static void Execute_ArcInterpolation_Strategy_Internal(axis_id_t axis, const st_segment_t *seg)
+{
+    /* TODO: Implement circular interpolation
+     *
+     * Arc interpolation calculates X/Y positions from:
+     *   - Center point (I, J offsets)
+     *   - Radius
+     *   - Start/end angles
+     *   - Step count along arc
+     *
+     * This requires trigonometry or DDA (Digital Differential Analyzer).
+     * For now, fall back to Bresenham (linear approximation).
+     */
+
+    Execute_Bresenham_Strategy_Internal(axis, seg);
+}
+
+// Public API wrappers (called from other modules)
+void Execute_Bresenham_Strategy(axis_id_t axis, const st_segment_t *seg)
+{
+    Execute_Bresenham_Strategy_Internal(axis, seg);
+}
+
+void Execute_ArcInterpolation_Strategy(axis_id_t axis, const st_segment_t *seg)
+{
+    Execute_ArcInterpolation_Strategy_Internal(axis, seg);
+}
+
+/*! \brief Set step execution strategy for an axis
+ *
+ *  \param axis Axis to configure (AXIS_X, AXIS_Y, AXIS_Z, AXIS_A)
+ *  \param strategy Function pointer to execution strategy
+ *
+ *  Example:
+ *    MultiAxis_SetStepStrategy(AXIS_X, Execute_Bresenham_Strategy);
+ *    MultiAxis_SetStepStrategy(AXIS_X, Execute_ArcInterpolation_Strategy);
+ */
+void MultiAxis_SetStepStrategy(axis_id_t axis, step_execution_func_t strategy)
+{
+    // Sanity checks
+    if (axis >= NUM_AXES)
+        return; // Bounds check
+
+    if (strategy == NULL)
+        return; // Don't allow NULL strategy (would crash ISR!)
+
+    axis_step_executor[axis] = strategy;
 }
 
 // *****************************************************************************
@@ -593,34 +854,233 @@ static bool calculate_scurve_profile(axis_id_t axis, uint32_t distance)
 }
 
 // *****************************************************************************
-// OCR Interrupt Handlers (Step Counters)
+// OCR Interrupt Handlers (PHASE 2B: Segment Execution with Bresenham)
 // *****************************************************************************/
 
+/**
+ * @brief CENTRAL segment step processing - called by all OCR ISRs
+ *
+ * REFACTORED (Oct 19, 2025): Single function handles ALL segment logic!
+ *
+ * This eliminates duplicate code across 4 ISRs. Each OCR ISR is now just
+ * a thin trampoline that calls this function with its axis ID.
+ *
+ * @param dominant_axis Which axis ISR called this (AXIS_X, AXIS_Y, AXIS_Z, AXIS_A)
+ */
+static void ProcessSegmentStep(axis_id_t dominant_axis)
+{
+    // Guard: Only execute if this is actually the dominant axis
+    if (!(segment_completed_by_axis & (1 << dominant_axis)))
+    {
+        return; // This axis is subordinate - ignore callback
+    }
+
+    volatile axis_segment_state_t *state = &segment_state[dominant_axis];
+
+    if (!state->active || state->current_segment == NULL)
+    {
+        return; // Not active or no segment - nothing to do
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // STEP 1: Call Bresenham to handle ALL axis coordination
+    // ═════════════════════════════════════════════════════════════════════════
+    // Bresenham handles:
+    //   - Dominant axis position tracking and step counting
+    //   - Subordinate axes Bresenham + bit-bang + position tracking
+    // ═════════════════════════════════════════════════════════════════════════
+    if (axis_step_executor[dominant_axis] != NULL)
+    {
+        axis_step_executor[dominant_axis](dominant_axis, state->current_segment);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // STEP 2: Check if segment complete (DOMINANT AXIS ONLY!)
+    // ═════════════════════════════════════════════════════════════════════════
+    // CRITICAL: Only check dominant axis step_count!
+    // Subordinate axes are bit-banged by Bresenham - they'll have +/- 1 step
+    // error due to rounding. This is acceptable (<0.013mm on 80 steps/mm axes).
+    //
+    // DON'T try to wait for subordinates to "catch up" - they only execute when
+    // dominant ISR fires, so stopping dominant = subordinates never complete!
+    // ═════════════════════════════════════════════════════════════════════════
+    if (state->step_count < state->current_segment->n_step)
+    {
+        return; // Dominant axis hasn't reached n_step yet
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // STEP 3: Stop dominant axis hardware
+    // ═════════════════════════════════════════════════════════════════════════
+    // Dominant reached n_step - safe to stop hardware now!
+    // Subordinates are within +/- 1 step (acceptable Bresenham rounding error)
+    // ═════════════════════════════════════════════════════════════════════════
+    axis_hw[dominant_axis].OCMP_Disable();
+    axis_hw[dominant_axis].TMR_Stop();
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // STEP 4: Advance to next segment
+    // ═════════════════════════════════════════════════════════════════════════
+    LED1_Toggle(); // Visual: segment boundary
+
+    // Complete segment (advances tail)
+    GRBLStepper_SegmentComplete();
+
+    // Get next segment
+    const st_segment_t *next_seg = GRBLStepper_GetNextSegment();
+
+    // Update bitmask for next segment's dominant axis
+    if (next_seg != NULL)
+    {
+        segment_completed_by_axis = 0; // Clear previous
+        for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+        {
+            if (next_seg->steps[axis] == next_seg->n_step)
+            {
+                segment_completed_by_axis = (1 << axis); // Mark dominant
+                break;
+            }
+        }
+    }
+    else
+    {
+        segment_completed_by_axis = 0; // No more segments
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // STEP 4: Load new segment or stop if no more segments
+    // ═════════════════════════════════════════════════════════════════════════
+    if (next_seg != NULL)
+    {
+        // Load new segment for dominant axis
+        state->current_segment = next_seg;
+        state->step_count = 0;
+        state->bresenham_counter = 0;
+
+        // Update ALL active subordinate axes to new segment
+        for (axis_id_t sub_axis = AXIS_X; sub_axis < NUM_AXES; sub_axis++)
+        {
+            if (sub_axis == dominant_axis)
+                continue; // Skip self
+
+            volatile axis_segment_state_t *sub_state = &segment_state[sub_axis];
+            if (sub_state->active && next_seg->steps[sub_axis] > 0)
+            {
+                sub_state->current_segment = next_seg;
+                sub_state->step_count = 0;
+                sub_state->bresenham_counter = next_seg->bresenham_counter[sub_axis];
+            }
+        }
+
+        // Set direction GPIO for dominant axis
+        bool dir_negative = (next_seg->direction_bits & (1 << dominant_axis)) != 0;
+        switch (dominant_axis)
+        {
+        case AXIS_X:
+            if (dir_negative)
+                DirX_Clear();
+            else
+                DirX_Set();
+            break;
+        case AXIS_Y:
+            if (dir_negative)
+                DirY_Clear();
+            else
+                DirY_Set();
+            break;
+        case AXIS_Z:
+            if (dir_negative)
+                DirZ_Clear();
+            else
+                DirZ_Set();
+            break;
+        case AXIS_A:
+            if (dir_negative)
+                DirA_Clear();
+            else
+                DirA_Set();
+            break;
+        default:
+            break;
+        }
+
+        // Configure OCR period for new segment
+        uint32_t period = next_seg->period;
+        if (period > 65485)
+            period = 65485;
+        if (period <= OCMP_PULSE_WIDTH)
+            period = OCMP_PULSE_WIDTH + 10;
+
+        axis_hw[dominant_axis].TMR_PeriodSet((uint16_t)period);
+        axis_hw[dominant_axis].OCMP_CompareValueSet((uint16_t)(period - OCMP_PULSE_WIDTH));
+        axis_hw[dominant_axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
+        axis_hw[dominant_axis].OCMP_Enable(); // CRITICAL: Re-enable OCR (was disabled at line 919)
+        axis_hw[dominant_axis].TMR_Start();
+    }
+    else
+    {
+        // ═════════════════════════════════════════════════════════════════════
+        // No more segments - STOP ALL AXES!
+        // ═════════════════════════════════════════════════════════════════════
+        // CRITICAL: Must clear ALL axes, not just dominant!
+        // MultiAxis_IsBusy() checks if ANY axis has active=true
+        // If we only clear dominant, machine stays in <Run> state forever!
+        // ═════════════════════════════════════════════════════════════════════
+        for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+        {
+            volatile axis_segment_state_t *ax_state = &segment_state[axis];
+            ax_state->current_segment = NULL;
+            ax_state->active = false;
+            ax_state->step_count = 0;
+        }
+
+        // Stop dominant axis hardware
+        axis_hw[dominant_axis].OCMP_Disable();
+        axis_hw[dominant_axis].TMR_Stop();
+    }
+}
+
+/**
+ * @brief X-axis step execution (OCMP5 callback) - THIN TRAMPOLINE
+ */
 static void OCMP5_StepCounter_X(uintptr_t context)
 {
-    axis_state[AXIS_X].step_count++;
+    ProcessSegmentStep(AXIS_X);
 }
 
+/**
+ * @brief Y-axis step execution (OCMP1 callback)
+ */
 static void OCMP1_StepCounter_Y(uintptr_t context)
 {
-    axis_state[AXIS_Y].step_count++;
+    ProcessSegmentStep(AXIS_Y);
 }
 
+/**
+ * @brief Z-axis step execution (OCMP4 callback)
+ */
 static void OCMP4_StepCounter_Z(uintptr_t context)
 {
-    axis_state[AXIS_Z].step_count++;
+    ProcessSegmentStep(AXIS_Z);
 }
 
 #ifdef ENABLE_AXIS_A
+/**
+ * @brief A-axis step execution (OCMP3 callback)
+ */
 static void OCMP3_StepCounter_A(uintptr_t context)
 {
-    axis_state[AXIS_A].step_count++;
+    ProcessSegmentStep(AXIS_A);
 }
 #endif
 
 // *****************************************************************************
-// TMR1 @ 1kHz - Multi-Axis S-CURVE STATE MACHINE
+// TMR1 @ 1kHz - Multi-Axis S-CURVE STATE MACHINE (Phase 1 - DISABLED)
 // *****************************************************************************/
+
+#if 0 // PHASE 2B: TMR1 S-curve disabled, using GRBL segment-based execution
+      // Preserved for reference during Phase 2 development
+      // TODO: Remove entirely once Phase 2C validated
 
 static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
 {
@@ -897,6 +1357,7 @@ static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
 
     // No global motion_running flag needed - each axis manages its own state
 }
+#endif // PHASE 2B: End of TMR1 S-curve code
 
 // *****************************************************************************
 // Public API
@@ -906,6 +1367,13 @@ void MultiAxis_Initialize(void)
 {
     // Initialize motion math settings (GRBL-compatible defaults)
     MotionMath_InitializeSettings();
+
+    // Initialize step execution strategies (default: Bresenham for all axes)
+    // Can be changed at runtime via MultiAxis_SetStepStrategy()
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        axis_step_executor[axis] = Execute_Bresenham_Strategy;
+    }
 
     // Initialize all axis states
     for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
@@ -927,11 +1395,16 @@ void MultiAxis_Initialize(void)
     axis_hw[AXIS_Y].OCMP_CallbackRegister(OCMP1_StepCounter_Y, 0);
     axis_hw[AXIS_Z].OCMP_CallbackRegister(OCMP4_StepCounter_Z, 0);
 
-    // Register TMR1 callback for multi-axis S-curve control (1kHz)
-    TMR1_CallbackRegister(TMR1_MultiAxisControl, 0);
-    TMR1_Start();
+    /* PHASE 2B: TMR1 S-curve control disabled (will be replaced with segment execution)
+     * TMR1 freed up for future 6-axis expansion or other uses.
+     * Segment execution will be driven by OCR step-complete callbacks instead.
+     *
+     * TODO: Remove TMR1_MultiAxisControl() ISR entirely once Phase 2B proven working.
+     */
+    // TMR1_CallbackRegister(TMR1_MultiAxisControl, 0);  // ← DISABLED for Phase 2B
+    // TMR1_Start();                                      // ← DISABLED for Phase 2B
 
-    // Initialize motion manager (GRBL-style auto-start with CoreTimer @ 10ms)
+    // Initialize motion manager (GRBL-style auto-start with TMR9 @ 100Hz)
     // Must be called LAST after all motion subsystems initialized
     MotionManager_Initialize();
 }
@@ -1012,14 +1485,16 @@ void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward)
 
 /*! \brief Check if any axis is currently moving
  *
+ *  PHASE 2B: Now checks segment execution state instead of S-curve state.
+ *
  *  \return true if motion in progress, false if all axes idle
  */
 bool MultiAxis_IsBusy(void)
 {
-    // Check if any axis is active
+    // Check if any axis is actively executing segments
     for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
     {
-        if (axis_state[axis].active)
+        if (segment_state[axis].active)
         {
             return true;
         }
@@ -1058,16 +1533,197 @@ void MultiAxis_StopAll(void)
     {
         assert(axis < NUM_AXES); // Loop bounds check
 
+        // Phase 2B: Stop hardware and clear segment execution state
         axis_hw[axis].OCMP_Disable();
         axis_hw[axis].TMR_Stop();
-        axis_state[axis].current_segment = SEGMENT_COMPLETE;
-        axis_state[axis].active = false;
+
+        // CRITICAL FIX (Oct 19, 2025): Clear Phase 2B segment state, not Phase 1!
+        segment_state[axis].current_segment = NULL;
+        segment_state[axis].active = false;
+        segment_state[axis].step_count = 0;
 
         // Disable driver for safety (DRV8825 high-Z state)
         MultiAxis_DisableDriver(axis);
     }
 
     // No global motion_running flag - each axis manages its own state
+}
+
+/*! \brief Start segment execution from GRBL stepper buffer (Phase 2B)
+ *
+ *  Kicks off segment execution for all axes that have pending segments.
+ *  Called by motion_manager when new planner block is available.
+ *
+ *  Dave's Understanding:
+ *    - Segment prep (TMR9 @ 100Hz) has filled segment buffer with segments
+ *    - This function starts hardware execution of those segments
+ *    - Each axis independently pulls segments from shared buffer
+ *    - OCR callbacks auto-advance to next segment when current done
+ *
+ *  \return true if segment execution started, false if no segments available
+ */
+bool MultiAxis_StartSegmentExecution(void)
+{
+    // Try to get first segment for each axis
+    const st_segment_t *first_seg = GRBLStepper_GetNextSegment();
+
+    if (first_seg == NULL)
+    {
+        return false; // No segments available
+    }
+
+    // Determine dominant axis (axis with most steps = n_step)
+    // Dave's scalable bitmask approach: Set bit for dominant axis
+    segment_completed_by_axis = 0; // Clear previous segment's mask
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        if (first_seg->steps[axis] == first_seg->n_step)
+        {
+            segment_completed_by_axis = (1 << axis); // Mark this axis as dominant
+            break;                                   // Only one dominant axis per segment
+        }
+    }
+
+    // Sanity check: Ensure we found a dominant axis
+    if (segment_completed_by_axis == 0)
+    {
+        return false; // No dominant axis found - invalid segment!
+    }
+
+    // Start axes that are IDLE and have motion in this segment
+    bool any_axis_started = false;
+
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        volatile axis_segment_state_t *state = &segment_state[axis];
+
+        // CRITICAL FIX (Oct 19, 2025): If axis is active but NOT dominant in new segment,
+        // it must transition from OCR (dominant) to bit-bang (subordinate)!
+        // Stop its OCR hardware before continuing.
+        bool is_dominant = (segment_completed_by_axis & (1 << axis)) != 0;
+
+        if (state->active && !is_dominant && first_seg->steps[axis] > 0)
+        {
+            // Axis was dominant, now subordinate → STOP OCR hardware
+            axis_hw[axis].OCMP_Disable();
+            axis_hw[axis].TMR_Stop();
+            // Keep state->active = true (will be bit-banged in dominant's ISR)
+        }
+
+        // Skip if axis is already active (busy with previous segment)
+        if (state->active)
+        {
+            continue;
+        }
+
+        // Check if this axis has motion in the next segment (non-zero step count)
+        if (first_seg->steps[axis] > 0)
+        {
+            // Initialize segment execution state
+            state->current_segment = first_seg;
+            state->step_count = 0;
+            state->bresenham_counter = 0;
+            state->active = true;
+
+            // Set direction GPIO based on direction bits
+            // CRITICAL: GRBL sets direction_bits=1 for NEGATIVE motion!
+            if (first_seg->direction_bits & (1 << axis))
+            {
+                // Negative direction (direction_bits=1)
+                switch (axis)
+                {
+                case AXIS_X:
+                    DirX_Clear(); // Inverted: bit=1 → Clear for negative
+                    break;
+                case AXIS_Y:
+                    DirY_Clear(); // Inverted: bit=1 → Clear for negative
+                    break;
+                case AXIS_Z:
+                    DirZ_Clear(); // Inverted: bit=1 → Clear for negative
+                    break;
+                case AXIS_A:
+                    DirA_Clear(); // Inverted: bit=1 → Clear for negative
+                    break;
+                default:
+                    break;
+                }
+            }
+            else
+            {
+                // Positive direction (direction_bits=0)
+                switch (axis)
+                {
+                case AXIS_X:
+                    DirX_Set(); // Inverted: bit=0 → Set for positive
+                    break;
+                case AXIS_Y:
+                    DirY_Set(); // Inverted: bit=0 → Set for positive
+                    break;
+                case AXIS_Z:
+                    DirZ_Set(); // Inverted: bit=0 → Set for positive
+                    break;
+                case AXIS_A:
+                    DirA_Set(); // Inverted: bit=0 → Set for positive
+                    break;
+                default:
+                    break;
+                }
+            }
+
+            // Enable driver
+            MultiAxis_EnableDriver(axis);
+
+            // Configure OCR period (step rate)
+            uint32_t period = first_seg->period;
+            if (period > 65485)
+                period = 65485; // 16-bit limit
+            if (period <= OCMP_PULSE_WIDTH)
+                period = OCMP_PULSE_WIDTH + 10;
+
+            // ═════════════════════════════════════════════════════════════════════
+            // HYBRID OCR/BIT-BANG APPROACH (Dave's Architecture)
+            // ═════════════════════════════════════════════════════════════════════
+            // ONLY start OCR hardware for DOMINANT axis (longest distance)
+            // Subordinate axes will be bit-banged in dominant's ISR via function pointer
+            //
+            // Benefits:
+            //   - Single ISR (no synchronization issues)
+            //   - Matches original GRBL architecture
+            //   - Eliminates rocket ship bug
+            // ═════════════════════════════════════════════════════════════════════
+
+            bool is_dominant = (segment_completed_by_axis & (1 << axis)) != 0;
+
+            if (is_dominant)
+            {
+                // DOMINANT AXIS: Use OCR hardware for pulse generation
+
+                // Configure OCR period (step rate)
+                axis_hw[axis].TMR_PeriodSet((uint16_t)period);
+                axis_hw[axis].OCMP_CompareValueSet((uint16_t)(period - OCMP_PULSE_WIDTH));
+                axis_hw[axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
+
+                // Start hardware (OCR pulses + ISR callbacks)
+                axis_hw[axis].OCMP_Enable();
+                axis_hw[axis].TMR_Start();
+
+                any_axis_started = true;
+            }
+            else
+            {
+                // SUBORDINATE AXIS: Will be bit-banged in dominant's ISR
+                // No OCR hardware started - GPIO control only
+                // The dominant axis ISR will call axis_step_executor[dominant]()
+                // which runs Bresenham algorithm to bit-bang this axis
+
+                // Ensure OCR is disabled (GPIO control takes over)
+                axis_hw[axis].OCMP_Disable();
+                axis_hw[axis].TMR_Stop();
+            }
+        }
+    }
+
+    return any_axis_started;
 }
 
 /*! \brief Get absolute machine position for axis

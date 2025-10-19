@@ -41,6 +41,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "motion_types.h"
+#include "grbl_planner.h" // For grbl_plan_block_t type
 
 //=============================================================================
 // CONFIGURATION CONSTANTS
@@ -92,6 +93,7 @@ typedef struct
     uint32_t steps[NUM_AXES];            ///< Step count per axis (for Bresenham)
     uint32_t period;                     ///< OCR timer period (controls step rate)
     uint8_t direction_bits;              ///< Direction bits (bit N = axis N direction)
+    uint8_t active_axes_mask;            ///< Bitmask of axes with motion (bit N = axis N active)
     int32_t bresenham_counter[NUM_AXES]; ///< Bresenham error accumulator per axis
 } st_segment_t;
 
@@ -121,12 +123,12 @@ typedef struct
 typedef struct
 {
     grbl_plan_block_t *current_block; ///< Current planner block being segmented
-    float mm_complete;                 ///< Distance traveled in current block (mm)
-    float mm_remaining;                ///< Distance left in current block (mm)
-    float current_speed;               ///< Current velocity (mm/sec)
-    float acceleration;                ///< Acceleration for this block (mm/sec²)
+    float mm_complete;                ///< Distance traveled in current block (mm)
+    float mm_remaining;               ///< Distance left in current block (mm)
+    float current_speed;              ///< Current velocity (mm/sec)
+    float acceleration;               ///< Acceleration for this block (mm/sec²)
     uint32_t step_count[NUM_AXES];    ///< Accumulated step count for position tracking
-    bool block_active;                 ///< True if currently executing a block
+    bool block_active;                ///< True if currently executing a block
 } st_prep_t;
 
 //=============================================================================
@@ -161,31 +163,8 @@ void GRBLStepper_Initialize(void);
  */
 bool GRBLStepper_PrepSegment(void);
 
-/**
- * @brief Get next segment for hardware execution
- *
- * Called by OCR ISR when previous segment completes.
- * Dequeues oldest segment from ring buffer.
- *
- * @param[out] segment Pointer to segment structure to fill
- * @return true if segment available, false if buffer empty
- */
-bool GRBLStepper_GetNextSegment(st_segment_t *segment);
-
-/**
- * @brief Notify stepper that segment execution completed
- *
- * Called by OCR ISR callbacks (OCMP1/3/4/5) when all steps executed.
- * Advances tail pointer in segment buffer.
- *
- * Pattern (in OCR callback):
- *   if (step_count >= segment.n_step) {
- *       GRBLStepper_SegmentComplete();  // Advance to next segment
- *   }
- *
- * @return None
- */
-void GRBLStepper_SegmentComplete(void);
+// NOTE: GetNextSegment/SegmentComplete declarations moved to Phase 2B section below
+//       (pointer-based API for efficient OCR ISR usage - see lines 245+)
 
 /**
  * @brief Check if stepper is busy executing segments
@@ -219,5 +198,54 @@ uint8_t GRBLStepper_GetBufferCount(void);
  * @return None
  */
 void GRBLStepper_GetStats(uint32_t *total_segments, uint32_t *buffer_underruns);
+
+// =============================================================================
+// PHASE 2B: Segment Execution API (OCR Hardware Integration)
+// =============================================================================
+
+/**
+ * @brief Get next segment for execution (called from OCR callbacks)
+ *
+ * This function is called by OCR step-complete callbacks when they finish
+ * executing the current segment and are ready for the next one.
+ *
+ * CRITICAL: This function must be called from ISR context (OCR callbacks).
+ * It does NOT block - returns immediately if no segment available.
+ *
+ * Dave's Understanding:
+ *   - OCR callback finishes current segment
+ *   - Calls this to get next segment from buffer
+ *   - If NULL returned, axis goes idle (wait for more segments)
+ *   - If segment returned, configure OCR and start executing
+ *
+ * @return Pointer to next segment (read-only), or NULL if buffer empty
+ *
+ * @note Returned pointer is valid until next GetNextSegment() call
+ * @note Caller must NOT modify returned segment data
+ * @note Returns NULL if segment buffer empty (axis should go idle)
+ */
+const st_segment_t *GRBLStepper_GetNextSegment(void);
+
+/**
+ * @brief Notify stepper that segment execution completed
+ *
+ * Called by OCR callbacks when they finish executing all steps in a segment.
+ * This advances the segment buffer tail pointer, freeing space for new segments.
+ *
+ * CRITICAL: Must be called AFTER GetNextSegment() returns non-NULL segment
+ * and that segment has been fully executed (all n_step steps completed).
+ *
+ * Dave's Understanding:
+ *   - OCR callback counts steps: step_count++
+ *   - When step_count >= segment->n_step: segment complete!
+ *   - Call this function to free segment buffer slot
+ *   - Call GetNextSegment() to get next segment
+ *
+ * @return None
+ *
+ * @note This function is ISR-safe (just increments tail pointer)
+ * @note Calling without executing segment will cause buffer corruption!
+ */
+void GRBLStepper_SegmentComplete(void);
 
 #endif // GRBL_STEPPER_H
