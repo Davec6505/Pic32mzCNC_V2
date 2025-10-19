@@ -1299,9 +1299,11 @@ void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES])
          * continuing with state from previous moves! */
         if (coord_move.axis_velocity_scale[axis] == 0.0f)
         {
+#ifdef DEBUG_MOTION_BUFFER
             /* DEBUG: Print which axes are being skipped */
             const char *axis_names[] = {"X", "Y", "Z", "A"};
             UGS_Printf("[COORD] Skipping %s axis (velocity_scale=0.0)\r\n", axis_names[axis]);
+#endif
 
             /* Explicitly deactivate this axis - it's not part of this move */
             volatile scurve_state_t *s = &axis_state[axis];

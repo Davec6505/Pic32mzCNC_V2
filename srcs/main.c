@@ -506,7 +506,9 @@ static void ProcessCommandBuffer(void)
           {
             /* Planner rejected move (zero-length or buffer full)
              * Log warning but continue (command already parsed) */
+#ifdef DEBUG_MOTION_BUFFER
             UGS_Print("[MSG:GRBL planner rejected move - zero length or buffer full]\r\n");
+#endif
 
 #ifdef DEBUG_MOTION_BUFFER
             UGS_Printf("[GRBL] Rejected: Work(%.3f,%.3f,%.3f) -> Machine(%.3f,%.3f,%.3f) F:%.1f\r\n",

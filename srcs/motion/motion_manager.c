@@ -158,7 +158,9 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
          * New logic: Discard only when machine becomes idle */
         if (!block_discarded)
         {
+#ifdef DEBUG_MOTION_BUFFER
             UGS_Print("[TMR9] Discarding previous block...\r\n");
+#endif
 
             /* CRITICAL FIX (October 19, 2025): Update absolute machine position!
              * The step counters (axis_state[].step_count) track progress within move (0 → total_steps).
@@ -168,7 +170,9 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
 
             GRBLPlanner_DiscardCurrentBlock();
             block_discarded = true;
+#ifdef DEBUG_MOTION_BUFFER
             UGS_Print("[TMR9] Block completed and discarded\r\n");
+#endif
         }
 
         /* Step 2: Get next planned block from GRBL planner (Phase 1 - NEW!)
@@ -198,6 +202,7 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
              */
             int32_t steps[NUM_AXES];
 
+#ifdef DEBUG_MOTION_BUFFER
             /* DEBUG: Show what GRBL planner calculated */
             UGS_Printf("[GRBL-BLOCK] Raw: X=%lu Y=%lu Z=%lu A=%lu dir_bits=0x%02X\r\n",
                        grbl_block->steps[AXIS_X],
@@ -205,6 +210,7 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
                        grbl_block->steps[AXIS_Z],
                        grbl_block->steps[AXIS_A],
                        grbl_block->direction_bits);
+#endif
 
             for (uint8_t axis = 0; axis < NUM_AXES; axis++)
             {
@@ -257,12 +263,13 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
                 /* Mark block as active (will be discarded when motion completes) */
                 block_discarded = false;
 
-                /* ALWAYS print motion start (not behind DEBUG flag) */
+#ifdef DEBUG_MOTION_BUFFER
                 UGS_Printf("[TMR9] Started: X=%ld Y=%ld Z=%ld A=%ld\r\n",
                            steps[AXIS_X],
                            steps[AXIS_Y],
                            steps[AXIS_Z],
                            steps[AXIS_A]);
+#endif
             }
             else
             {
@@ -270,8 +277,9 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
                 GRBLPlanner_DiscardCurrentBlock();
                 block_discarded = true;
 
-                /* ALWAYS print zero-step filter (not behind DEBUG flag) */
+#ifdef DEBUG_MOTION_BUFFER
                 UGS_Printf("[TMR9] Filtered zero-step block\r\n");
+#endif
             }
         }
         /* else: GRBL planner empty - machine will remain idle */
