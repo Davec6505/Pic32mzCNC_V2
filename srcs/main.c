@@ -99,37 +99,50 @@ static void UART_RxDebugCallback(UART_EVENT event, uintptr_t context)
 static void ProcessSerialRx(void)
 {
   static char line_buffer[256] = {0}; /* Initialize to zeros on first use */
+  static size_t line_pos = 0;         /* Track position across calls */
+  static bool line_complete = false;  /* Flag for complete line */
 
   /* Check if serial data available in RX ring buffer
    * GRBL serial: Interrupt-driven RX (Priority 5/0), 256-byte buffer
    */
-  if (Serial_Available() > 0)
+  if (Serial_Available() > 0 || line_complete)
   {
     /* Read characters until newline or buffer full */
-    static size_t line_pos = 0;
     int16_t c;
 
-    while ((c = Serial_Read()) != -1)
+    /* Only read if we don't already have a complete line */
+    if (!line_complete)
     {
-      if (c == '\n' || c == '\r')
+      while ((c = Serial_Read()) != -1)
       {
-        if (line_pos > 0)
+        if (c == '\n' || c == '\r')
         {
-          line_buffer[line_pos] = '\0'; /* Null terminate */
-          line_pos = 0;                 /* Reset for next line */
-          break;                        /* Process this line */
+          if (line_pos > 0)
+          {
+            line_buffer[line_pos] = '\0'; /* Null terminate */
+            line_complete = true;         /* Mark line as complete */
+            break;                        /* Process this line */
+          }
+          continue; /* Skip empty lines (multiple \r\n) */
         }
-        continue; /* Skip empty lines */
-      }
 
-      if (line_pos < (sizeof(line_buffer) - 1))
-      {
-        line_buffer[line_pos++] = (char)c;
+        if (line_pos < (sizeof(line_buffer) - 1))
+        {
+          line_buffer[line_pos++] = (char)c;
+        }
+        else
+        {
+          /* Buffer overflow - discard line */
+          line_pos = 0;
+          memset(line_buffer, 0, sizeof(line_buffer));
+          UGS_SendError(1, "Line too long");
+          return;
+        }
       }
     }
 
     /* If no complete line yet, continue */
-    if (line_buffer[0] == '\0')
+    if (!line_complete || line_buffer[0] == '\0')
     {
       return;
     }
@@ -156,7 +169,9 @@ static void ProcessSerialRx(void)
     {
       /* Control char already handled in GCode_BufferLine() */
       memset(line_buffer, 0, sizeof(line_buffer)); /* Clear buffer */
-      return;                                      /* Return early */
+      line_pos = 0;
+      line_complete = false;
+      return; /* Return early */
     }
 
     /* Check for $ system commands (GRBL protocol) */
@@ -257,8 +272,10 @@ static void ProcessSerialRx(void)
         UGS_SendError(3, "$ command not recognized");
       }
 
-      /* Clear buffer and continue to next line */
+      /* Clear buffer and reset state after $ command */
       memset(line_buffer, 0, sizeof(line_buffer));
+      line_pos = 0;
+      line_complete = false;
       return;
     }
 
@@ -325,10 +342,12 @@ static void ProcessSerialRx(void)
       UGS_SendError(1, "Tokenization error");
     }
 
-    /* Clear buffer after processing to prevent reuse */
+    /* Clear buffer and reset state after processing */
     memset(line_buffer, 0, sizeof(line_buffer));
+    line_pos = 0;
+    line_complete = false;
   }
-  /* If GCode_BufferLine() returned false, no data available - just return */
+  /* If no complete line yet, return and wait for more data */
 }
 
 /**

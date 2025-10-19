@@ -1,5 +1,202 @@
 # PIC32MZ CNC Motion Controller V2 - AI Coding Guide
 
+## ⚠️ CRITICAL SERIAL WRAPPER ARCHITECTURE (October 19, 2025)
+
+**MCC PLIB_UART2 WRAPPER WITH GRBL REAL-TIME COMMANDS** ✅ **COMPLETE AND WORKING!**
+
+### Final Working Architecture
+
+After multiple iterations, the system now uses a **callback-based UART wrapper** with **ISR flag-based real-time command handling**:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Hardware UART2 (MCC plib_uart2)                                 │
+│ - 115200 baud, 8N1                                              │
+│ - RX interrupt enabled (Priority 5)                             │
+│ - TX/Error interrupts disabled                                  │
+│ - No blocking mode (callback-based)                             │
+└────────────────────┬────────────────────────────────────────────┘
+                     ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ Serial Wrapper (serial_wrapper.c/h)                             │
+│                                                                 │
+│ Serial_RxCallback(ISR context):                                 │
+│   1. Read byte from UART                                        │
+│   2. if (GCode_IsControlChar(byte)):                            │
+│        realtime_cmd = byte  // Set flag for main loop          │
+│   3. else:                                                      │
+│        Add to ring buffer (256 bytes)                           │
+│   4. Re-enable UART read                                        │
+│                                                                 │
+│ Serial_GetRealtimeCommand():                                    │
+│   - Returns and clears realtime_cmd flag                        │
+│   - Called by main loop every iteration                         │
+└────────────────────┬────────────────────────────────────────────┘
+                     ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ Main Loop (main.c)                                              │
+│                                                                 │
+│ while(true) {                                                   │
+│   ProcessSerialRx();  // Read from ring buffer                 │
+│                                                                 │
+│   uint8_t cmd = Serial_GetRealtimeCommand();                   │
+│   if (cmd != 0) {                                               │
+│     GCode_HandleControlChar(cmd);  // Handle in main context!  │
+│   }                                                             │
+│                                                                 │
+│   ProcessCommandBuffer();                                       │
+│   ExecuteMotion();                                              │
+│   APP_Tasks();                                                  │
+│   SYS_Tasks();                                                  │
+│ }                                                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Critical Design Decisions
+
+**❌ WRONG APPROACH (Caused Crash):**
+```c
+// DON'T call GCode_HandleControlChar() from ISR!
+void Serial_RxCallback(uintptr_t context) {
+    if (GCode_IsControlChar(data)) {
+        GCode_HandleControlChar(data);  // ❌ CRASH! Blocking UART calls in ISR
+    }
+}
+```
+
+**✅ CORRECT APPROACH (Flag-Based):**
+```c
+// ISR only sets flag
+void Serial_RxCallback(uintptr_t context) {
+    if (GCode_IsControlChar(data)) {
+        realtime_cmd = data;  // ✅ Safe: Just set flag
+    }
+}
+
+// Main loop handles in safe context
+void main(void) {
+    while(true) {
+        uint8_t cmd = Serial_GetRealtimeCommand();
+        if (cmd != 0) {
+            GCode_HandleControlChar(cmd);  // ✅ Safe: Not in ISR
+        }
+    }
+}
+```
+
+### Why ISR Can't Call Blocking Functions
+
+1. **UGS_SendStatusReport()** calls `Serial_Write()` which blocks waiting for TX complete
+2. **ISR Priority**: UART RX ISR at Priority 5 cannot safely call UART TX functions
+3. **Deadlock Risk**: ISR waiting for UART TX while UART TX ISR is blocked
+4. **GRBL Pattern**: Original GRBL sets flags in ISR, main loop checks flags
+
+### Implementation Files
+
+**serial_wrapper.c** (160 lines):
+```c
+// ISR-safe flag
+static volatile uint8_t realtime_cmd = 0;
+
+void Serial_RxCallback(uintptr_t context) {
+    uint8_t data = uart_rx_byte;
+    
+    if (GCode_IsControlChar(data)) {
+        realtime_cmd = data;  // Flag for main loop
+    } else {
+        // Add to ring buffer
+        rx_buffer.data[rx_buffer.head] = data;
+        rx_buffer.head = (rx_buffer.head + 1) & 0xFF;
+    }
+    
+    UART2_Read(&uart_rx_byte, 1);  // Re-enable
+}
+
+uint8_t Serial_GetRealtimeCommand(void) {
+    uint8_t cmd = realtime_cmd;
+    realtime_cmd = 0;
+    return cmd;
+}
+```
+
+**gcode_parser.c** - `GCode_HandleControlChar()`:
+```c
+void GCode_HandleControlChar(char c) {
+    switch (c) {
+        case GCODE_CTRL_STATUS_REPORT:  // '?' (0x3F)
+            // Get positions and send status report
+            UGS_SendStatusReport(...);  // Safe in main loop context
+            break;
+            
+        case GCODE_CTRL_FEED_HOLD:  // '!' (0x21)
+            MotionBuffer_Pause();
+            UGS_Print(">> Feed Hold\r\n");
+            break;
+            
+        case GCODE_CTRL_CYCLE_START:  // '~' (0x7E)
+            MotionBuffer_Resume();
+            UGS_Print(">> Cycle Start\r\n");
+            break;
+            
+        case GCODE_CTRL_SOFT_RESET:  // Ctrl-X (0x18)
+            MultiAxis_StopAll();
+            MotionBuffer_Clear();
+            GCode_ResetModalState();
+            break;
+    }
+}
+```
+
+### UGS Test Results (October 19, 2025) ✅
+
+```
+*** Connected to GRBL 1.1f
+[VER:1.1f.20251017:PIC32MZ CNC V2]
+[OPT:V,16,512]
+
+✅ Status queries: <Idle|MPos:0.000,0.000,0.000|WPos:0.000,0.000,0.000>
+✅ Settings query: $$ returns all 18 settings
+✅ Real-time commands: ?, !, ~, Ctrl-X all working
+✅ Motion execution: G0 Z5 moved Z-axis to 5.003mm
+✅ Position feedback: Real-time updates during motion
+✅ Feed hold: ! pauses motion immediately
+✅ Modal commands: G90, G21, G17, G94, M3, M5 all functional
+```
+
+### Serial Processing Robustness Fix (October 19, 2025)
+
+**Fixed: "error:1 - Invalid G-code: G"** during fast command streaming:
+
+**Problem**: Static variables in `ProcessSerialRx()` not properly reset between calls
+- `line_pos` reset inside conditional, caused incomplete line processing
+- No `line_complete` flag to track state across function calls
+- Race condition when serial data arrived in multiple chunks
+
+**Solution**: Added proper state tracking with three static variables:
+```c
+static char line_buffer[256] = {0};
+static size_t line_pos = 0;         // Track position across calls
+static bool line_complete = false;  // Flag for complete line
+```
+
+**Key Changes**:
+1. Only read new data if line not already complete
+2. Added buffer overflow protection (discard and send error)
+3. Reset all three state variables after processing each line
+4. Prevents partial line processing during burst streaming
+
+**Result**: ✅ Robust serial processing under high-speed command streaming
+
+### Key Takeaways
+
+1. ✅ **Never call blocking functions from ISR** - Set flags instead
+2. ✅ **Main loop handles flags** - Safe context for UART writes
+3. ✅ **Ring buffer for regular data** - Control chars never enter buffer
+4. ✅ **Flag-based is fast enough** - Main loop runs at ~1kHz (1ms response)
+5. ✅ **Proven GRBL pattern** - Original GRBL uses same approach
+
+---
+
 ## ⚠️ CRITICAL SERIAL BUFFER FIX (October 18, 2025)
 
 **UART RING BUFFER SIZE INCREASED - RESOLVES SERIAL DATA CORRUPTION** ✅ **COMPLETE!**:
