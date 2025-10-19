@@ -57,12 +57,12 @@
 // *****************************************************************************
 // *****************************************************************************
 
-void CORE_TIMER_InterruptHandler( void );
 void TIMER_1_InterruptHandler( void );
 void OUTPUT_COMPARE_1_InterruptHandler( void );
 void OUTPUT_COMPARE_3_InterruptHandler( void );
 void OUTPUT_COMPARE_4_InterruptHandler( void );
 void OUTPUT_COMPARE_5_InterruptHandler( void );
+void TIMER_9_InterruptHandler( void );
 void UART2_FAULT_InterruptHandler( void );
 void UART2_RX_InterruptHandler( void );
 void UART2_TX_InterruptHandler( void );

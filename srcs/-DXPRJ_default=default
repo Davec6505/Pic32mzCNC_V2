@@ -11,6 +11,7 @@
  ../incs/config/default/peripheral/ocmp/plib_ocmp4.h \
  ../incs/config/default/peripheral/ocmp/plib_ocmp5.h \
  ../incs/config/default/peripheral/ocmp/plib_ocmp3.h \
+ ../incs/config/default/peripheral/nvm/plib_nvm.h \
  ../incs/config/default/peripheral/coretimer/plib_coretimer.h \
  ../incs/config/default/peripheral/tmr/plib_tmr4.h \
  ../incs/config/default/peripheral/tmr/plib_tmr_common.h \
@@ -21,6 +22,7 @@
  ../incs/config/default/peripheral/tmr/plib_tmr3.h \
  ../incs/config/default/peripheral/tmr1/plib_tmr1.h \
  ../incs/config/default/peripheral/tmr1/plib_tmr1_common.h \
+ ../incs/config/default/peripheral/tmr/plib_tmr9.h \
  ../incs/motion/motion_manager.h ../incs/motion/motion_buffer.h \
  ../incs/motion/motion_types.h ../incs/motion/grbl_planner.h \
  ../incs/motion/multiaxis_control.h ../incs/ugs_interface.h
@@ -49,6 +51,8 @@
 
 ../incs/config/default/peripheral/ocmp/plib_ocmp3.h:
 
+../incs/config/default/peripheral/nvm/plib_nvm.h:
+
 ../incs/config/default/peripheral/coretimer/plib_coretimer.h:
 
 ../incs/config/default/peripheral/tmr/plib_tmr4.h:
@@ -68,6 +72,8 @@
 ../incs/config/default/peripheral/tmr1/plib_tmr1.h:
 
 ../incs/config/default/peripheral/tmr1/plib_tmr1_common.h:
+
+../incs/config/default/peripheral/tmr/plib_tmr9.h:
 
 ../incs/motion/motion_manager.h:
 

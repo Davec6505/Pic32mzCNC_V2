@@ -42,105 +42,75 @@
 #include "peripheral/coretimer/plib_coretimer.h"
 #include "interrupts.h"
 
-volatile static CORETIMER_OBJECT coreTmr;
-void CORETIMER_Initialize(void)
+
+
+static uint32_t compareValue = CORE_TIMER_COMPARE_VALUE;
+
+void CORETIMER_Initialize( void )
 {
-    // Disable Timer by setting Disable Count (DC) bit
-    _CP0_SET_CAUSE(_CP0_GET_CAUSE() | _CP0_CAUSE_DC_MASK);
     _CP0_SET_DEBUG(_CP0_GET_DEBUG() & ~_CP0_DEBUG_COUNTDM_MASK);
-    coreTmr.period=CORE_TIMER_INTERRUPT_PERIOD_VALUE;
-    coreTmr.tickCounter = 0;
-    coreTmr.callback = NULL;
-}
-void CORETIMER_CallbackSet ( CORETIMER_CALLBACK callback, uintptr_t context )
-{
-    coreTmr.callback = callback;
-    coreTmr.context = context;
-}
-void CORETIMER_PeriodSet ( uint32_t period )
-{
-    coreTmr.period = period;
-}
-void CORETIMER_Start(void)
-{
-    // Disable Timer by setting Disable Count (DC) bit
-    _CP0_SET_CAUSE(_CP0_GET_CAUSE() | _CP0_CAUSE_DC_MASK);
-    // Disable Interrupt
-    IEC0CLR=0x1;
+
     // Clear Core Timer
     _CP0_SET_COUNT(0);
-    _CP0_SET_COMPARE(coreTmr.period);
+    _CP0_SET_COMPARE(compareValue);
+
     // Enable Timer by clearing Disable Count (DC) bit
     _CP0_SET_CAUSE(_CP0_GET_CAUSE() & (~_CP0_CAUSE_DC_MASK));
-    // Enable Interrupt
-    IEC0SET=0x1;
 }
+
+void CORETIMER_Start( void )
+{
+    // Disable Timer by setting Disable Count (DC) bit
+    _CP0_SET_CAUSE(_CP0_GET_CAUSE() | _CP0_CAUSE_DC_MASK);
+
+    // Clear Compare Timer Interrupt Flag
+    IFS0CLR = 0x1;
+
+    // Clear Core Timer
+    _CP0_SET_COUNT(0);
+
+    _CP0_SET_COMPARE(compareValue);
+
+    // Enable Timer by clearing Disable Count (DC) bit
+    _CP0_SET_CAUSE(_CP0_GET_CAUSE() & (~_CP0_CAUSE_DC_MASK));
+
+}
+
 void CORETIMER_Stop( void )
 {
     // Disable Timer by setting Disable Count (DC) bit
     _CP0_SET_CAUSE(_CP0_GET_CAUSE() | _CP0_CAUSE_DC_MASK);
-    // Disable Interrupt
-    IEC0CLR=0x1;
 }
+
 uint32_t CORETIMER_FrequencyGet ( void )
 {
     return (CORE_TIMER_FREQUENCY);
 }
-    
-uint32_t CORETIMER_GetTickCounter(void)
+
+void CORETIMER_CompareSet ( uint32_t compare )
 {
-    return coreTmr.tickCounter;
-}
-    
-void CORETIMER_StartTimeOut (CORETIMER_TIMEOUT* timeout, uint32_t delay_ms)
-{
-    timeout->start = CORETIMER_GetTickCounter();
-    timeout->count = (delay_ms*1000U)/CORE_TIMER_INTERRUPT_PERIOD_IN_US;
-}
-    
-void CORETIMER_ResetTimeOut (CORETIMER_TIMEOUT* timeout)
-{
-    timeout->start = CORETIMER_GetTickCounter();
-}
-    
-bool CORETIMER_IsTimeoutReached (CORETIMER_TIMEOUT* timeout)
-{
-    bool valTimeout  = true;
-    if ((coreTmr.tickCounter - timeout->start) < timeout->count)
-    {
-        valTimeout = false;
-    }
-    return valTimeout;
-}
-    
-void __attribute__((used)) CORE_TIMER_InterruptHandler (void)
-{
-    uint32_t count, newCompare;
-    uint32_t status = IFS0bits.CTIF;
-    IFS0CLR = 0x1;
-    // Start Critical Section
-    (void) __builtin_disable_interrupts();
-    count=_CP0_GET_COUNT();
-    newCompare=_CP0_GET_COMPARE() + coreTmr.period;
-    if (50U < newCompare-count)
-    {
-        _CP0_SET_COMPARE(newCompare);
-    }
-    else
-    {
-        _CP0_SET_COMPARE(count+50U);
-    }
-    // End Critical Section
-    (void) __builtin_enable_interrupts();
-    coreTmr.tickCounter++;
-    if(coreTmr.callback != NULL)
-    {
-        uintptr_t context = coreTmr.context;
-        coreTmr.callback(status, context);
-    }
+    compareValue = compare;
+    _CP0_SET_COMPARE(compareValue);
 }
 
+uint32_t CORETIMER_CounterGet ( void )
+{
+    uint32_t count;
+    count = _CP0_GET_COUNT();
+    return count;
+}
 
+bool CORETIMER_CompareHasExpired( void )
+{
+    bool flagStatus = false;
+    if (IFS0bits.CTIF != 0U)
+    {
+       // Clear Compare Timer Interrupt Flag
+       IFS0CLR = 0x1;
+       flagStatus = true;
+    }
+    return flagStatus;
+}
 
 void CORETIMER_DelayMs ( uint32_t delay_ms)
 {

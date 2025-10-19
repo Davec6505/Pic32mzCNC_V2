@@ -66,12 +66,12 @@
 // Section: System Interrupt Vector declarations
 // *****************************************************************************
 // *****************************************************************************
-void CORE_TIMER_Handler (void);
 void TIMER_1_Handler (void);
 void OUTPUT_COMPARE_1_Handler (void);
 void OUTPUT_COMPARE_3_Handler (void);
 void OUTPUT_COMPARE_4_Handler (void);
 void OUTPUT_COMPARE_5_Handler (void);
+void TIMER_9_Handler (void);
 void UART2_FAULT_Handler (void);
 void UART2_RX_Handler (void);
 void UART2_TX_Handler (void);
@@ -82,11 +82,6 @@ void UART2_TX_Handler (void);
 // Section: System Interrupt Vector definitions
 // *****************************************************************************
 // *****************************************************************************
-void __attribute__((used)) __ISR(_CORE_TIMER_VECTOR, ipl1SRS) CORE_TIMER_Handler (void)
-{
-    CORE_TIMER_InterruptHandler();
-}
-
 void __attribute__((used)) __ISR(_TIMER_1_VECTOR, ipl2SRS) TIMER_1_Handler (void)
 {
     TIMER_1_InterruptHandler();
@@ -110,6 +105,11 @@ void __attribute__((used)) __ISR(_OUTPUT_COMPARE_4_VECTOR, ipl3SRS) OUTPUT_COMPA
 void __attribute__((used)) __ISR(_OUTPUT_COMPARE_5_VECTOR, ipl3SRS) OUTPUT_COMPARE_5_Handler (void)
 {
     OUTPUT_COMPARE_5_InterruptHandler();
+}
+
+void __attribute__((used)) __ISR(_TIMER_9_VECTOR, ipl1SRS) TIMER_9_Handler (void)
+{
+    TIMER_9_InterruptHandler();
 }
 
 void __attribute__((used)) __ISR(_UART2_FAULT_VECTOR, ipl1SRS) UART2_FAULT_Handler (void)

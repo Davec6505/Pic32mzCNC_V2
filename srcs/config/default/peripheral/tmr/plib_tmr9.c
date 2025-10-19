@@ -1,20 +1,23 @@
 /*******************************************************************************
-  UART2 PLIB
+  TMR Peripheral Library Interface Source File
 
-  Company:
+  Company
     Microchip Technology Inc.
 
-  File Name:
-    plib_uart2.h
+  File Name
+    plib_tmr9.c
 
-  Summary:
-    UART2 PLIB Header File
+  Summary
+    TMR9 peripheral library source file.
 
-  Description:
-    None
+  Description
+    This file implements the interface to the TMR peripheral library.  This
+    library provides access to and control of the associated peripheral
+    instance.
 
 *******************************************************************************/
 
+// DOM-IGNORE-BEGIN
 /*******************************************************************************
 * Copyright (C) 2019 Microchip Technology Inc. and its subsidiaries.
 *
@@ -37,70 +40,110 @@
 * ANY WAY RELATED TO THIS SOFTWARE WILL NOT EXCEED THE AMOUNT OF FEES, IF ANY,
 * THAT YOU HAVE PAID DIRECTLY TO MICROCHIP FOR THIS SOFTWARE.
 *******************************************************************************/
+// DOM-IGNORE-END
 
-#ifndef PLIB_UART2_H
-#define PLIB_UART2_H
 
-#include <stddef.h>
-#include <stdbool.h>
-#include <stdint.h>
+// *****************************************************************************
+// *****************************************************************************
+// Section: Included Files
+// *****************************************************************************
+// *****************************************************************************
+
 #include "device.h"
-#include "plib_uart_common.h"
+#include "plib_tmr9.h"
+#include "interrupts.h"
 
-// DOM-IGNORE-BEGIN
-#ifdef __cplusplus  // Provide C++ Compatibility
 
-    extern "C" {
+volatile static TMR_TIMER_OBJECT tmr9Obj;
 
-#endif
-// DOM-IGNORE-END
 
-// *****************************************************************************
-// *****************************************************************************
-// Section: Interface
-// *****************************************************************************
-// *****************************************************************************
+void TMR9_Initialize(void)
+{
+    /* Disable Timer */
+    T9CONCLR = _T9CON_ON_MASK;
 
-#define UART2_FrequencyGet()    (uint32_t)(50000000UL)
+    /*
+    SIDL = 0
+    TCKPS =6
+    T32   = 0
+    TCS = 0
+    */
+    T9CONSET = 0x60;
 
-/****************************** UART2 API *********************************/
+    /* Clear counter */
+    TMR9 = 0x0;
 
-void UART2_Initialize( void );
+    /*Set period */
+    PR9 = 7811U;
 
-bool UART2_SerialSetup( UART_SERIAL_SETUP *setup, uint32_t srcClkFreq );
+    /* Enable TMR Interrupt */
+    IEC1SET = _IEC1_T9IE_MASK;
 
-bool UART2_AutoBaudQuery( void );
+}
 
-void UART2_AutoBaudSet( bool enable );
 
-bool UART2_Write( void *buffer, const size_t size );
+void TMR9_Start(void)
+{
+    T9CONSET = _T9CON_ON_MASK;
+}
 
-bool UART2_Read( void *buffer, const size_t size );
 
-UART_ERROR UART2_ErrorGet( void );
+void TMR9_Stop (void)
+{
+    T9CONCLR = _T9CON_ON_MASK;
+}
 
-bool UART2_ReadIsBusy( void );
+void TMR9_PeriodSet(uint16_t period)
+{
+    PR9  = period;
+}
 
-size_t UART2_ReadCountGet( void );
+uint16_t TMR9_PeriodGet(void)
+{
+    return (uint16_t)PR9;
+}
 
-bool UART2_ReadAbort(void);
+uint16_t TMR9_CounterGet(void)
+{
+    return (uint16_t)(TMR9);
+}
 
-bool UART2_WriteIsBusy( void );
 
-size_t UART2_WriteCountGet( void );
+uint32_t TMR9_FrequencyGet(void)
+{
+    return (781250);
+}
 
-void UART2_WriteCallbackRegister( UART_CALLBACK callback, uintptr_t context );
 
-void UART2_ReadCallbackRegister( UART_CALLBACK callback, uintptr_t context );
+void __attribute__((used)) TIMER_9_InterruptHandler (void)
+{
+    uint32_t status  = 0U;
+    status = IFS1bits.T9IF;
+    IFS1CLR = _IFS1_T9IF_MASK;
 
-bool UART2_TransmitComplete( void );
-
-// DOM-IGNORE-BEGIN
-#ifdef __cplusplus  // Provide C++ Compatibility
-
+    if((tmr9Obj.callback_fn != NULL))
+    {
+        uintptr_t context = tmr9Obj.context;
+        tmr9Obj.callback_fn(status, context);
     }
+}
 
-#endif
-// DOM-IGNORE-END
 
-#endif // PLIB_UART2_H
+void TMR9_InterruptEnable(void)
+{
+    IEC1SET = _IEC1_T9IE_MASK;
+}
+
+
+void TMR9_InterruptDisable(void)
+{
+    IEC1CLR = _IEC1_T9IE_MASK;
+}
+
+
+void TMR9_CallbackRegister( TMR_CALLBACK callback_fn, uintptr_t context )
+{
+    /* Save callback_fn and context in local memory */
+    tmr9Obj.callback_fn = callback_fn;
+    tmr9Obj.context = context;
+}

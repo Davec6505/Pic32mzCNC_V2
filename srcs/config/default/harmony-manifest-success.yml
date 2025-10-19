@@ -4,7 +4,7 @@
 
 
 project: Pic32mzStepper_OCR
-creation_date: 2025-10-19T06:45:18.075+01:00[Europe/London]    # ISO 8601 format: https://www.w3.org/TR/NOTE-datetime
+creation_date: 2025-10-19T08:42:35.241+01:00[Europe/London]    # ISO 8601 format: https://www.w3.org/TR/NOTE-datetime
 operating_system: Windows 11
 mcc_mode: IDE            # [IDE|Standalone|Headless]
 mcc_version: v5.6.2
@@ -15,6 +15,8 @@ compiler: XC32 4.60
 
 modules:
     - {name: "csp", version: "v3.20.0"}
+    - {name: "core", version: "v3.15.4"}
+    - {name: "littlefs", version: "v2.11.1"}
 
 packs:
     - {name: "PIC32MZ-EF_DFP", version: "1.4.168"}

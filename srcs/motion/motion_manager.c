@@ -8,22 +8,29 @@
     motion_manager.c
 
   Summary:
-    GRBL-style automatic motion buffer feeding using CoreTimer @ 10ms.
+    GRBL-style automatic motion buffer feeding using TMR9 @ 10ms.
 
   Description:
     This module implements the GRBL st_prep_buffer() pattern for continuous
-    motion without gaps between moves. CoreTimer ISR runs at 10ms intervals
+    motion without gaps between moves. TMR9 ISR runs at 10ms intervals
     (Priority 1 - lowest) and automatically starts the next move when the
     machine becomes idle.
 
-    Critical ISR Pattern:
-      1. Disable CoreTimer interrupt immediately on entry
-      2. Check if machine idle AND buffer has data
-      3. Dequeue block and start coordinated move
-      4. Clear interrupt flags and re-enable interrupt
+    CRITICAL FIX (October 19, 2025): Switched from CoreTimer to TMR9!
+    PIC32MZ CoreTimer has special CPU-coupled behavior that prevents reliable
+    interrupt disable/enable in ISR context. TMR9 is a standard peripheral
+    timer with clean interrupt handling.
 
-    This prevents ISR re-entrancy and CPU stall while maintaining guaranteed
-    timing (10ms ±0ms jitter).
+    ISR Pattern (NO DISABLE/ENABLE NEEDED):
+      1. Check if machine idle AND buffer has data
+      2. Dequeue block and start coordinated move
+      3. Hardware clears interrupt flag automatically
+
+    TMR9 Configuration (MCC):
+      - Prescaler: 1:256
+      - Period: ~19531 (10ms @ 50MHz PBCLK)
+      - Priority: 1 (lowest)
+      - Callback: Enabled
 
     MISRA C:2012 Compliance:
       - Rule 8.7: Static functions where external linkage not required
@@ -44,20 +51,35 @@
 #include "ugs_interface.h"            // UGS_Printf() for debug output
 
 // *****************************************************************************
-// Section: CoreTimer ISR - Motion Buffer Feeding
+// Section: Local Variables
 // *****************************************************************************
 
-/*! \brief CoreTimer ISR - Automatic motion buffer feeding (GRBL-style)
+/*! \brief Flag to track if current block has been executed
  *
- *  Called every 10ms by CoreTimer interrupt at Priority 1 (lowest).
+ *  CRITICAL (October 19, 2025): GRBL blocks must remain in planner until
+ *  motion completes. This flag prevents premature discard.
  *
- *  CRITICAL ISR SAFETY PATTERN:
- *    - Disables CoreTimer interrupt immediately on entry
- *    - Executes motion feed logic (atomic, non-blocking)
- *    - Clears any pending interrupt flags
- *    - Re-enables CoreTimer interrupt before exit
+ *  Pattern:
+ *    1. Get block from planner
+ *    2. Start motion, set flag = false
+ *    3. Wait for motion to complete (MultiAxis_IsBusy() returns false)
+ *    4. Discard block, set flag = true
+ *    5. Get next block
+ */
+static bool block_discarded = true; /* Start true (no block active) */
+
+// *****************************************************************************
+// Section: TMR9 ISR - Motion Buffer Feeding
+// *****************************************************************************
+
+/*! \brief TMR9 ISR - Automatic motion buffer feeding (GRBL-style)
  *
- *  This prevents ISR re-entrancy and CPU stall from ISR nesting.
+ *  Called every 10ms by TMR9 interrupt at Priority 1 (lowest).
+ *
+ *  CRITICAL FIX (October 19, 2025): Switched from CoreTimer to TMR9!
+ *  - PIC32MZ CoreTimer has CPU-coupled behavior (disable/enable unreliable)
+ *  - TMR9 is standard peripheral timer with clean interrupt handling
+ *  - No manual interrupt disable/enable needed (hardware handles it)
  *
  *  GRBL Pattern:
  *    1. Check if ALL axes idle (no motion in progress)
@@ -70,9 +92,9 @@
  *  Timing:
  *    - 10ms interval (100 Hz update rate)
  *    - Typical execution: <100µs (check + dequeue + start)
- *    - Self-limiting: If ISR takes >10ms, next interrupt waits
+ *    - Hardware guarantees: No re-entry, automatic flag clear
  *
- *  \param status CoreTimer status (unused)
+ *  \param status TMR9 interrupt status (unused)
  *  \param context User context (unused)
  *
  *  \return None
@@ -80,25 +102,46 @@
  *  MISRA Rule 2.7: Unused parameters explicitly documented
  *  MISRA Rule 8.7: External linkage required (registered as callback)
  */
-void MotionManager_CoreTimerISR(uint32_t status, uintptr_t context)
+static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
 {
     /* MISRA Rule 2.7: Explicitly document unused parameters */
-    (void)status;  // CoreTimer status not used
+    (void)status;  // TMR9 status not used
     (void)context; // User context not used
 
     /* ═══════════════════════════════════════════════════════════════════════
-     * CRITICAL: Disable CoreTimer interrupt immediately on entry
+     * CRITICAL: Disable TMR9 interrupt on entry (use Harmony getter/setter)
      * Prevents re-entry if ISR execution takes longer than 10ms period
+     * This is especially important because UGS_Printf() can be slow!
      * ═══════════════════════════════════════════════════════════════════════ */
-    IEC0CLR = _IEC0_CTIE_MASK; // Disable CoreTimer interrupt enable
+    TMR9_InterruptDisable();
 
     /* ═══════════════════════════════════════════════════════════════════════
      * Motion Buffer Feeding Logic (GRBL st_prep_buffer() pattern)
      * ═══════════════════════════════════════════════════════════════════════ */
 
     /* Step 1: Check if ALL axes are idle (no motion in progress) */
-    if (!MultiAxis_IsBusy())
+    bool is_busy = MultiAxis_IsBusy();
+
+    /* DEBUG: ISR entry debug DISABLED - floods UART at 100Hz, blocks UGS connection
+     * Re-enable only for specific debugging when needed */
+    // UGS_Printf("[TMR9-ISR] Entry: busy=%d block_discarded=%d\r\n",
+    //            is_busy ? 1 : 0, block_discarded ? 1 : 0);
+
+    if (!is_busy)
     {
+        /* Step 1a: If previous block still active, discard it now (motion complete)
+         *
+         * CRITICAL FIX (October 19, 2025): Only discard after motion completes!
+         * Old bug: Discarded immediately after starting → multiple moves executed simultaneously
+         * New logic: Discard only when machine becomes idle */
+        if (!block_discarded)
+        {
+            UGS_Print("[TMR9] Discarding previous block...\r\n");
+            GRBLPlanner_DiscardCurrentBlock();
+            block_discarded = true;
+            UGS_Print("[TMR9] Block completed and discarded\r\n");
+        }
+
         /* Step 2: Get next planned block from GRBL planner (Phase 1 - NEW!)
          *
          * GRBL INTEGRATION (October 19, 2025):
@@ -113,13 +156,38 @@ void MotionManager_CoreTimerISR(uint32_t status, uintptr_t context)
         {
             /* Step 3: Convert GRBL block to coordinated move format
              *
-             * GRBL stores target position in steps[] array (same layout as our system).
-             * Extract steps for all axes and pass to motion controller. */
+             * CRITICAL (October 19, 2025): GRBL stores motion differently than our system!
+             *   - GRBL: steps[] = unsigned delta (e.g., 6400 for 5mm move)
+             *           direction_bits = bit mask (bit N set = axis N moves negative)
+             *   - Our system: steps[] = signed delta (negative = backward, positive = forward)
+             *
+             * Must convert: Check direction bit, apply sign to step count.
+             *
+             * Example: Z-axis moving from 5mm to 0mm:
+             *   GRBL: steps[AXIS_Z] = 6400, direction_bits |= Z_DIRECTION_BIT
+             *   Our:  steps[AXIS_Z] = -6400 (negative for backward motion)
+             */
             int32_t steps[NUM_AXES];
-            steps[AXIS_X] = grbl_block->steps[AXIS_X];
-            steps[AXIS_Y] = grbl_block->steps[AXIS_Y];
-            steps[AXIS_Z] = grbl_block->steps[AXIS_Z];
-            steps[AXIS_A] = grbl_block->steps[AXIS_A];
+
+            for (uint8_t axis = 0; axis < NUM_AXES; axis++)
+            {
+                /* Get unsigned step count from GRBL */
+                uint32_t abs_steps = grbl_block->steps[axis];
+
+                /* Check if this axis moves in negative direction */
+                uint8_t dir_mask = (1U << axis); /* Bit 0=X, 1=Y, 2=Z, 3=A */
+                bool is_negative = (grbl_block->direction_bits & dir_mask) != 0;
+
+                /* Apply sign based on direction */
+                if (is_negative)
+                {
+                    steps[axis] = -(int32_t)abs_steps; /* Negative motion */
+                }
+                else
+                {
+                    steps[axis] = (int32_t)abs_steps; /* Positive motion */
+                }
+            }
 
             /* Step 4: Filter zero-step blocks (no actual motion)
              * These can occur when moving to current position:
@@ -140,50 +208,50 @@ void MotionManager_CoreTimerISR(uint32_t status, uintptr_t context)
                  * TMR1 @ 1kHz handles actual motion execution */
                 MultiAxis_ExecuteCoordinatedMove(steps);
 
-#ifdef DEBUG_MOTION_BUFFER
-                /* Debug: Report motion started from CoreTimer ISR */
-                UGS_Printf("[CORETIMER] Started: X=%ld Y=%ld Z=%ld A=%ld\r\n",
+                /* Mark block as active (will be discarded when motion completes) */
+                block_discarded = false;
+
+                /* ALWAYS print motion start (not behind DEBUG flag) */
+                UGS_Printf("[TMR9] Started: X=%ld Y=%ld Z=%ld A=%ld\r\n",
                            steps[AXIS_X],
                            steps[AXIS_Y],
                            steps[AXIS_Z],
                            steps[AXIS_A]);
-#endif
             }
-#ifdef DEBUG_MOTION_BUFFER
             else
             {
-                /* Debug: Zero-step block filtered (not executed) */
-                UGS_Printf("[CORETIMER] Filtered zero-step block\r\n");
-            }
-#endif
+                /* Zero-step block - discard immediately (no motion to wait for) */
+                GRBLPlanner_DiscardCurrentBlock();
+                block_discarded = true;
 
-            /* Step 6: Discard block from GRBL planner (Phase 1 - NEW!)
-             *
-             * CRITICAL: Must discard after starting motion (or filtering zero-step).
-             * This advances GRBL planner's tail pointer, making room for new blocks.
-             *
-             * GRBL Pattern: Blocks remain in planner until fully executed.
-             * Our hybrid system: Discard immediately after starting S-curve setup. */
-            GRBLPlanner_DiscardCurrentBlock();
+                /* ALWAYS print zero-step filter (not behind DEBUG flag) */
+                UGS_Printf("[TMR9] Filtered zero-step block\r\n");
+            }
         }
         /* else: GRBL planner empty - machine will remain idle */
     }
-    /* else: Machine busy - wait for current move to complete */ /* ═══════════════════════════════════════════════════════════════════════
-                                                                  * CRITICAL: Re-arm CoreTimer interrupt before exit
-                                                                  * Clear any pending interrupt flags, then re-enable interrupt
-                                                                  * ═══════════════════════════════════════════════════════════════════════ */
-    IFS0CLR = _IFS0_CTIF_MASK;                                   // Clear CoreTimer interrupt flag (if set during work)
-    IEC0SET = _IEC0_CTIE_MASK;                                   // Re-enable CoreTimer interrupt
+    /* else: Machine busy - wait for current move to complete */
+
+    /* ═══════════════════════════════════════════════════════════════════════
+     * CRITICAL: Re-enable TMR9 interrupt before exit (use Harmony getter/setter)
+     * Clear any pending interrupt flags automatically handled by hardware
+     * ═══════════════════════════════════════════════════════════════════════ */
+    TMR9_InterruptEnable();
 }
 
 // *****************************************************************************
 // Section: Public Interface Functions
 // *****************************************************************************
 
-/*! \brief Initialize motion manager and register CoreTimer callback
+/*! \brief Initialize motion manager and register TMR9 callback
  *
- *  Registers MotionManager_CoreTimerISR() as the CoreTimer callback.
- *  CoreTimer configured in MCC for 10ms period, Priority 1 (lowest).
+ *  Registers MotionManager_TMR9_ISR() as the TMR9 callback.
+ *  TMR9 configured in MCC for 10ms period, Priority 1 (lowest).
+ *
+ *  CRITICAL FIX (October 19, 2025): Switched from CoreTimer to TMR9!
+ *  - PIC32MZ CoreTimer has CPU-coupled behavior (unreliable disable/enable)
+ *  - TMR9 is standard peripheral timer (clean interrupt handling)
+ *  - No manual interrupt management needed (hardware handles it)
  *
  *  Call this from MultiAxis_Initialize() after all motion subsystems
  *  have been initialized.
@@ -194,16 +262,21 @@ void MotionManager_CoreTimerISR(uint32_t status, uintptr_t context)
  */
 void MotionManager_Initialize(void)
 {
-    /* Register CoreTimer callback for motion buffer feeding (10ms, GRBL-style)
+    /* Register TMR9 callback for motion buffer feeding (10ms, GRBL-style)
      * Priority 1 (lowest) ensures:
      *   - TMR1 S-curve updates not interrupted (higher priority)
      *   - OCR step generation not interrupted (higher priority)
      *   - Real-time commands processed in main loop (runs faster than 10ms)
      *
-     * Callback uses disable/re-enable pattern for ISR safety:
-     *   - Prevents re-entrancy if execution takes >10ms
-     *   - Guarantees atomic buffer operations
-     *   - Self-limiting execution time (CPU cannot stall) */
-    CORETIMER_CallbackSet(MotionManager_CoreTimerISR, (uintptr_t)0);
-    CORETIMER_Start();
+     * TMR9 hardware automatically:
+     *   - Clears interrupt flag after ISR
+     *   - Prevents re-entry until ISR completes
+     *   - Maintains precise 10ms timing regardless of ISR execution time
+     */
+    TMR9_CallbackRegister(MotionManager_TMR9_ISR, 0);
+
+    /* Start TMR9 - begins automatic motion buffer feeding */
+    TMR9_Start();
+
+    /* Block discard flag already initialized to true (see static variable) */
 }
