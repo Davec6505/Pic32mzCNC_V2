@@ -22,8 +22,10 @@
     Harmony3 peripherals (OCR, TMR, GPIO, UART)
 *******************************************************************************/
 
-// TEMPORARY: Enable debug output for motion execution investigation
-#define DEBUG_MOTION_BUFFER
+/* DEBUG_MOTION_BUFFER is controlled by Makefile:
+ *   make all         → Production build (no debug)
+ *   make all DEBUG=1 → Debug build with -DDEBUG_MOTION_BUFFER
+ */
 
 // *****************************************************************************
 // Section: Included Files
@@ -448,21 +450,42 @@ static void ProcessCommandBuffer(void)
            */
 
           /* Merge parsed move with modal position (preserve unspecified axes) */
-          float target[NUM_AXES];
+          float target_work[NUM_AXES];    /* Work coordinates from G-code */
+          float target_machine[NUM_AXES]; /* Machine coordinates for planner */
+
+#ifdef DEBUG_MOTION_BUFFER
+          UGS_Printf("[MODAL] Before merge: modal=(%.3f,%.3f,%.3f) parsed=(%.3f,%.3f,%.3f) words=(%d,%d,%d)\r\n",
+                     modal_position[AXIS_X], modal_position[AXIS_Y], modal_position[AXIS_Z],
+                     move.target[AXIS_X], move.target[AXIS_Y], move.target[AXIS_Z],
+                     move.axis_words[AXIS_X], move.axis_words[AXIS_Y], move.axis_words[AXIS_Z]);
+#endif
+
           for (uint8_t axis = 0; axis < NUM_AXES; axis++)
           {
             if (move.axis_words[axis])
             {
               /* Axis specified in command - use parsed value */
-              target[axis] = move.target[axis];
+              target_work[axis] = move.target[axis];
               modal_position[axis] = move.target[axis]; /* Update modal state */
             }
             else
             {
               /* Axis not specified - use modal position */
-              target[axis] = modal_position[axis];
+              target_work[axis] = modal_position[axis];
             }
+
+            /* CRITICAL: Convert work coordinates to machine coordinates!
+             * The GRBL planner expects absolute machine coordinates (MPos).
+             * Parser provides work coordinates (WPos = what user specified).
+             * Formula: MPos = WPos + work_offset + g92_offset */
+            target_machine[axis] = MotionMath_WorkToMachine(target_work[axis], (axis_id_t)axis);
           }
+
+#ifdef DEBUG_MOTION_BUFFER
+          UGS_Printf("[MODAL] After merge: target_work=(%.3f,%.3f,%.3f) target_machine=(%.3f,%.3f,%.3f)\r\n",
+                     target_work[AXIS_X], target_work[AXIS_Y], target_work[AXIS_Z],
+                     target_machine[AXIS_X], target_machine[AXIS_Y], target_machine[AXIS_Z]);
+#endif
 
           /* Prepare GRBL planner input data */
           grbl_plan_line_data_t pl_data;
@@ -479,16 +502,17 @@ static void ProcessCommandBuffer(void)
           /* Future: PL_COND_FLAG_SYSTEM_MOTION for G28/G30 */
 
           /* Add to GRBL planner (replaces MotionBuffer_Add) */
-          if (!GRBLPlanner_BufferLine(target, &pl_data))
+          if (!GRBLPlanner_BufferLine(target_machine, &pl_data))
           {
             /* Planner rejected move (zero-length or buffer full)
              * Log warning but continue (command already parsed) */
             UGS_Print("[MSG:GRBL planner rejected move - zero length or buffer full]\r\n");
 
 #ifdef DEBUG_MOTION_BUFFER
-            UGS_Printf("[GRBL] Rejected: X:%.3f Y:%.3f Z:%.3f F:%.1f mode:%d\r\n",
-                       target[AXIS_X], target[AXIS_Y], target[AXIS_Z],
-                       pl_data.feed_rate, move.motion_mode);
+            UGS_Printf("[GRBL] Rejected: Work(%.3f,%.3f,%.3f) -> Machine(%.3f,%.3f,%.3f) F:%.1f\r\n",
+                       target_work[AXIS_X], target_work[AXIS_Y], target_work[AXIS_Z],
+                       target_machine[AXIS_X], target_machine[AXIS_Y], target_machine[AXIS_Z],
+                       pl_data.feed_rate);
 #endif
           }
 #ifdef DEBUG_MOTION_BUFFER
@@ -499,8 +523,9 @@ static void ProcessCommandBuffer(void)
             GRBLPlanner_GetPosition(planner_pos);
             uint8_t buffer_count = GRBLPlanner_GetBufferCount();
 
-            UGS_Printf("[GRBL] Buffered: X:%.3f Y:%.3f Z:%.3f F:%.1f rapid:%d\r\n",
-                       target[AXIS_X], target[AXIS_Y], target[AXIS_Z],
+            UGS_Printf("[GRBL] Buffered: Work(%.3f,%.3f,%.3f) -> Machine(%.3f,%.3f,%.3f) F:%.1f rapid:%d\r\n",
+                       target_work[AXIS_X], target_work[AXIS_Y], target_work[AXIS_Z],
+                       target_machine[AXIS_X], target_machine[AXIS_Y], target_machine[AXIS_Z],
                        pl_data.feed_rate,
                        (pl_data.condition & PL_COND_FLAG_RAPID_MOTION) ? 1 : 0);
             UGS_Printf("       Planner pos: X:%.3f Y:%.3f Z:%.3f (buffer:%d/16)\r\n",

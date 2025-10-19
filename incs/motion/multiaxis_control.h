@@ -102,12 +102,26 @@ bool MultiAxis_IsAxisBusy(axis_id_t axis);
  */
 void MultiAxis_StopAll(void);
 
-/*! \brief Get current step count for an axis
+/*! \brief Get absolute machine position for an axis
  *
- *  \param axis Axis to query
- *  \return Current step count
+ *  CRITICAL FIX (October 19, 2025): Returns absolute position from power-on/homing,
+ *  NOT progress within current move!
+ *
+ *  \param axis Axis to query (AXIS_X, AXIS_Y, AXIS_Z, AXIS_A)
+ *  \return Absolute machine position in steps (unsigned cast of signed value)
  */
 uint32_t MultiAxis_GetStepCount(axis_id_t axis);
+
+/*! \brief Update absolute machine position after move completion
+ *
+ *  CRITICAL FIX (October 19, 2025): Call when motion completes!
+ *
+ *  Adds the move delta to the absolute machine position tracker.
+ *  Must be called from MotionManager_TMR9_ISR() after discarding block.
+ *
+ *  \param steps Array of step deltas [X, Y, Z, A] (signed: negative = backward)
+ */
+void MultiAxis_UpdatePosition(const int32_t steps[NUM_AXES]);
 
 // *****************************************************************************
 // Dynamic Direction Control

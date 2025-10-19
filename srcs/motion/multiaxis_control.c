@@ -17,7 +17,7 @@
 
 #include "motion/multiaxis_control.h"
 #include "motion/motion_math.h"
-#include "motion/motion_manager.h"  // GRBL-style motion buffer feeding (CoreTimer @ 10ms)
+#include "motion/motion_manager.h" // GRBL-style motion buffer feeding (CoreTimer @ 10ms)
 #include "config/default/peripheral/gpio/plib_gpio.h"
 #include "ugs_interface.h"
 
@@ -411,6 +411,14 @@ typedef struct
 
 // Per-axis state (accessed from main code AND TMR1 interrupt @ 1kHz)
 static volatile scurve_state_t axis_state[NUM_AXES];
+
+// Absolute machine position tracker (accessed from main code only)
+// CRITICAL FIX (October 19, 2025): Track absolute position independently from move progress!
+// - axis_state[].step_count tracks progress within current move (0 to total_steps)
+// - machine_position[] tracks absolute position from power-on/homing
+// - Updated at END of each move in MotionManager_TMR9_ISR()
+// - Used by MultiAxis_GetStepCount() for position feedback to GRBL/UGS
+static int32_t machine_position[NUM_AXES] = {0, 0, 0, 0};
 
 // Coordinated move state (accessed from main code AND TMR1 interrupt @ 1kHz)
 // Stores dominant axis info and velocity scaling for synchronized motion
@@ -906,6 +914,10 @@ void MultiAxis_Initialize(void)
         axis_state[axis].step_count = 0;
         axis_state[axis].active = false;
 
+        // Initialize absolute machine position (all axes at origin on startup)
+        // CRITICAL FIX (October 19, 2025): Must track absolute position for GRBL feedback!
+        machine_position[axis] = 0;
+
         // Disable all drivers on startup (safe default)
         MultiAxis_DisableDriver(axis);
     }
@@ -1058,10 +1070,12 @@ void MultiAxis_StopAll(void)
     // No global motion_running flag - each axis manages its own state
 }
 
-/*! \brief Get current step count for axis
+/*! \brief Get absolute machine position for axis
+ *
+ *  CRITICAL FIX (October 19, 2025): Returns ABSOLUTE position, not move progress!
  *
  *  \param axis Axis identifier to query
- *  \return Step count, or 0 if invalid axis
+ *  \return Absolute machine position in steps (signed), or 0 if invalid axis
  *
  *  MISRA Rule 17.4: Bounds checking before array access
  */
@@ -1074,7 +1088,45 @@ uint32_t MultiAxis_GetStepCount(axis_id_t axis)
         return 0U; // Defensive: return safe value for invalid axis
     }
 
-    return axis_state[axis].step_count;
+    // Return absolute machine position (can be negative!)
+    // GRBL expects unsigned, but we need to handle bidirectional motion
+    // UGS_SendStatusReport() converts to mm and displays correctly
+    return (uint32_t)machine_position[axis];
+}
+
+/*! \brief Update absolute machine position after move completion
+ *
+ *  CRITICAL FIX (October 19, 2025): Call this when motion completes!
+ *
+ *  This function adds the move delta to the absolute machine position.
+ *  Must be called from MotionManager_TMR9_ISR() after discarding completed block.
+ *
+ *  \param steps Array of step deltas [X, Y, Z, A] (signed: negative = backward)
+ *
+ *  MISRA Rule 17.4: Bounds checking before array access
+ */
+void MultiAxis_UpdatePosition(const int32_t steps[NUM_AXES])
+{
+    assert(steps != NULL); // Development-time check
+
+    if (steps == NULL)
+    {
+        return; // Defensive: null pointer check
+    }
+
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        machine_position[axis] += steps[axis];
+    }
+
+/* DEBUG: Show updated position */
+#ifdef DEBUG_MOTION_BUFFER
+    UGS_Printf("[POSITION] Updated: X=%ld Y=%ld Z=%ld A=%ld\r\n",
+               (long)machine_position[AXIS_X],
+               (long)machine_position[AXIS_Y],
+               (long)machine_position[AXIS_Z],
+               (long)machine_position[AXIS_A]);
+#endif
 }
 
 /*******************************************************************************
@@ -1247,17 +1299,21 @@ void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES])
          * continuing with state from previous moves! */
         if (coord_move.axis_velocity_scale[axis] == 0.0f)
         {
+            /* DEBUG: Print which axes are being skipped */
+            const char *axis_names[] = {"X", "Y", "Z", "A"};
+            UGS_Printf("[COORD] Skipping %s axis (velocity_scale=0.0)\r\n", axis_names[axis]);
+
             /* Explicitly deactivate this axis - it's not part of this move */
             volatile scurve_state_t *s = &axis_state[axis];
             s->active = false;
             s->current_segment = SEGMENT_IDLE;
             s->current_velocity = 0.0f;
             s->current_accel = 0.0f;
-            
+
             /* Stop hardware if it was running */
             axis_hw[axis].TMR_Stop();
             axis_hw[axis].OCMP_Disable();
-            
+
             continue; /* MISRA Rule 14.5: Continue acceptable for skip logic */
         }
 

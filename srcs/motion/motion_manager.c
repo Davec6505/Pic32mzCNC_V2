@@ -65,8 +65,29 @@
  *    3. Wait for motion to complete (MultiAxis_IsBusy() returns false)
  *    4. Discard block, set flag = true
  *    5. Get next block
+ *
+ * CRITICAL: volatile required for MIPS compiler optimization!
+ * - This flag is accessed by TMR9 ISR and modified during motion execution
+ * - Without volatile, XC32 compiler may cache value in register causing stale reads
+ * - MIPS architecture requires explicit volatile for ISR-shared variables
  */
-static bool block_discarded = true; /* Start true (no block active) */
+static volatile bool block_discarded = true; /* Start true (no block active) */
+
+/*! \brief Last move's step deltas for position update
+ *
+ *  CRITICAL FIX (October 19, 2025): Save step deltas before starting move,
+ *  then update machine_position when move completes!
+ *
+ *  Without this, MultiAxis_GetStepCount() returns step_count (move progress)
+ *  instead of absolute machine position, causing position feedback to be wrong.
+ *
+ *  Pattern:
+ *    1. Convert GRBL block to signed steps[] array
+ *    2. Save to last_move_steps[] BEFORE calling MultiAxis_ExecuteCoordinatedMove()
+ *    3. When motion completes, call MultiAxis_UpdatePosition(last_move_steps)
+ *    4. This adds delta to machine_position[], keeping absolute position accurate
+ */
+static int32_t last_move_steps[NUM_AXES] = {0, 0, 0, 0};
 
 // *****************************************************************************
 // Section: TMR9 ISR - Motion Buffer Feeding
@@ -109,21 +130,22 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
     (void)context; // User context not used
 
     /* ═══════════════════════════════════════════════════════════════════════
-     * CRITICAL: Disable TMR9 interrupt on entry (use Harmony getter/setter)
-     * Prevents re-entry if ISR execution takes longer than 10ms period
-     * This is especially important because UGS_Printf() can be slow!
-     * ═══════════════════════════════════════════════════════════════════════ */
-    TMR9_InterruptDisable();
-
-    /* ═══════════════════════════════════════════════════════════════════════
      * Motion Buffer Feeding Logic (GRBL st_prep_buffer() pattern)
+     *
+     * CRITICAL (October 19, 2025): On MIPS PIC32MZ, do NOT disable/enable
+     * timer interrupt in ISR! Hardware automatically prevents re-entry.
+     * TMR9_InterruptDisable/Enable() caused ISR to stop firing after first call.
      * ═══════════════════════════════════════════════════════════════════════ */
 
     /* Step 1: Check if ALL axes are idle (no motion in progress) */
     bool is_busy = MultiAxis_IsBusy();
 
-    /* DEBUG: ISR entry debug DISABLED - floods UART at 100Hz, blocks UGS connection
-     * Re-enable only for specific debugging when needed */
+    /* DEBUG: Disable ISR entry debug - floods UART at 100Hz preventing command RX!
+     * The constant stream of debug output blocks serial receive, causing:
+     *   - Commands not parsed
+     *   - No "ok" responses sent
+     *   - Motion never executes
+     * Re-enable ONLY when debugging specific ISR timing issues. */
     // UGS_Printf("[TMR9-ISR] Entry: busy=%d block_discarded=%d\r\n",
     //            is_busy ? 1 : 0, block_discarded ? 1 : 0);
 
@@ -137,6 +159,13 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
         if (!block_discarded)
         {
             UGS_Print("[TMR9] Discarding previous block...\r\n");
+
+            /* CRITICAL FIX (October 19, 2025): Update absolute machine position!
+             * The step counters (axis_state[].step_count) track progress within move (0 → total_steps).
+             * We need to update machine_position[] with the delta from this completed move.
+             * This ensures MultiAxis_GetStepCount() returns ABSOLUTE position for GRBL feedback! */
+            MultiAxis_UpdatePosition(last_move_steps);
+
             GRBLPlanner_DiscardCurrentBlock();
             block_discarded = true;
             UGS_Print("[TMR9] Block completed and discarded\r\n");
@@ -169,6 +198,14 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
              */
             int32_t steps[NUM_AXES];
 
+            /* DEBUG: Show what GRBL planner calculated */
+            UGS_Printf("[GRBL-BLOCK] Raw: X=%lu Y=%lu Z=%lu A=%lu dir_bits=0x%02X\r\n",
+                       grbl_block->steps[AXIS_X],
+                       grbl_block->steps[AXIS_Y],
+                       grbl_block->steps[AXIS_Z],
+                       grbl_block->steps[AXIS_A],
+                       grbl_block->direction_bits);
+
             for (uint8_t axis = 0; axis < NUM_AXES; axis++)
             {
                 /* Get unsigned step count from GRBL */
@@ -200,7 +237,16 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
 
             if (has_steps)
             {
-                /* Step 5: Start coordinated move with pre-calculated S-curve
+                /* Step 5: Save step deltas for position update when move completes
+                 * CRITICAL FIX (October 19, 2025): Must save BEFORE starting motion!
+                 * When motion completes, we call MultiAxis_UpdatePosition(last_move_steps)
+                 * to update the absolute machine position tracker. */
+                for (uint8_t axis = 0; axis < NUM_AXES; axis++)
+                {
+                    last_move_steps[axis] = steps[axis];
+                }
+
+                /* Step 6: Start coordinated move with pre-calculated S-curve
                  * This function returns immediately (non-blocking):
                  *   - Sets up axis states with S-curve timing
                  *   - Configures OCR hardware for pulse generation
@@ -236,7 +282,7 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
      * CRITICAL: Re-enable TMR9 interrupt before exit (use Harmony getter/setter)
      * Clear any pending interrupt flags automatically handled by hardware
      * ═══════════════════════════════════════════════════════════════════════ */
-    TMR9_InterruptEnable();
+    //  TMR9_InterruptEnable();
 }
 
 // *****************************************************************************

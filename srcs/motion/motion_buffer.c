@@ -8,8 +8,7 @@
  * @date October 16, 2025
  */
 
-// TEMPORARY: Enable debug output for position tracking investigation
-#define DEBUG_MOTION_BUFFER
+/* DEBUG_MOTION_BUFFER controlled by Makefile (make all DEBUG=1) */
 
 #include "motion/motion_buffer.h"
 #include "motion/motion_math.h"
