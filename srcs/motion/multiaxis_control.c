@@ -914,16 +914,18 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
     // ═════════════════════════════════════════════════════════════════════════
     // STEP 2: Check if segment complete (DOMINANT AXIS ONLY!)
     // ═════════════════════════════════════════════════════════════════════════
-    // CRITICAL: Only check dominant axis step_count!
-    // Subordinate axes are bit-banged by Bresenham - they'll have +/- 1 step
-    // error due to rounding. This is acceptable (<0.013mm on 80 steps/mm axes).
+    // CRITICAL FIX (October 20, 2025): Check dominant axis's ACTUAL step count!
+    // GRBL rounding can cause n_step=8 but steps[dominant]=9
+    // Must run dominant axis for ALL its steps, not just n_step!
     //
-    // DON'T try to wait for subordinates to "catch up" - they only execute when
-    // dominant ISR fires, so stopping dominant = subordinates never complete!
+    // Example: Segment 8 has n_step=8, X=9, Y=9
+    //   - Old: X stops at 8 steps → Y gets 8 Bresenham iterations = 8 Y steps ❌
+    //   - New: X runs 9 steps → Y gets 9 Bresenham iterations = 9 Y steps ✅
     // ═════════════════════════════════════════════════════════════════════════
-    if (state->step_count < state->current_segment->n_step)
+    uint32_t dominant_steps = state->current_segment->steps[dominant_axis];
+    if (state->step_count < dominant_steps)
     {
-        return; // Dominant axis hasn't reached n_step yet
+        return; // Dominant axis hasn't completed all its steps yet
     }
 
     // ═════════════════════════════════════════════════════════════════════════
