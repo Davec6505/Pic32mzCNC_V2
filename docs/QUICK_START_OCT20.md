@@ -108,12 +108,12 @@ Stop hardware, advance to next segment OR stop all axes
 
 ## Test Results (Build 17 - Last Night)
 
-| Test | Expected | Actual | Status |
-|------|----------|--------|--------|
-| G1 X10 | (10.000, 0, 0) | (10.000, 0, 0) | ✅ PERFECT |
-| G1 Y10 | (0, 10.000, 0) | (0, 10.000, 0) | ✅ PERFECT |
-| G1 X10 Y10 | (10.000, 10.000) | (9.988, 9.900) | ❌ 8 steps short on Y! |
-| Returns to Idle | `<Idle>` | `<Idle>` | ✅ FIXED! |
+| Test            | Expected         | Actual         | Status                |
+| --------------- | ---------------- | -------------- | --------------------- |
+| G1 X10          | (10.000, 0, 0)   | (10.000, 0, 0) | ✅ PERFECT             |
+| G1 Y10          | (0, 10.000, 0)   | (0, 10.000, 0) | ✅ PERFECT             |
+| G1 X10 Y10      | (10.000, 10.000) | (9.988, 9.900) | ❌ 8 steps short on Y! |
+| Returns to Idle | `<Idle>`         | `<Idle>`       | ✅ FIXED!              |
 
 ---
 

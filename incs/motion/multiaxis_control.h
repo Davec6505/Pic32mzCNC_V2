@@ -272,4 +272,33 @@ bool MultiAxis_IsDriverEnabled(axis_id_t axis);
  */
 bool MultiAxis_ReadEnablePin(axis_id_t axis);
 
+// *****************************************************************************
+// DEBUG Functions (Non-blocking ISR counter access)
+// *****************************************************************************
+
+/*! \brief Get total Y-axis step pulse count
+ *
+ *  Returns the cumulative number of Y-axis step pulses generated
+ *  during the current/last motion. Counter is incremented in ISR context
+ *  (ProcessSegmentStep) and can be safely read from main loop.
+ *
+ *  \return Total Y-axis step count since last reset
+ */
+uint32_t MultiAxis_GetDebugYStepCount(void);
+
+/*! \brief Get total segment completion count
+ *
+ *  Returns the number of segments completed during motion.
+ *
+ *  \return Total segments processed since last reset
+ */
+uint32_t MultiAxis_GetDebugSegmentCount(void);
+
+/*! \brief Reset debug counters
+ *
+ *  Clears all debug counters (Y steps, segment count).
+ *  Call before starting a new motion to get fresh counts.
+ */
+void MultiAxis_ResetDebugCounters(void);
+
 #endif // _MULTIAXIS_CONTROL_H

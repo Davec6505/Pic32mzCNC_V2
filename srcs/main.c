@@ -679,23 +679,27 @@ int main(void)
     }
 
     /* Stage 3: Motion Execution → Hardware
-     * GRBL-STYLE AUTO-START (October 19, 2025):
-     * ExecuteMotion() REMOVED from main loop!
+     * CRITICAL FIX (October 20, 2025):
+     * Segment execution start MUST be in main loop, NOT ISR!
      *
-     * Motion buffer feeding now handled by CoreTimer @ 10ms ISR:
-     *   - MotionManager_CoreTimerISR() checks if machine idle
-     *   - Automatically dequeues next block from motion buffer
-     *   - Starts coordinated move with S-curve profile
-     *   - Ensures continuous motion without gaps
+     * TMR9 ISR @ 10ms (motion_manager.c):
+     *   - Prepares segments in background (tactical planning)
+     *   - Adds segments to buffer for execution
      *
-     * Benefits:
-     *   - True GRBL architecture (like st_prep_buffer())
-     *   - Guaranteed timing (10ms ±0ms jitter)
-     *   - Main loop freed for real-time commands
-     *   - Clean separation of concerns
+     * Main Loop (here):
+     *   - Checks if machine idle AND segments available
+     *   - Starts OCR hardware execution
+     *   - Non-blocking: Runs every main loop iteration (~1ms)
      *
-     * See: motion_manager.c for implementation
+     * Why main loop?
+     *   - Hardware configuration (OCR/TMR setup) not safe in ISR
+     *   - Avoids race conditions between ISRs
+     *   - Clean separation: ISR prepares, main loop executes
      */
+    if (!MultiAxis_IsBusy() && GRBLStepper_GetBufferCount() > 0)
+    {
+      MultiAxis_StartSegmentExecution();
+    }
 
     /* LED1 Heartbeat - Simple CPU alive indicator
      * Toggles every ~32768 loops (approximately 1Hz at typical loop rate)
@@ -704,7 +708,7 @@ int main(void)
     static uint16_t heartbeat_counter = 0;
     if (++heartbeat_counter == 0)
     { // Rolls over every 65536 iterations
-      // LED1_Toggle();
+      LED1_Toggle();
     }
 
     /* Maintain state machines of all polled Harmony modules

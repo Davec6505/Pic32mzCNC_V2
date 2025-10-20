@@ -33,7 +33,8 @@
 #include "ugs_interface.h" // For UGS_SendStatusReport, UGS_Print, UGS_Printf
 #include "motion/motion_math.h"
 #include "motion/motion_buffer.h"                      /* For MotionBuffer_Pause/Resume/Clear */
-#include "motion/multiaxis_control.h"                  /* For MultiAxis_EmergencyStop */
+#include "motion/multiaxis_control.h"                  /* For MultiAxis_EmergencyStop, debug counters */
+#include "motion/grbl_stepper.h"                       /* For GRBLStepper_GetBufferCount */
 #include "config/default/peripheral/uart/plib_uart2.h" /* For UART2 direct access */
 #include <string.h>
 #include <ctype.h>
@@ -105,7 +106,8 @@ bool GCode_IsControlChar(char c)
     return (c == GCODE_CTRL_STATUS_REPORT) ||
            (c == GCODE_CTRL_CYCLE_START) ||
            (c == GCODE_CTRL_FEED_HOLD) ||
-           (c == GCODE_CTRL_SOFT_RESET);
+           (c == GCODE_CTRL_SOFT_RESET) ||
+           (c == GCODE_CTRL_DEBUG_COUNTERS);
 }
 
 /**
@@ -174,6 +176,20 @@ void GCode_HandleControlChar(char c)
         MotionBuffer_Clear();
         GCode_ResetModalState();
         UGS_Print(">> System Reset\r\n");
+        break;
+
+    case GCODE_CTRL_DEBUG_COUNTERS:
+        /* Print debug counters (Y steps, segments) */
+        {
+            uint32_t y_steps = MultiAxis_GetDebugYStepCount();
+            uint32_t segments = MultiAxis_GetDebugSegmentCount();
+            uint8_t seg_buf_count = GRBLStepper_GetBufferCount();
+
+            UGS_Printf("DEBUG: Y_steps=%lu, Segments=%lu, SegBuf=%u\r\n",
+                       (unsigned long)y_steps,
+                       (unsigned long)segments,
+                       (unsigned)seg_buf_count);
+        }
         break;
 
     default:

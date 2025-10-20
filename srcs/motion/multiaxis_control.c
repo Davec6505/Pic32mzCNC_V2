@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <assert.h>
+#include <stdio.h> // For printf debug output
 
 // *****************************************************************************
 // MISRA C Compile-Time Assertions
@@ -43,6 +44,23 @@ STATIC_ASSERT(AXIS_Z == 2, axis_z_must_be_two);
 STATIC_ASSERT(AXIS_A == 3, axis_a_must_be_three);
 // Verify array sizing
 STATIC_ASSERT(NUM_AXES == 4, num_axes_must_be_four);
+
+// *****************************************************************************
+// Debug Counters (ISR-safe, read by main loop)
+// *****************************************************************************
+
+/**
+ * @brief Y-axis step counter for debugging (volatile for ISR access)
+ *
+ * Incremented in ProcessSegmentStep() ISR, read by main loop via
+ * MultiAxis_GetDebugYStepCount() for non-blocking debug output.
+ */
+static volatile uint32_t debug_total_y_pulses = 0;
+
+/**
+ * @brief Segment completion counter (volatile for ISR access)
+ */
+static volatile uint32_t debug_segment_count = 0;
 
 // *****************************************************************************
 // Hardware Configuration
@@ -921,10 +939,14 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
     // ═════════════════════════════════════════════════════════════════════════
     // STEP 4: Advance to next segment
     // ═════════════════════════════════════════════════════════════════════════
-    LED1_Toggle(); // Visual: segment boundary
+    // LED1_Toggle(); // Visual: segment boundary
 
     // Complete segment (advances tail)
     GRBLStepper_SegmentComplete();
+
+    // DEBUG: Accumulate Y-axis step count (non-blocking ISR-safe counter)
+    debug_total_y_pulses += segment_state[AXIS_Y].step_count;
+    debug_segment_count++;
 
     // Get next segment
     const st_segment_t *next_seg = GRBLStepper_GetNextSegment();
@@ -1420,7 +1442,7 @@ void MultiAxis_Initialize(void)
  */
 void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward)
 {
-    LED1_Toggle(); // DEBUG: Show function called
+    //   LED1_Toggle(); // DEBUG: Show function called
 
     // MISRA-compliant parameter validation
     assert(axis < NUM_AXES); // Development-time check
@@ -2072,4 +2094,28 @@ void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES])
 
     /* Visual feedback: LED1 solid during coordinated motion */
     LED1_Set();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * DEBUG FUNCTIONS (Non-blocking ISR counter access)
+ * ═══════════════════════════════════════════════════════════════════════════
+ * These functions provide read access to volatile counters that are incremented
+ * in ISR context. Main loop can call these after motion completes to print
+ * debug info without blocking the ISR.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+uint32_t MultiAxis_GetDebugYStepCount(void)
+{
+    return debug_total_y_pulses;
+}
+
+uint32_t MultiAxis_GetDebugSegmentCount(void)
+{
+    return debug_segment_count;
+}
+
+void MultiAxis_ResetDebugCounters(void)
+{
+    debug_total_y_pulses = 0;
+    debug_segment_count = 0;
 }

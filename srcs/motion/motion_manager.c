@@ -101,59 +101,62 @@ static uint32_t prep_success = 0;
  */
 static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
 {
-    /* MISRA Rule 2.7: Explicitly document unused parameters */
-    (void)status;  // TMR9 status not used
-    (void)context; // User context not used
+  /* MISRA Rule 2.7: Explicitly document unused parameters */
+  (void)status;  // TMR9 status not used
+  (void)context; // User context not used
 
-    /* ═══════════════════════════════════════════════════════════════════════
-     * PHASE 2: Segment Preparation (GRBL st_prep_buffer() pattern)
-     *
-     * This ISR prepares segments from planner blocks continuously.
-     * The segment buffer (6 segments) acts as a "sliding window" through
-     * the current block, feeding OCR hardware with pre-calculated data.
-     *
-     * Dave's Understanding:
-     *   - Fill segment buffer with up to 6 segments
-     *   - Each segment: 2mm distance, calculated velocity, Bresenham steps
-     *   - OCR hardware executes segments automatically
-     *   - When segment completes, prepare next one
-     * ═══════════════════════════════════════════════════════════════════════ */
+  /* ═══════════════════════════════════════════════════════════════════════
+   * PHASE 2: Segment Preparation (GRBL st_prep_buffer() pattern)
+   *
+   * This ISR prepares segments from planner blocks continuously.
+   * The segment buffer (6 segments) acts as a "sliding window" through
+   * the current block, feeding OCR hardware with pre-calculated data.
+   *
+   * Dave's Understanding:
+   *   - Fill segment buffer with up to 6 segments
+   *   - Each segment: 2mm distance, calculated velocity, Bresenham steps
+   *   - OCR hardware executes segments automatically
+   *   - When segment completes, prepare next one
+   * ═══════════════════════════════════════════════════════════════════════ */
 
-    prep_calls++;
+  prep_calls++;
 
-    /* Try to prepare segments until buffer full or no blocks */
-    uint8_t segments_prepped = 0;
-    while (segments_prepped < 3)
-    { // Prep up to 3 segments per ISR call
-        bool success = GRBLStepper_PrepSegment();
-        if (!success)
-        {
-            break; // Buffer full or no blocks available
-        }
-        segments_prepped++;
-        prep_success++;
-    }
-
-    /* PHASE 2B: Kick off segment execution if hardware idle and segments ready
-     *
-     * Dave's Understanding:
-     *   - Segments prepared in buffer (tactical data ready)
-     *   - ALL axes must be idle before starting new segment
-     *   - Each segment is a coordinated multi-axis move
-     *   - OCR callbacks auto-advance through segments together
-     */
-    if (segments_prepped > 0 && !MultiAxis_IsBusy())
+  /* Try to prepare segments until buffer full or no blocks */
+  uint8_t segments_prepped = 0;
+  while (segments_prepped < 3)
+  { // Prep up to 3 segments per ISR call
+    bool success = GRBLStepper_PrepSegment();
+    if (!success)
     {
-        MultiAxis_StartSegmentExecution(); // Start OCR hardware
+      break; // Buffer full or no blocks available
     }
+    segments_prepped++;
+    prep_success++;
+  }
+
+  /* PHASE 2B: Kick off segment execution if hardware idle and segments ready
+   *
+   * Dave's Understanding:
+   *   - Segments prepared in buffer (tactical data ready)
+   *   - ALL axes must be idle before starting new segment
+   *   - Each segment is a coordinated multi-axis move
+   *   - OCR callbacks auto-advance through segments together
+   *
+   * FIX (October 20, 2025): Also check if segments exist in buffer even if
+   * none were just prepped (handles last segment case)
+   */
+  if (!MultiAxis_IsBusy() && (segments_prepped > 0 || GRBLStepper_GetBufferCount() > 0))
+  {
+    MultiAxis_StartSegmentExecution(); // Start OCR hardware
+  }
 
 #ifdef DEBUG_MOTION_MANAGER
-    if (segments_prepped > 0)
-    {
-        UGS_Printf("[TMR9] Prepped %u segments (buffer: %u/6)\r\n",
-                   segments_prepped,
-                   GRBLStepper_GetBufferCount());
-    }
+  if (segments_prepped > 0)
+  {
+    UGS_Printf("[TMR9] Prepped %u segments (buffer: %u/6)\r\n",
+               segments_prepped,
+               GRBLStepper_GetBufferCount());
+  }
 #endif
 }
 
@@ -180,26 +183,26 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
  */
 void MotionManager_Initialize(void)
 {
-    /* Phase 2: Initialize GRBL stepper module (segment buffer) */
-    GRBLStepper_Initialize();
+  /* Phase 2: Initialize GRBL stepper module (segment buffer) */
+  GRBLStepper_Initialize();
 
-    /* Register TMR9 callback for segment preparation (10ms, 100Hz)
-     * Priority 1 (lowest) ensures:
-     *   - Real-time tasks not interrupted (step generation, position tracking)
-     *   - Segment prep runs in background
-     *   - Fills segment buffer before hardware exhausts it
-     *
-     * Dave's Understanding:
-     *   - This is the "cruise control" timer
-     *   - Prepares 2mm segments continuously
-     *   - Feeds OCR hardware with pre-calculated data
-     */
-    TMR9_CallbackRegister(MotionManager_TMR9_ISR, 0);
+  /* Register TMR9 callback for segment preparation (10ms, 100Hz)
+   * Priority 1 (lowest) ensures:
+   *   - Real-time tasks not interrupted (step generation, position tracking)
+   *   - Segment prep runs in background
+   *   - Fills segment buffer before hardware exhausts it
+   *
+   * Dave's Understanding:
+   *   - This is the "cruise control" timer
+   *   - Prepares 2mm segments continuously
+   *   - Feeds OCR hardware with pre-calculated data
+   */
+  TMR9_CallbackRegister(MotionManager_TMR9_ISR, 0);
 
-    /* Start TMR9 - begins automatic segment preparation */
-    TMR9_Start();
+  /* Start TMR9 - begins automatic segment preparation */
+  TMR9_Start();
 
-    /* Reset statistics */
-    prep_calls = 0;
-    prep_success = 0;
+  /* Reset statistics */
+  prep_calls = 0;
+  prep_success = 0;
 }

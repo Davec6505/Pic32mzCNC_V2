@@ -179,11 +179,11 @@ static void OCMP3_StepCounter_A(uintptr_t context) { ProcessSegmentStep(AXIS_A);
 
 **Diagonal moves complete but end positions are incorrect:**
 
-| Command | Expected Position | Actual Position | Error |
-|---------|------------------|-----------------|-------|
-| `G1 X10 Y10` | (10.000, 10.000) | (9.988, 9.900) | X: -1 step, Y: -8 steps |
-| `G1 X0` | (0.000, 9.900) | (-0.013, 9.900) | X: -1 step (accumulated!) |
-| `G1 Y0` | (-0.013, 0.000) | (-0.013, -0.100) | Y: -8 steps (accumulated!) |
+| Command      | Expected Position | Actual Position  | Error                      |
+| ------------ | ----------------- | ---------------- | -------------------------- |
+| `G1 X10 Y10` | (10.000, 10.000)  | (9.988, 9.900)   | X: -1 step, Y: -8 steps    |
+| `G1 X0`      | (0.000, 9.900)    | (-0.013, 9.900)  | X: -1 step (accumulated!)  |
+| `G1 Y0`      | (-0.013, 0.000)   | (-0.013, -0.100) | Y: -8 steps (accumulated!) |
 
 **Analysis**:
 - **X-axis**: 1 step short = acceptable Bresenham rounding (±0.013mm tolerance)

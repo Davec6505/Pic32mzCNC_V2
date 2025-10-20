@@ -268,9 +268,12 @@ static bool prep_segment(void)
     segment->direction_bits = prep.current_block->direction_bits;
 
     // Initialize Bresenham counters (for multi-axis synchronization)
+    // FIX (October 20, 2025): Start at 0, not -n_step/2
+    // Starting at -n_step/2 causes first step in each segment to be skipped!
+    // For 8 segments = 8 missing steps (confirmed by debug counters)
     for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
     {
-        segment->bresenham_counter[axis] = -(int32_t)(segment->n_step / 2);
+        segment->bresenham_counter[axis] = 0; // Was: -(int32_t)(segment->n_step / 2)
     }
 
     // Calculate OCR period from segment velocity
@@ -281,14 +284,34 @@ static bool prep_segment(void)
     prep.mm_remaining -= segment_mm;
     prep.current_speed = segment_exit_speed;
 
-    // Add segment to buffer
+    // Check if block complete (use flag to avoid double-check)
+    bool block_complete = (prep.mm_remaining <= 0.0001f);
+
+    if (block_complete)
+    {
+        // FIX (October 20, 2025): Correct rounding errors in LAST segment
+        // Due to floating-point rounding, accumulated steps may not equal total
+        // Add correction to ensure exact step count
+        for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+        {
+            int32_t step_error = (int32_t)prep.current_block->steps[axis] -
+                                 (int32_t)prep.step_count[axis];
+            if (step_error != 0)
+            {
+                segment->steps[axis] += (uint32_t)step_error;
+                prep.step_count[axis] += (uint32_t)step_error;
+            }
+        }
+    }
+
+    // Add segment to buffer (AFTER applying correction)
     seg_buffer.head = (seg_buffer.head + 1) % SEGMENT_BUFFER_SIZE;
     seg_buffer.count++;
     stats_total_segments++;
 
-    // Check if block complete
-    if (prep.mm_remaining <= 0.0001f)
-    { // Floating point epsilon
+    // If block complete, discard from planner
+    if (block_complete)
+    {
         // ═══════════════════════════════════════════════════════════════════
         // DEBUG: Visual block discard (LED2 pattern: Set = block discarded)
         // ═══════════════════════════════════════════════════════════════════
@@ -393,7 +416,7 @@ void GRBLStepper_SegmentComplete(void)
     // DEBUG: Visual segment completion (REMOVE AFTER DEBUG!)
     // LED1 toggles on EVERY segment complete (count pulses on scope!)
     // ═══════════════════════════════════════════════════════════════════════
-    LED1_Toggle();
+    // LED1_Toggle();
     // ═══════════════════════════════════════════════════════════════════════
 
     // Advance tail pointer (mark segment as consumed)

@@ -148,12 +148,13 @@ extern "C"
  *
  * These bypass the normal command queue and execute immediately.
  */
-#define GCODE_CTRL_STATUS_REPORT '?' /* 0x3F - Query status */
-#define GCODE_CTRL_CYCLE_START '~'   /* 0x7E - Resume motion */
-#define GCODE_CTRL_FEED_HOLD '!'     /* 0x21 - Pause motion */
-#define GCODE_CTRL_SOFT_RESET 0x18   /* Ctrl-X - Soft reset */
-#define GCODE_CTRL_CARRIAGE_RET '\r' /* 0x0D - Line terminator */
-#define GCODE_CTRL_LINE_FEED '\n'    /* 0x0A - Line terminator */
+#define GCODE_CTRL_STATUS_REPORT '?'  /* 0x3F - Query status */
+#define GCODE_CTRL_CYCLE_START '~'    /* 0x7E - Resume motion */
+#define GCODE_CTRL_FEED_HOLD '!'      /* 0x21 - Pause motion */
+#define GCODE_CTRL_SOFT_RESET 0x18    /* Ctrl-X - Soft reset */
+#define GCODE_CTRL_DEBUG_COUNTERS '@' /* 0x40 - Print debug counters (Y steps, segments) */
+#define GCODE_CTRL_CARRIAGE_RET '\r'  /* 0x0D - Line terminator */
+#define GCODE_CTRL_LINE_FEED '\n'     /* 0x0A - Line terminator */
 
     /**
      * @brief Check if character is a real-time control character
