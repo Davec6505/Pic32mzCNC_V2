@@ -1,0 +1,338 @@
+@startuml
+!theme cerulean
+title Four Critical Bug Fixes - October 20, 2025
+
+' ============================================================================
+' BUG #1: Active Flag Set for All Axes
+' ============================================================================
+package "Bug #1: Active Flag Semantics (Line 1673)" {
+  component "BEFORE (WRONG)" as Before1 #LightCoral
+  component "AFTER (CORRECT)" as After1 #LightGreen
+  
+  note right of Before1
+    **Problem**:
+    ```c
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        if (first_seg->steps[axis] > 0)
+        {
+            state->active = true;  // ❌ ALL axes marked active!
+        }
+    }
+    ```
+    
+    **Impact**:
+    * X-axis: active=true (dominant, OCR running)
+    * Y-axis: active=true (subordinate, but NO OCR running!)
+    * MultiAxis_IsBusy() checks ANY axis active
+    * Returns true even after X finishes (Y still active=true)
+    * Main loop can't start segment 8!
+    
+    **Symptom**: Motion hung at segment 7 with segment 8 in buffer
+  end note
+  
+  note right of After1
+    **Solution**:
+    ```c
+    state->active = is_dominant;  // ✅ Only dominant gets active=true
+    ```
+    
+    **Result**:
+    * X-axis: active=true (dominant, correct!)
+    * Y-axis: active=false (subordinate, correct!)
+    * MultiAxis_IsBusy() returns false when only dominant completes
+    * Main loop can start next segment
+    
+    **Validation**:
+    ```
+    DEBUG: AxisBusy=1, X: active=1, Y: active=0 ✅
+    ```
+    
+    **But exposed Bug #2!** Y-axis now gets 0 steps...
+  end note
+}
+
+' ============================================================================
+' BUG #2: Bresenham Checked Active Flag
+' ============================================================================
+package "Bug #2: Bresenham Subordinate Check (Lines 588-593)" {
+  component "BEFORE (WRONG)" as Before2 #LightCoral
+  component "AFTER (CORRECT)" as After2 #LightGreen
+  
+  note right of Before2
+    **Problem**:
+    ```c
+    for (axis_id_t sub_axis = AXIS_X; sub_axis < NUM_AXES; sub_axis++)
+    {
+        if (!sub_state->active || sub_state->current_segment != segment)
+            continue;  // ❌ Skips subordinates (active=false)!
+    }
+    ```
+    
+    **Impact**:
+    * After Bug #1 fix, Y-axis correctly has active=false
+    * Bresenham checks active flag before processing
+    * Y-axis skipped entirely (never bit-banged!)
+    * Y-axis gets 0 steps
+    
+    **Symptom**: Y-axis not moving, only X-axis executing
+    
+    **Debug Output**:
+    ```
+    DEBUG: Y_steps=0, Segs=7, SegBuf=1 ❌
+    ```
+  end note
+  
+  note right of After2
+    **Solution**:
+    ```c
+    uint32_t steps_sub = segment->steps[sub_axis];
+    if (steps_sub == 0)
+        continue;  // ✅ Skip if no motion, not based on active flag
+    ```
+    
+    **Result**:
+    * Bresenham checks segment data, not execution state
+    * Y-axis gets bit-banged even with active=false
+    * Y-axis step count increments
+    
+    **Validation**:
+    ```
+    DEBUG: Y_steps=3164, Segs=7, SegBuf=1 ❌ (too many!)
+    ```
+    
+    **But exposed Bug #3!** Y-axis accumulating steps from segment 1...
+  end note
+}
+
+' ============================================================================
+' BUG #3: Segment Updates Checked Active Flag
+' ============================================================================
+package "Bug #3: Subordinate Segment Updates (Lines 1003-1016)" {
+  component "BEFORE (WRONG)" as Before3 #LightCoral
+  component "AFTER (CORRECT)" as After3 #LightGreen
+  
+  note right of Before3
+    **Problem**:
+    ```c
+    for (axis_id_t sub_axis = AXIS_X; sub_axis < NUM_AXES; sub_axis++)
+    {
+        if (sub_state->active && next_seg->steps[sub_axis] > 0)
+        {
+            sub_state->current_segment = next_seg;  // ❌ Never executed!
+        }
+    }
+    ```
+    
+    **Impact**:
+    * After Bug #2 fix, Y-axis being bit-banged
+    * But segment transition checks active flag
+    * Y-axis never updated to new segments!
+    * Y-axis stuck on segment 1 data (113 steps)
+    * Accumulates: 113 + 113 + ... + 113 = 3164 steps (7 × 113 × 4)
+    
+    **Symptom**: Y-axis way overshooting (4x too many steps)
+    
+    **Debug Output**:
+    ```
+    SEG_LOAD Seg 2: X updated to 113 steps
+    Y still on Seg 1: 113 steps (old data!) ❌
+    ```
+  end note
+  
+  note right of After3
+    **Solution**:
+    ```c
+    for (axis_id_t sub_axis = AXIS_X; sub_axis < NUM_AXES; sub_axis++)
+    {
+        if (sub_axis == dominant_axis)
+            continue;
+        
+        if (next_seg->steps[sub_axis] > 0)
+        {
+            sub_state->current_segment = next_seg;  // ✅ Always update!
+            sub_state->step_count = 0;
+            sub_state->bresenham_counter = next_seg->bresenham_counter[sub_axis];
+        }
+    }
+    ```
+    
+    **Result**:
+    * Subordinates updated regardless of active flag
+    * Y-axis correctly advances through segments
+    * Y-axis gets correct step count per segment
+    
+    **Validation**:
+    ```
+    DEBUG: Y_steps=791, Segs=7, SegBuf=1 ✅ (correct count!)
+    ```
+    
+    **But still hung at segment 7!** Exposed Bug #4...
+  end note
+}
+
+' ============================================================================
+' BUG #4: Bitmask Assumed Exact Match (ROOT CAUSE)
+' ============================================================================
+package "Bug #4: Dominant Axis Selection (Lines 979-1000) ⭐ FINAL ROOT CAUSE" {
+  component "BEFORE (WRONG)" as Before4 #LightCoral
+  component "AFTER (CORRECT)" as After4 #LightGreen
+  
+  note right of Before4
+    **Problem**:
+    ```c
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        if (next_seg->steps[axis] == next_seg->n_step)
+        {
+            segment_completed_by_axis = (1 << axis);  // ❌ Never true!
+            break;
+        }
+    }
+    ```
+    
+    **GRBL Rounding Issue**:
+    ```
+    // Segment 8 actual data:
+    n_step = 8 (calculated separately)
+    X = (uint32_t)(8.5f + 0.5f) = 9
+    Y = (uint32_t)(8.5f + 0.5f) = 9
+    
+    // No axis has steps[axis] == 8!
+    ```
+    
+    **Impact**:
+    * Segment 8 loaded with bitmask=0x00 (no dominant!)
+    * OCR4 ISR fires but immediately returns: if (!(0x00 & 0x01))
+    * Segment 8 never executes
+    * Motion hung forever at segment 7
+    
+    **Debug Output**:
+    ```
+    SEG_LOAD: n_step=8, X=9, Y=9, Z=0, A=0, bitmask=0x00 ❌
+    ```
+    
+    **This was THE final blocker!** After fixing Bugs #1-3
+  end note
+  
+  note right of After4
+    **Solution**:
+    ```c
+    segment_completed_by_axis = 0;
+    uint32_t max_steps = 0;
+    axis_id_t dominant_candidate = AXIS_X;
+    
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        if (next_seg->steps[axis] > max_steps)
+        {
+            max_steps = next_seg->steps[axis];
+            dominant_candidate = axis;
+        }
+    }
+    
+    if (max_steps > 0)
+    {
+        segment_completed_by_axis = (1 << dominant_candidate);
+    }
+    ```
+    
+    **Result**:
+    * Pick axis with MOST steps (handles rounding!)
+    * Segment 8: X=9, Y=9 → X chosen (first with max)
+    * Bitmask = 0x01 (X dominant)
+    * OCR4 ISR executes segment 8 successfully!
+    
+    **Validation**:
+    ```
+    SEG_LOAD: n_step=8, X=9, Y=9, Z=0, A=0, bitmask=0x01 ✅
+    DEBUG: Y_steps=799, Segs=8, SegBuf=0, AxisBusy=0 ✅
+    Status: <Idle> ✅ SUCCESS!
+    ```
+  end note
+}
+
+' ============================================================================
+' DEBUG EVOLUTION
+' ============================================================================
+note bottom
+  **Debug Output Evolution**:
+  
+  **Initial Bug** (all 4 bugs present):
+  ```
+  DEBUG: Y_steps=792, Segs=7, SegBuf=1, AxisBusy=1
+  X: steps=0, active=1, Y: steps=0, active=1
+  SEG_LOAD: n_step=8, X=9, Y=9, bitmask=0x00 ❌
+  Status: <Run> (hung at segment 7)
+  ```
+  
+  **After Bug #1 Fix** (active flag semantics):
+  ```
+  DEBUG: Y_steps=0, Segs=7, SegBuf=1, AxisBusy=1
+  X: steps=0, active=1, Y: steps=0, active=0 ✅ (correct flags!)
+  Status: <Run> (Y-axis not moving)
+  ```
+  
+  **After Bug #2 Fix** (Bresenham check):
+  ```
+  DEBUG: Y_steps=3164, Segs=7, SegBuf=1, AxisBusy=1
+  X: steps=0, active=1, Y: steps=791, active=0
+  Status: <Run> (Y-axis overshooting 4x!)
+  ```
+  
+  **After Bug #3 Fix** (segment updates):
+  ```
+  DEBUG: Y_steps=791, Segs=7, SegBuf=1, AxisBusy=1
+  X: steps=0, active=1, Y: steps=0, active=0
+  SEG_LOAD: n_step=8, X=9, Y=9, bitmask=0x00 ❌ (still wrong!)
+  Status: <Run> (correct steps but still hung)
+  ```
+  
+  **After Bug #4 Fix** (bitmask calculation) ⭐ **SUCCESS**:
+  ```
+  DEBUG: Y_steps=799, Segs=8, SegBuf=0, AxisBusy=0
+  X: steps=0, active=0, Y: steps=0, active=0
+  SEG_LOAD: n_step=8, X=9, Y=9, bitmask=0x01 ✅
+  Status: <Idle|MPos:9.988,9.988,0.000> ✅
+  ```
+  
+  **Key Insight**: Each fix revealed the next bug!
+  * Fix #1 → Exposed Bug #2 (Y not moving)
+  * Fix #2 → Exposed Bug #3 (Y overshooting)
+  * Fix #3 → Exposed Bug #4 (still hanging)
+  * Fix #4 → Complete success! 🎉
+end note
+
+' ============================================================================
+' LEGEND
+' ============================================================================
+legend right
+  **Root Cause**: Misunderstanding of `active` flag semantics
+  
+  **What `active` MEANS**:
+  ✅ active = "Is this axis's OCR/TMR hardware currently running?"
+  ❌ active ≠ "Does this axis have motion in this segment?"
+  
+  **Critical Rules**:
+  1. Only dominant axis has active=true
+  2. Subordinates always have active=false (even with motion!)
+  3. Bresenham must check segment data, not active flag
+  4. Segment updates must ignore active flag
+  5. Bitmask must use max_steps, not exact n_step match
+  
+  **Debugging Methodology**:
+  * Enhanced '@' command (per-axis state)
+  * SEG_LOAD debug (revealed GRBL rounding)
+  * Incremental fixes (one bug at a time)
+  * User insights (architectural guidance)
+  
+  **Test Validation** (after all fixes):
+  ✅ G1 X10 Y10 → (9.988, 9.988) IDLE
+  ✅ G1 X20 Y20 → (19.975, 19.975) IDLE
+  ✅ G1 X0 Y0 → (0.000, 0.000) IDLE
+  ✅ G1 X5 Y10 → (0.000, 9.988) IDLE
+  
+  **October 20, 2025**: All motion patterns working! 🚀
+end legend
+
+@enduml

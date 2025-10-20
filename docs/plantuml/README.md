@@ -65,6 +65,28 @@ java -jar plantuml.jar -tsvg diagram.puml
 
 ## Diagram Files in This Folder
 
+### **🎉 Phase 2B Complete Diagrams (October 20, 2025)** ✅ **LATEST**
+**These diagrams reflect the HYBRID OCR/BIT-BANG ARCHITECTURE**:
+
+15. **`15_hybrid_ocr_bitbang_architecture.puml`** ⭐ **CRITICAL** - Dominant axis with subordinate bit-bang
+    - ONE OCR enabled per segment (dominant axis only)
+    - Subordinate axes bit-banged via GPIO from dominant ISR
+    - OCR ISR trampoline pattern with bitmask guards
+    - Active flag semantics clearly explained
+    - Bresenham algorithm for subordinate coordination
+    - Segment state management
+    - Complete execution sequence example
+    - GRBL segment prep rounding issue documented
+
+16. **`16_four_critical_bugs.puml`** ⭐ **DEBUGGING REFERENCE** - Four bug fixes October 20, 2025
+    - Bug #1: Active flag semantics (only dominant axis)
+    - Bug #2: Bresenham subordinate check (segment data, not active flag)
+    - Bug #3: Subordinate segment updates (ignore active flag)
+    - Bug #4: Dominant axis selection (max_steps handles GRBL rounding)
+    - Debug output evolution showing each fix
+    - Root cause analysis
+    - Validation results
+
 ### **🎉 Phase 1 Complete Diagrams (October 2025)** ✅
 **These diagrams reflect the VERIFIED WORKING system**:
 
