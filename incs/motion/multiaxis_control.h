@@ -301,4 +301,14 @@ uint32_t MultiAxis_GetDebugSegmentCount(void);
  */
 void MultiAxis_ResetDebugCounters(void);
 
+/**
+ * @brief Get per-axis state for debugging
+ *
+ * @param axis Axis to query
+ * @param step_count Output: Current step count
+ * @param active Output: Whether axis is active
+ * @return true if valid axis, false otherwise
+ */
+bool MultiAxis_GetAxisState(axis_id_t axis, uint32_t *step_count, bool *active);
+
 #endif // _MULTIAXIS_CONTROL_H

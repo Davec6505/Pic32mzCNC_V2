@@ -134,21 +134,23 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
     prep_success++;
   }
 
-  /* PHASE 2B: Kick off segment execution if hardware idle and segments ready
+  /* PHASE 2B: Segment execution start (REMOVED October 20, 2025)
    *
-   * Dave's Understanding:
-   *   - Segments prepared in buffer (tactical data ready)
-   *   - ALL axes must be idle before starting new segment
-   *   - Each segment is a coordinated multi-axis move
-   *   - OCR callbacks auto-advance through segments together
+   * CRITICAL ARCHITECTURAL FIX:
+   *   - Execution start moved to main loop (main.c Stage 3)
+   *   - ISR should ONLY prepare segments, NOT start hardware execution
+   *   - Starting OCR/TMR hardware from ISR caused race conditions
+   *   - Main loop now polls: if (idle && segments available) → start execution
    *
-   * FIX (October 20, 2025): Also check if segments exist in buffer even if
-   * none were just prepped (handles last segment case)
+   * Dave's insight: "segment methods should be in the main loop outside of any isr"
+   *
+   * Why this matters:
+   *   - Hardware configuration not safe in ISR context
+   *   - Avoids ISR-to-ISR timing conflicts
+   *   - Clean separation: ISR prepares, main loop executes, OCR fires pulses
+   *
+   * See main.c lines 683-700 for execution start logic.
    */
-  if (!MultiAxis_IsBusy() && (segments_prepped > 0 || GRBLStepper_GetBufferCount() > 0))
-  {
-    MultiAxis_StartSegmentExecution(); // Start OCR hardware
-  }
 
 #ifdef DEBUG_MOTION_MANAGER
   if (segments_prepped > 0)

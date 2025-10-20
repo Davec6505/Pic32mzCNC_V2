@@ -586,10 +586,9 @@ static void Execute_Bresenham_Strategy_Internal(axis_id_t dominant_axis, const s
 
         volatile axis_segment_state_t *sub_state = &segment_state[sub_axis];
 
-        if (!sub_state->active || sub_state->current_segment != segment)
-            continue;
-
-        // Bresenham algorithm
+        // CRITICAL FIX (Oct 20, 2025): Don't check active flag for subordinates!
+        // Subordinates have active=false (they're bit-banged, not independently executing)
+        // Instead, check if they have motion in this segment (steps > 0)
         uint32_t steps_sub = segment->steps[sub_axis];
         if (steps_sub == 0)
             continue; // No motion on this subordinate axis
@@ -951,22 +950,56 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
     // Get next segment
     const st_segment_t *next_seg = GRBLStepper_GetNextSegment();
 
-    // Update bitmask for next segment's dominant axis
-    if (next_seg != NULL)
+    // ═════════════════════════════════════════════════════════════════════════
+    // CRITICAL FIX (October 20, 2025): Clear all axes BEFORE updating bitmask!
+    // ═════════════════════════════════════════════════════════════════════════
+    // Race condition: When last segment completes:
+    //   1. Dominant axis fires ISR, sees next_seg == NULL
+    //   2. Sets segment_completed_by_axis = 0
+    //   3. Subordinate axis ISR fires, checks bitmask → sees 0 → returns early!
+    //   4. Subordinate axes never clear their active flags!
+    //
+    // Solution: Clear ALL axis states BEFORE clearing bitmask, so subordinate
+    // ISRs won't see them as active anymore even if they fire late.
+    // ═════════════════════════════════════════════════════════════════════════
+    if (next_seg == NULL)
     {
-        segment_completed_by_axis = 0; // Clear previous
+        // No more segments - STOP ALL AXES FIRST!
         for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
         {
-            if (next_seg->steps[axis] == next_seg->n_step)
-            {
-                segment_completed_by_axis = (1 << axis); // Mark dominant
-                break;
-            }
+            volatile axis_segment_state_t *ax_state = &segment_state[axis];
+            ax_state->current_segment = NULL;
+            ax_state->active = false;
+            ax_state->step_count = 0;
         }
+
+        // NOW safe to clear bitmask (axes already inactive)
+        segment_completed_by_axis = 0;
     }
     else
     {
-        segment_completed_by_axis = 0; // No more segments
+        // Update bitmask for next segment's dominant axis
+        // CRITICAL FIX (Oct 20, 2025): GRBL segment prep can have rounding errors
+        // where no axis has steps[axis] == n_step (e.g., n_step=8, X=9, Y=9)
+        // Solution: Pick axis with MOST steps as dominant
+        segment_completed_by_axis = 0; // Clear previous
+        uint32_t max_steps = 0;
+        axis_id_t dominant_candidate = AXIS_X;
+
+        for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+        {
+            if (next_seg->steps[axis] > max_steps)
+            {
+                max_steps = next_seg->steps[axis];
+                dominant_candidate = axis;
+            }
+        }
+
+        // Mark the axis with most steps as dominant
+        if (max_steps > 0)
+        {
+            segment_completed_by_axis = (1 << dominant_candidate);
+        }
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -974,19 +1007,22 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
     // ═════════════════════════════════════════════════════════════════════════
     if (next_seg != NULL)
     {
+
         // Load new segment for dominant axis
         state->current_segment = next_seg;
         state->step_count = 0;
         state->bresenham_counter = 0;
 
-        // Update ALL active subordinate axes to new segment
+        // Update ALL subordinate axes to new segment
+        // CRITICAL FIX (Oct 20, 2025): Don't check active flag!
+        // Subordinates have active=false but still need segment updates.
         for (axis_id_t sub_axis = AXIS_X; sub_axis < NUM_AXES; sub_axis++)
         {
             if (sub_axis == dominant_axis)
                 continue; // Skip self
 
             volatile axis_segment_state_t *sub_state = &segment_state[sub_axis];
-            if (sub_state->active && next_seg->steps[sub_axis] > 0)
+            if (next_seg->steps[sub_axis] > 0)
             {
                 sub_state->current_segment = next_seg;
                 sub_state->step_count = 0;
@@ -1609,6 +1645,13 @@ bool MultiAxis_StartSegmentExecution(void)
     // Sanity check: Ensure we found a dominant axis
     if (segment_completed_by_axis == 0)
     {
+        // DEBUG: Print segment details to diagnose why no dominant axis
+        UGS_Printf("ERROR: No dominant axis! n_step=%lu, X=%lu, Y=%lu, Z=%lu, A=%lu\r\n",
+                   (unsigned long)first_seg->n_step,
+                   (unsigned long)first_seg->steps[AXIS_X],
+                   (unsigned long)first_seg->steps[AXIS_Y],
+                   (unsigned long)first_seg->steps[AXIS_Z],
+                   (unsigned long)first_seg->steps[AXIS_A]);
         return false; // No dominant axis found - invalid segment!
     }
 
@@ -1645,7 +1688,11 @@ bool MultiAxis_StartSegmentExecution(void)
             state->current_segment = first_seg;
             state->step_count = 0;
             state->bresenham_counter = 0;
-            state->active = true;
+
+            // CRITICAL FIX (Oct 20, 2025): Only set active=true for DOMINANT axis!
+            // Subordinate axes are bit-banged by dominant ISR - they have NO independent state.
+            // Setting subordinates to active=true causes MultiAxis_IsBusy() to return true forever!
+            state->active = is_dominant;
 
             // Set direction GPIO based on direction bits
             // CRITICAL: GRBL sets direction_bits=1 for NEGATIVE motion!
@@ -2118,4 +2165,16 @@ void MultiAxis_ResetDebugCounters(void)
 {
     debug_total_y_pulses = 0;
     debug_segment_count = 0;
+}
+
+bool MultiAxis_GetAxisState(axis_id_t axis, uint32_t *step_count, bool *active)
+{
+    if (axis >= NUM_AXES || step_count == NULL || active == NULL)
+    {
+        return false;
+    }
+
+    *step_count = segment_state[axis].step_count;
+    *active = segment_state[axis].active;
+    return true;
 }

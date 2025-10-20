@@ -179,16 +179,39 @@ void GCode_HandleControlChar(char c)
         break;
 
     case GCODE_CTRL_DEBUG_COUNTERS:
-        /* Print debug counters (Y steps, segments) */
+        /* Print debug counters (Y steps, segments) + busy states + per-axis detail */
         {
             uint32_t y_steps = MultiAxis_GetDebugYStepCount();
             uint32_t segments = MultiAxis_GetDebugSegmentCount();
             uint8_t seg_buf_count = GRBLStepper_GetBufferCount();
+            bool axis_busy = MultiAxis_IsBusy();
+            bool motion_buf_has_data = MotionBuffer_HasData();
+            uint8_t motion_buf_count = MotionBuffer_GetCount();
 
-            UGS_Printf("DEBUG: Y_steps=%lu, Segments=%lu, SegBuf=%u\r\n",
+            UGS_Printf("DEBUG: Y_steps=%lu, Segs=%lu, SegBuf=%u, AxisBusy=%d, MotBuf=%u(%d)\r\n",
                        (unsigned long)y_steps,
                        (unsigned long)segments,
-                       (unsigned)seg_buf_count);
+                       (unsigned)seg_buf_count,
+                       axis_busy ? 1 : 0,
+                       (unsigned)motion_buf_count,
+                       motion_buf_has_data ? 1 : 0);
+
+            /* Per-axis detail */
+            for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+            {
+                uint32_t steps = 0;
+                bool active = false;
+                if (MultiAxis_GetAxisState(axis, &steps, &active))
+                {
+                    const char *axis_name = (axis == AXIS_X) ? "X" : (axis == AXIS_Y) ? "Y"
+                                                                 : (axis == AXIS_Z)   ? "Z"
+                                                                                      : "A";
+                    UGS_Printf("  %s: steps=%lu, active=%d\r\n",
+                               axis_name,
+                               (unsigned long)steps,
+                               active ? 1 : 0);
+                }
+            }
         }
         break;
 
