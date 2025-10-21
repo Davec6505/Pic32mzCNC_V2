@@ -310,16 +310,282 @@ M2           ; End
 ### **Porting to Other MCUs** (3-6 months)
 **Goal**: Share revolutionary architecture with maker community
 
-**Target Platforms:**
-- **STM32F4/H7**: Popular in 3D printing (Marlin, Klipper)
-- **ESP32**: WiFi CNC control, web interface
-- **Teensy 4.x**: High-speed USB, maker favorite
-- **RP2040**: Low cost, dual-core Pico
+**CRITICAL INSIGHT**: The **concept** is universally portable, but hardware peripherals vary!
+
+**What We're Using (PIC32MZ):**
+- **OCR Modules (OCMP1/3/4/5)**: Output Compare with Dual Compare mode
+- **Feature**: Can generate pulses autonomously with rising/falling edge control
+- **Mode**: OCM=0b101 (Dual Compare Continuous Pulse)
+- **ISR**: Fires on falling edge when pulse completes
+
+**Equivalent Hardware on Other Platforms:**
+
+#### **STM32F4/F7/H7** (ARM Cortex-M) ✅ **EXCELLENT SUPPORT**
+**Peripheral**: **TIM (General Purpose Timer) with PWM mode**
+- **What they have**: 14+ timers, each with 4 channels
+- **Equivalent mode**: PWM mode with one-pulse mode (OPM)
+- **Key registers**:
+  - `TIMx->ARR` = Auto-reload (period) → equivalent to our `TMRx_PeriodSet()`
+  - `TIMx->CCR1` = Compare value (pulse width) → equivalent to our `OCxRS`
+  - `TIMx->CR1 |= TIM_CR1_OPM` = One-pulse mode → equivalent to our auto-disable!
+- **ISR capability**: CC interrupt fires when compare match occurs
+- **Documentation**: STM32 Reference Manual RM0090 Chapter 17 (General-purpose timers)
+
+**Port Strategy:**
+```c
+// PIC32MZ pattern:
+OCMP4_CompareValueSet(period - 40);      // Rising edge
+OCMP4_CompareSecondaryValueSet(40);      // Falling edge
+OCMP4_Enable();                          // Start pulsing
+
+// STM32 equivalent:
+TIM2->ARR = period;                      // Timer period
+TIM2->CCR1 = 40;                         // Pulse width (compare value)
+TIM2->CR1 |= TIM_CR1_CEN;                // Enable timer
+TIM2->DIER |= TIM_DIER_CC1IE;            // Enable CC1 interrupt
+
+// For one-pulse mode (subordinate axes):
+TIM2->CR1 |= TIM_CR1_OPM;                // One-pulse mode (auto-disable!)
+TIM2->EGR |= TIM_EGR_UG;                 // Generate update event to start
+
+// ISR callback:
+void TIM2_IRQHandler(void) {
+    if (TIM2->SR & TIM_SR_CC1IF) {
+        TIM2->SR &= ~TIM_SR_CC1IF;       // Clear interrupt flag
+        ProcessSegmentStep(AXIS_X);      // Our existing logic!
+    }
+}
+```
+
+**Advantages:**
+- ✅ STM32 has **MORE timers** than PIC32MZ (14 vs 9)
+- ✅ One-pulse mode (OPM) = hardware auto-disable (like our OCR auto-disable)
+- ✅ DMA support for timer updates (could auto-load next period!)
+- ✅ 32-bit timers available (no 16-bit overflow issues)
+
+**Challenges:**
+- ⚠️ No "dual compare" like PIC32 (rising + falling edge)
+- ⚠️ Must use PWM mode instead (compare value = pulse width directly)
+- ⚠️ Slightly different register model (but well-documented)
+
+**Verdict**: **EXCELLENT candidate** - STM32 timers are MORE capable in some ways!
+
+---
+
+#### **ESP32** (Xtensa LX6/LX7) ✅ **GOOD SUPPORT**
+**Peripheral**: **LEDC (LED PWM Controller)** or **MCPWM (Motor Control PWM)**
+- **What they have**: 16 LEDC channels + 2 MCPWM units (6 outputs each)
+- **Best choice**: MCPWM (designed for motor control!)
+- **Key features**:
+  - Hardware pulse generation with configurable width
+  - Dead-time insertion (useful for H-bridge, but we don't need it)
+  - Interrupt on compare match
+- **One-pulse equivalent**: Use timer in one-shot mode with interrupt
+
+**Port Strategy:**
+```c
+// ESP32 MCPWM pattern:
+mcpwm_config_t pwm_config;
+pwm_config.frequency = 1000;              // Adjust per step rate
+pwm_config.cmpr_a = 2.0;                  // 2% duty cycle = ~20µs pulse
+pwm_config.counter_mode = MCPWM_UP_COUNTER;
+mcpwm_init(MCPWM_UNIT_0, MCPWM_TIMER_0, &pwm_config);
+
+// For single pulse (subordinate):
+mcpwm_set_timer_mode(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_TIMER_ONE_SHOT);
+mcpwm_start(MCPWM_UNIT_0, MCPWM_TIMER_0);
+
+// ISR:
+void IRAM_ATTR mcpwm_isr_handler(void *arg) {
+    uint32_t status = MCPWM0.int_st.val;
+    if (status & MCPWM_INT_T0_STOP) {     // Timer stopped (pulse done)
+        ProcessSegmentStep(AXIS_X);
+    }
+    MCPWM0.int_clr.val = status;
+}
+```
+
+**Advantages:**
+- ✅ MCPWM designed for motor control (perfect for steppers!)
+- ✅ Hardware pulse generation with configurable width
+- ✅ 16 independent channels (plenty for 4+ axes)
+- ✅ WiFi/Bluetooth for wireless CNC control
+
+**Challenges:**
+- ⚠️ MCPWM API more complex than PIC32 OCR
+- ⚠️ Documentation less detailed than STM32
+- ⚠️ ESP-IDF learning curve
+
+**Verdict**: **GOOD candidate** - MCPWM is perfect, but steeper learning curve
+
+---
+
+#### **Teensy 4.x** (ARM Cortex-M7 @ 600MHz!) ✅ **EXCELLENT SUPPORT**
+**Peripheral**: **FlexPWM** (Flexible Pulse Width Modulator)
+- **What they have**: 4 FlexPWM modules, each with 4 submodules (16 outputs total!)
+- **Key features**:
+  - Independent PWM generation per submodule
+  - Compare registers for pulse width control
+  - Interrupt on terminal count or compare match
+- **One-pulse mode**: Force-trigger + interrupt to stop
+
+**Port Strategy:**
+```c
+// Teensy FlexPWM pattern (similar to STM32):
+FLEXPWM1_SM0_INIT = period;               // Period (modulo)
+FLEXPWM1_SM0_VAL1 = 40;                   // Pulse width
+FLEXPWM1_SM0_CTRL2 = FLEXPWM_SM0_CTRL2_FORCE;  // Force trigger
+
+// Enable interrupt:
+FLEXPWM1_SM0_STS = FLEXPWM_SM0_STS_CMPF(1);  // Clear flag
+FLEXPWM1_SM0_INTEN = FLEXPWM_SM0_INTEN_CMPIE(1);  // Enable interrupt
+
+// ISR:
+void pwm1_0_isr(void) {
+    if (FLEXPWM1_SM0_STS & FLEXPWM_SM0_STS_CMPF(1)) {
+        FLEXPWM1_SM0_STS = FLEXPWM_SM0_STS_CMPF(1);  // Clear
+        ProcessSegmentStep(AXIS_X);
+    }
+}
+```
+
+**Advantages:**
+- ✅ 600MHz CPU = **INSANE performance** for look-ahead planning
+- ✅ 16 independent PWM channels (more than we need)
+- ✅ Arduino IDE support (easier for makers)
+- ✅ High-speed USB (great for G-code streaming)
+
+**Challenges:**
+- ⚠️ FlexPWM registers less intuitive than STM32
+- ⚠️ Documentation scattered (NXP i.MX RT1060 reference)
+
+**Verdict**: **EXCELLENT candidate** - Teensy could be the **fastest CNC controller ever!**
+
+---
+
+#### **RP2040** (Raspberry Pi Pico) ⚠️ **CREATIVE SOLUTION NEEDED**
+**Peripheral**: **PIO (Programmable I/O)** - This is the wild card!
+- **What they have**: 2 PIO blocks, each with 4 state machines
+- **Key feature**: **You program the hardware in PIO assembly!**
+- **Insane capability**: Can implement custom peripherals in hardware
+
+**Port Strategy** (Most Creative!):
+```c
+// Write PIO program to generate step pulses:
+.program step_pulse
+.side_set 1 opt                    // Side-set for step pin
+
+    pull block                     // Wait for pulse width from CPU
+    mov x, osr                     // Copy to X register
+    set pins, 1                    // Step pin HIGH
+pulse_loop:
+    jmp x-- pulse_loop             // Count down X cycles
+    set pins, 0                    // Step pin LOW
+    irq set 0                      // Trigger IRQ (pulse done!)
+    
+// Load into PIO and run:
+uint offset = pio_add_program(pio0, &step_pulse_program);
+pio_sm_init(pio0, 0, offset, NULL);
+
+// Trigger pulse from ISR:
+pio_sm_put(pio0, 0, pulse_width);  // Feed pulse width to PIO
+
+// IRQ handler (pulse done):
+void pio0_irq0_handler(void) {
+    pio_interrupt_clear(pio0, 0);
+    ProcessSegmentStep(AXIS_X);
+}
+```
+
+**Advantages:**
+- ✅ **Most flexible** - PIO can implement ANY timing peripheral
+- ✅ Dual-core (one core for planning, one for execution!)
+- ✅ Cheapest option ($4 per board)
+- ✅ Insanely fast GPIO (30MHz toggle speed!)
+
+**Challenges:**
+- ⚠️ **Requires learning PIO assembly** (new paradigm)
+- ⚠️ Only 8 state machines total (need 4 for axes, leaves 4 for other tasks)
+- ⚠️ More complex setup than traditional timers
+
+**Verdict**: **CREATIVE solution** - Could be the **most elegant** port with PIO!
+
+---
+
+### **Portability Summary Table**
+
+| MCU | Peripheral | Pulse Generation | Auto-Disable | ISR Trigger | Difficulty | Performance |
+|-----|------------|------------------|--------------|-------------|------------|-------------|
+| **PIC32MZ** | OCR (Dual Compare) | ✅ Hardware | ✅ Yes | ✅ Falling edge | ⭐ Easy | ⭐⭐⭐ Good |
+| **STM32F4/H7** | TIM (PWM + OPM) | ✅ Hardware | ✅ Yes (OPM) | ✅ Compare match | ⭐⭐ Medium | ⭐⭐⭐⭐ Excellent |
+| **ESP32** | MCPWM | ✅ Hardware | ✅ One-shot mode | ✅ Timer stop | ⭐⭐⭐ Medium-Hard | ⭐⭐⭐ Good |
+| **Teensy 4.x** | FlexPWM | ✅ Hardware | ⚠️ Force-trigger | ✅ Compare match | ⭐⭐ Medium | ⭐⭐⭐⭐⭐ Insane (600MHz!) |
+| **RP2040** | PIO (custom) | ✅ Hardware | ✅ Program-defined | ✅ Custom IRQ | ⭐⭐⭐⭐ Hard (PIO asm) | ⭐⭐⭐⭐ Excellent (dual-core) |
+
+---
+
+### **Universal Porting Strategy**
+
+**What's 100% Portable:**
+1. ✅ **Algorithm logic** - ProcessSegmentStep(), Bresenham, segment prep
+2. ✅ **GRBL planner** - Junction velocity, look-ahead optimization
+3. ✅ **Buffer architecture** - Ring buffers, command parsing, G-code parser
+4. ✅ **Modal state** - Parser state machine, coordinate systems
+
+**What Needs Adaptation:**
+1. ⚠️ **Timer setup** - Different registers, modes, prescalers
+2. ⚠️ **Interrupt configuration** - Different ISR names, priority levels
+3. ⚠️ **GPIO control** - Different port/pin naming conventions
+
+**Port Effort Estimate:**
+- **Core algorithm**: 0 hours (already portable C code!)
+- **Timer/PWM adaptation**: 4-8 hours per platform
+- **GPIO/interrupt setup**: 2-4 hours per platform
+- **Testing/debugging**: 8-16 hours per platform
+- **Total**: ~2-4 weeks per platform for one developer
+
+---
+
+### **Recommended Porting Order**
+
+1. **STM32F4** (First port) - Most similar to PIC32, excellent docs, huge community
+2. **Teensy 4.x** (Second) - Arduino IDE support, maker-friendly, insane performance
+3. **ESP32** (Third) - WiFi/BT opens new use cases, MCPWM is perfect fit
+4. **RP2040** (Fourth/Advanced) - PIO is revolutionary but requires learning curve
+
+---
+
+### **Community Impact Potential**
+
+**STM32 Port**:
+- Impacts: Marlin, Klipper, RepRap communities (3D printing)
+- Market: Millions of boards already deployed
+- Use case: Drop-in upgrade for existing 3D printer controllers
+
+**Teensy Port**:
+- Impacts: Maker community, hobbyist CNC builders
+- Market: Popular in DIY CNC/robotics
+- Use case: High-performance desktop CNC
+
+**ESP32 Port**:
+- Impacts: IoT makers, wireless CNC control
+- Market: Cheap WiFi-enabled controllers
+- Use case: Web-based CNC control, remote monitoring
+
+**RP2040 Port**:
+- Impacts: Cost-conscious makers, education
+- Market: $4 boards, perfect for learning
+- Use case: Ultra-low-cost CNC controller
+
+**Potential**: This architecture could become **the new standard** for open-source CNC!
+
+---
 
 **Deliverables:**
-- Port guide documentation
-- Reference implementations for each platform
-- Performance comparison benchmarks
+- Port guide documentation for each platform
+- Reference implementations with example projects
+- Performance comparison benchmarks (ISR frequency, CPU load, response time)
+- Community tutorials and YouTube demos
 
 ### **Academic Benchmarking Study** (2-3 months)
 **Goal**: Publish comparison vs traditional GRBL
