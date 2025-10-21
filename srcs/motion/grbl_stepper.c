@@ -244,17 +244,55 @@ static bool prep_segment(void)
     float nominal_speed_sqr = (prep.current_block->programmed_rate / 60.0f) *
                               (prep.current_block->programmed_rate / 60.0f);
 
-    // For segments WITHIN a block, accelerate towards nominal speed
-    // (Junction exit speed handling will be added in Phase 2C)
+    // CRITICAL FIX (October 21, 2025): Implement proper deceleration!
+    // Calculate required exit velocity based on remaining distance
+    // This ensures smooth deceleration at end of block
 
-    // Kinematic equation: v² = v₀² + 2ad
+    // Get block's target exit velocity (from planner junction optimization)
+    // GRBL planner stores entry_speed_sqr for THIS block (our start speed)
+    // Exit speed should be next block's entry speed (or zero if last block)
+    // For now, conservatively decelerate to entry speed (safe for junctions)
+    float block_exit_speed = sqrtf(prep.current_block->entry_speed_sqr) / 60.0f; // Convert mm/min to mm/sec
+
+    // Calculate deceleration distance needed to reach block exit speed from current speed
     float current_speed_sqr = prep.current_speed * prep.current_speed;
-    float segment_exit_speed_sqr = current_speed_sqr +
-                                   2.0f * prep.acceleration * segment_mm;
+    float exit_speed_sqr = block_exit_speed * block_exit_speed;
 
-    // Clamp to block's nominal velocity (don't exceed feedrate!)
-    if (segment_exit_speed_sqr > nominal_speed_sqr)
+    // Distance needed to decelerate: d = (v_initial² - v_final²) / (2a)
+    // CORRECTED: Use absolute value since we're slowing down (current > exit)
+    float decel_distance = fabsf(current_speed_sqr - exit_speed_sqr) / (2.0f * prep.acceleration);
+
+    float segment_exit_speed_sqr;
+
+    // Decide: Should we accelerate, cruise, or decelerate?
+    // CRITICAL: Start decelerating when remaining distance equals deceleration distance
+    if (prep.mm_remaining <= decel_distance)
     {
+        // DECELERATE: Not enough distance left, must slow down!
+        // Use SAME deceleration rate as acceleration for symmetric profile
+        // Kinematic equation: v² = v₀² - 2ad (negative acceleration)
+        segment_exit_speed_sqr = current_speed_sqr - 2.0f * prep.acceleration * segment_mm;
+
+        // Don't decelerate below target exit speed
+        if (segment_exit_speed_sqr < exit_speed_sqr)
+        {
+            segment_exit_speed_sqr = exit_speed_sqr;
+        }
+    }
+    else if (current_speed_sqr < nominal_speed_sqr)
+    {
+        // ACCELERATE: Haven't reached nominal speed yet
+        segment_exit_speed_sqr = current_speed_sqr + 2.0f * prep.acceleration * segment_mm;
+
+        // Don't exceed nominal speed
+        if (segment_exit_speed_sqr > nominal_speed_sqr)
+        {
+            segment_exit_speed_sqr = nominal_speed_sqr;
+        }
+    }
+    else
+    {
+        // CRUISE: At nominal speed, maintain it
         segment_exit_speed_sqr = nominal_speed_sqr;
     }
 
@@ -291,6 +329,12 @@ static bool prep_segment(void)
 
     segment->n_step = max_steps;
     segment->direction_bits = prep.current_block->direction_bits;
+
+    // Copy block total steps for sanity checking (Oct 21, 2025)
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        segment->block_steps[axis] = prep.current_block->steps[axis];
+    }
 
     // Initialize Bresenham counters (for multi-axis synchronization)
     // FIX (October 20, 2025): Start at 0, not -n_step/2

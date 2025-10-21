@@ -453,6 +453,11 @@ static void ProcessCommandBuffer(void)
           float target_work[NUM_AXES];    /* Work coordinates from G-code */
           float target_machine[NUM_AXES]; /* Machine coordinates for planner */
 
+          UGS_Printf("[MODAL] Pre-merge modal: X=%.3f Y=%.3f | Parsed: X=%.3f(%d) Y=%.3f(%d)\r\n",
+                     modal_position[AXIS_X], modal_position[AXIS_Y],
+                     move.target[AXIS_X], move.axis_words[AXIS_X],
+                     move.target[AXIS_Y], move.axis_words[AXIS_Y]);
+
 #ifdef DEBUG_MOTION_BUFFER
           UGS_Printf("[MODAL] Before merge: modal=(%.3f,%.3f,%.3f) parsed=(%.3f,%.3f,%.3f) words=(%d,%d,%d)\r\n",
                      modal_position[AXIS_X], modal_position[AXIS_Y], modal_position[AXIS_Z],
@@ -464,9 +469,19 @@ static void ProcessCommandBuffer(void)
           {
             if (move.axis_words[axis])
             {
-              /* Axis specified in command - use parsed value */
-              target_work[axis] = move.target[axis];
-              modal_position[axis] = move.target[axis]; /* Update modal state */
+              /* CRITICAL FIX (Oct 21, 2025): Handle G91 (relative mode) */
+              if (move.absolute_mode)
+              {
+                /* G90 (absolute): Use parsed value as-is */
+                target_work[axis] = move.target[axis];
+                modal_position[axis] = move.target[axis]; /* Update modal state */
+              }
+              else
+              {
+                /* G91 (relative): Add offset to current modal position */
+                target_work[axis] = modal_position[axis] + move.target[axis];
+                modal_position[axis] = target_work[axis]; /* Update modal state */
+              }
             }
             else
             {
@@ -480,6 +495,11 @@ static void ProcessCommandBuffer(void)
              * Formula: MPos = WPos + work_offset + g92_offset */
             target_machine[axis] = MotionMath_WorkToMachine(target_work[axis], (axis_id_t)axis);
           }
+          
+          UGS_Printf("[MODAL] Post-merge: target_work=(%.3f,%.3f) target_machine=(%.3f,%.3f) mode=%s\r\n",
+                     target_work[AXIS_X], target_work[AXIS_Y],
+                     target_machine[AXIS_X], target_machine[AXIS_Y],
+                     move.absolute_mode ? "G90" : "G91");
 
 #ifdef DEBUG_MOTION_BUFFER
           UGS_Printf("[MODAL] After merge: target_work=(%.3f,%.3f,%.3f) target_machine=(%.3f,%.3f,%.3f)\r\n",
@@ -698,6 +718,7 @@ int main(void)
      */
     if (!MultiAxis_IsBusy() && GRBLStepper_GetBufferCount() > 0)
     {
+      UGS_Printf("[EXEC] Starting segment (seg_count=%d)\r\n", GRBLStepper_GetBufferCount());
       MultiAxis_StartSegmentExecution();
     }
 

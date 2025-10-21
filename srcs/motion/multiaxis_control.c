@@ -459,6 +459,10 @@ typedef struct
     uint32_t step_count;                 ///< Steps executed in current segment
     int32_t bresenham_counter;           ///< Bresenham error accumulator
     bool active;                         ///< Axis currently executing segment
+
+    // SANITY CHECK COUNTERS (Oct 21, 2025) - Dave's diagnostic pattern
+    uint32_t block_steps_commanded; ///< Total steps GRBL planned for current block
+    uint32_t block_steps_executed;  ///< Total steps OCR actually pulsed (ISR increment)
 } axis_segment_state_t;
 
 // Per-axis segment execution state (accessed from OCR ISR callbacks)
@@ -580,6 +584,9 @@ static void Execute_Bresenham_Strategy_Internal(axis_id_t dominant_axis, const s
     // Increment dominant axis step counter
     dom_state->step_count++;
 
+    // SANITY CHECK (Oct 21, 2025): Increment block execution counter
+    dom_state->block_steps_executed++; // Track actual pulses delivered by OCR
+
     // ═════════════════════════════════════════════════════════════════════════
     // STEP 2: Handle all SUBORDINATE axes (Bresenham + bit-bang)
     // ═════════════════════════════════════════════════════════════════════════
@@ -604,43 +611,43 @@ static void Execute_Bresenham_Strategy_Internal(axis_id_t dominant_axis, const s
             sub_state->bresenham_counter -= (int32_t)n_step;
 
             // ═════════════════════════════════════════════════════════════════════
-            // OCR PULSE: Trigger one hardware pulse using mikroC proven pattern!
+            // OCR PULSE: Trigger one hardware pulse using MCC PLIB functions!
             // ═════════════════════════════════════════════════════════════════════
-            // mikroC pattern (VERIFIED WORKING in Pic32mzCNC/ folder):
-            //   OC5R   = 0x5;           // Low phase = 5 counts
-            //   OC5RS  = step_delay;    // Pulse width
-            //   TMR2   = 0xFFFF;        // **FORCE IMMEDIATE ROLLOVER!**
-            //   OC5CON = 0x8004;        // **RESTART OCR MODULE!** ← KEY!
+            // Pattern (from mikroC verified working code):
+            //   OCxR   = 5;             // Rising edge at count 5
+            //   OCxRS  = 36;            // Falling edge at count 36 (20µs pulse)
+            //   TMRx   = 0xFFFF;        // Force immediate rollover
+            //   OCMP_Enable()           // Restart OCR (sets ON bit)
             //
-            // Result: Timer rolls over → count 0 → matches OC5R → pulse fires!
+            // Timer clock: 1.5625 MHz (640ns per count)
+            // Pulse width: 31 counts = 19.84µs ≈ 20µs (meets DRV8825 1.9µs minimum)
             // ═════════════════════════════════════════════════════════════════════
 
-            // mikroC pattern: Set compare values, timer, then RESTART OCR
             switch (sub_axis)
             {
             case AXIS_X:
-                OC5R = 0x5;      // OCxR: Low phase (5 counts)
-                OC5RS = 50;      // OCxRS: Pulse width (50 counts = ~32µs)
-                TMR2 = 0xFFFF;   // Force immediate rollover
-                OC5CON = 0x8004; // **RESTART OCR!** (ON=1, OCM=0b100)
+                OCMP5_CompareValueSet(5);          // OCxR: Rising edge
+                OCMP5_CompareSecondaryValueSet(36); // OCxRS: Falling edge (31 count pulse)
+                TMR2 = 0xFFFF;                      // Force immediate rollover
+                OCMP5_Enable();                     // Restart OCR module
                 break;
             case AXIS_Y:
-                OC1R = 0x5;
-                OC1RS = 50;
+                OCMP1_CompareValueSet(5);
+                OCMP1_CompareSecondaryValueSet(36);
                 TMR4 = 0xFFFF;
-                OC1CON = 0x8004; // **RESTART OCR!**
+                OCMP1_Enable();
                 break;
             case AXIS_Z:
-                OC4R = 0x5;
-                OC4RS = 50;
+                OCMP4_CompareValueSet(5);
+                OCMP4_CompareSecondaryValueSet(36);
                 TMR3 = 0xFFFF;
-                OC4CON = 0x8004; // **RESTART OCR!**
+                OCMP4_Enable();
                 break;
             case AXIS_A:
-                OC3R = 0x5;
-                OC3RS = 50;
+                OCMP3_CompareValueSet(5);
+                OCMP3_CompareSecondaryValueSet(36);
                 TMR5 = 0xFFFF;
-                OC3CON = 0x8004; // **RESTART OCR!**
+                OCMP3_Enable();
                 break;
             default:
                 break;
@@ -657,6 +664,9 @@ static void Execute_Bresenham_Strategy_Internal(axis_id_t dominant_axis, const s
             }
 
             sub_state->step_count++; // Track subordinate progress
+
+            // SANITY CHECK (Oct 21, 2025): Increment block execution counter
+            sub_state->block_steps_executed++; // Track actual pulses delivered by OCR
         }
     }
 }
@@ -964,12 +974,36 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
     if (next_seg == NULL)
     {
         // No more segments - STOP ALL AXES FIRST!
+        // SANITY CHECK (Oct 21, 2025): Verify commanded vs executed steps
         for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
         {
             volatile axis_segment_state_t *ax_state = &segment_state[axis];
+            
+            // Check if this axis had motion in the completed block
+            if (ax_state->block_steps_commanded > 0)
+            {
+                // Verify OCR delivered all commanded pulses
+                if (ax_state->block_steps_executed != ax_state->block_steps_commanded)
+                {
+                    const char *axis_names[] = {"X", "Y", "Z", "A"};
+                    UGS_Printf("ERROR: %s axis step mismatch! Commanded=%lu, Executed=%lu, Diff=%ld\r\n",
+                               axis_names[axis],
+                               ax_state->block_steps_commanded,
+                               ax_state->block_steps_executed,
+                               (int32_t)ax_state->block_steps_executed - (int32_t)ax_state->block_steps_commanded);
+                }
+            }
+            
             ax_state->current_segment = NULL;
             ax_state->active = false;
             ax_state->step_count = 0;
+
+            // CRITICAL FIX (Oct 21, 2025): Reset Bresenham accumulator between blocks!
+            // Without this, error accumulates across blocks causing drift:
+            //   - First X100: undershoots
+            //   - Second X-100: overshoots (accumulated error)
+            //   - Third X100: overshoots more
+            ax_state->bresenham_counter = 0;
 
             // Disable OCR hardware (both dominant and subordinate)
             axis_hw[axis].OCMP_Disable();
@@ -1064,6 +1098,12 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
 
         // Set direction GPIO for NEW dominant axis
         bool dir_negative = (next_seg->direction_bits & (1 << new_dominant_axis)) != 0;
+        
+        // CRITICAL FIX (Oct 21, 2025): Enable driver for NEW dominant axis!
+        // Without this, driver stays disabled when dominant axis changes
+        // (e.g., Z→Y transition: Y driver never enabled, motor doesn't move)
+        MultiAxis_EnableDriver(new_dominant_axis);
+        
         switch (new_dominant_axis)
         {
         case AXIS_X:
@@ -1734,29 +1774,37 @@ bool MultiAxis_StartSegmentExecution(void)
         return false; // No segments available
     }
 
-    // Determine dominant axis (axis with most steps = n_step)
-    // Dave's scalable bitmask approach: Set bit for dominant axis
+    // Determine dominant axis (axis with MOST steps)
+    // CRITICAL FIX (Oct 21, 2025): Use SAME logic as ProcessSegmentStep() line 1006
+    // GRBL can have rounding where no axis has steps[axis] == n_step
     segment_completed_by_axis = 0; // Clear previous segment's mask
+    uint32_t max_steps_startup = 0;
+    axis_id_t dominant_candidate_startup = AXIS_X;
+
     for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
     {
-        if (first_seg->steps[axis] == first_seg->n_step)
+        if (first_seg->steps[axis] > max_steps_startup)
         {
-            segment_completed_by_axis = (1 << axis); // Mark this axis as dominant
-            break;                                   // Only one dominant axis per segment
+            max_steps_startup = first_seg->steps[axis];
+            dominant_candidate_startup = axis;
         }
     }
 
-    // Sanity check: Ensure we found a dominant axis
-    if (segment_completed_by_axis == 0)
+    // Mark the axis with most steps as dominant
+    if (max_steps_startup > 0)
     {
-        // DEBUG: Print segment details to diagnose why no dominant axis
-        UGS_Printf("ERROR: No dominant axis! n_step=%lu, X=%lu, Y=%lu, Z=%lu, A=%lu\r\n",
+        segment_completed_by_axis = (1 << dominant_candidate_startup);
+    }
+    else
+    {
+        // DEBUG: Print segment details if no motion at all
+        UGS_Printf("ERROR: No motion in segment! n_step=%lu, X=%lu, Y=%lu, Z=%lu, A=%lu\r\n",
                    (unsigned long)first_seg->n_step,
                    (unsigned long)first_seg->steps[AXIS_X],
                    (unsigned long)first_seg->steps[AXIS_Y],
                    (unsigned long)first_seg->steps[AXIS_Z],
                    (unsigned long)first_seg->steps[AXIS_A]);
-        return false; // No dominant axis found - invalid segment!
+        return false; // No motion in segment!
     }
 
     // Start axes that are IDLE and have motion in this segment
@@ -1796,6 +1844,11 @@ bool MultiAxis_StartSegmentExecution(void)
             state->current_segment = first_seg;
             state->step_count = 0;
             state->bresenham_counter = 0;
+
+            // SANITY CHECK (Oct 21, 2025): Initialize block counters from segment data
+            // Segment carries block's total steps - use this for commanded count
+            state->block_steps_commanded = first_seg->block_steps[axis];
+            state->block_steps_executed = 0;  // Incremented by OCR ISR on each pulse
 
             // CRITICAL FIX (Oct 20, 2025): Only set active=true for DOMINANT axis!
             // Subordinate axes are bit-banged by dominant ISR - they have NO independent state.

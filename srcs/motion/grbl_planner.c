@@ -82,6 +82,7 @@
 #include "definitions.h"         // SYS function prototypes
 #include "motion/grbl_planner.h" // Own header (MISRA Rule 8.8)
 #include "motion/motion_math.h"  // Settings API (steps/mm, accel, max_rate)
+#include "ugs_interface.h"       // UGS_Printf for debug output
 #include <string.h>              // memset(), memcpy()
 #include <math.h>                // sqrtf(), fabsf(), lroundf()
 #include <stdlib.h>              // labs()

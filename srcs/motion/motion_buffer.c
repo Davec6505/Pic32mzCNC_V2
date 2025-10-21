@@ -493,9 +493,20 @@ static void plan_buffer_line(motion_block_t *block, const parsed_move_t *move)
     {
         if (move->axis_words[axis])
         {
-            // Convert target work coordinates to machine coordinates
-            // Formula: MPos = WPos + work_offset + g92_offset
-            float target_mm_machine = MotionMath_WorkToMachine(move->target[axis], axis);
+            float target_mm_machine;
+            
+            // CRITICAL FIX (Oct 21, 2025): Handle G91 (relative mode)
+            if (move->absolute_mode)
+            {
+                // G90 (absolute): target is absolute work coordinate
+                target_mm_machine = MotionMath_WorkToMachine(move->target[axis], axis);
+            }
+            else
+            {
+                // G91 (relative): target is OFFSET from current position
+                // Add the relative offset to current planned position
+                target_mm_machine = planned_position_mm[axis] + move->target[axis];
+            }
 
             // Calculate delta from planned position (NOT actual machine position!)
             float delta_mm = target_mm_machine - planned_position_mm[axis];

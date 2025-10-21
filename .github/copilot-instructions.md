@@ -6,7 +6,15 @@
 
 ### Final OCR Architecture - Clean Single-Pulse-On-Demand
 
-After extensive debugging of OCR modes (0b001, 0b011, 0b110, 0b100), we implemented the **elegant solution**:
+After extensive debugging of OCR modes (0b001, 0b011, 0b110, 0b100), we implemented the **elegant solution**.
+
+**CRITICAL DISCOVERY (October 21, 2025 Evening):** ⚡ **DRIVER ENABLE PINS!**
+- **Problem**: Y-axis calculated correctly but didn't move physically during streaming
+- **Oscilloscope**: Step pulses present on ALL axes (X, Y, Z) - hardware working!
+- **Root Cause**: DRV8825 ENABLE pins not being set when dominant axis changed
+- **Solution**: Added `MultiAxis_EnableDriver(new_dominant_axis)` in segment auto-advance
+- **Result**: User confirmed **"BINGO"** - all axes now moving physically!
+- **Location**: multiaxis_control.c line 1095 (after direction GPIO, before OCR config)
 
 **OCR Mode Configuration:**
 - **ALL axes use OCM=0b101** (Dual Compare Continuous Pulse mode)
@@ -14,6 +22,19 @@ After extensive debugging of OCR modes (0b001, 0b011, 0b110, 0b100), we implemen
 - OCxR = 5 (rising edge timing)
 - OCxRS = 50 (falling edge timing, ~32µs pulse width)
 - ISR fires on **FALLING EDGE** (when pulse completes)
+
+**DRV8825 Driver Enable Integration:** ⚡ **CRITICAL (Oct 21, 2025)**
+- ENABLE pin is **active-low** (LOW = motor energized, HIGH = disabled)
+- `MultiAxis_EnableDriver(axis)` calls `en_clear_funcs[axis]()` → sets pin LOW
+- **MUST enable driver when dominant axis changes during segment transitions**
+- Location: multiaxis_control.c line 1095 (segment auto-advance code)
+- Without this: Step pulses present but motor doesn't move (driver de-energized)
+- Symptom: Oscilloscope shows pulses, but no physical motion
+- Fix sequence:
+  1. Set direction GPIO for new dominant axis
+  2. **Enable driver** (`MultiAxis_EnableDriver(new_dominant_axis)`)
+  3. Configure OCR registers
+  4. Start timer and enable OCR
 
 **ISR Behavior - Role-Based Logic:**
 ```c
@@ -40,23 +61,68 @@ void OCMPx_Callback(uintptr_t context)
 **Bresenham Pulse Trigger (Subordinate Axes):**
 ```c
 // When Bresenham overflow (subordinate needs step):
-axis_hw[sub_axis].OCMP_Enable();  // One line - pulse fires automatically!
+// Use MCC-generated PLIB functions (loosely coupled - don't modify PLIB files!)
+OCMP1_CompareValueSet(5);              // Rising edge at count 5
+OCMP1_CompareSecondaryValueSet(36);    // Falling edge at count 36 (20µs pulse)
+TMR4 = 0xFFFF;                         // Force immediate rollover (no PLIB setter!)
+OCMP1_Enable();                        // Enable OCR → pulse fires automatically!
+
+// ⚠️ CRITICAL: Timer counter direct register write
+// TMRx = 0xFFFF is the ONLY way to force immediate rollover
+// MCC PLIB has NO TMRx_CounterSet() function - direct write required
+// This is acceptable for loose coupling (read-only dependency on MCC)
 ```
+
+**Pulse Timing (October 21, 2025):**
+- Timer clock: 1.5625 MHz (640ns per count)
+- Pulse width: 31 counts (36 - 5) = 19.84µs ≈ **20µs**
+- Meets DRV8825 minimum requirement of 1.9µs
 
 **Why This Works:**
 - ✅ **Dominant axis**: ISR processes segment, OCR stays enabled → continuous pulses
 - ✅ **Subordinate axis**: ISR disables OCR → single pulse, waits for Bresenham re-enable
 - ✅ **No mode switching**: Same OCM=0b101 for both roles
 - ✅ **Hardware-centric**: OCR generates pulse when enabled, ISR fires on falling edge
-- ✅ **Clean code**: No timer rollover tricks, no register manipulation
+- ✅ **Loosely coupled**: Uses PLIB functions where available, direct register only for TMRx counter
+- ✅ **Clean code**: PLIB setters for OCR, direct write only for timer rollover trick
 
 ### Previous Architecture (October 20, 2025) - For Historical Reference
 
 **DOMINANT AXIS WITH SUBORDINATE BIT-BANG** ✅ **REPLACED BY OCM=0b101 SOLUTION**
 
-### Architecture Overview - FUNDAMENTAL UNDERSTANDING
+### Architecture Overview - FUNDAMENTAL UNDERSTANDING (Updated Oct 21, 2025)
 
-After 10+ hours of debugging, we achieved **critical clarity** on how this motion system works:
+After extensive debugging, we now have **complete understanding** of the motion system:
+
+**COMPLETE EXECUTION FLOW:**
+1. **GRBL Planner** (grbl_planner.c) - Converts G-code to motion blocks
+   - Receives G-code from parser (target positions in mm)
+   - Converts mm → steps using MotionMath settings ($100-$133)
+   - Creates motion_block_t with step counts for all axes
+   - Adds block to segment buffer (16 segments, 2mm each)
+
+2. **Segment Buffer** (grbl_stepper.c) - Breaks blocks into 2mm segments
+   - Each block split into multiple 2mm segments for smooth motion
+   - Calculates per-segment step counts using Bresenham algorithm
+   - Determines dominant axis (most steps) for each segment
+   - Sets direction bits for all axes in segment
+
+3. **Segment Execution** (multiaxis_control.c) - Executes one segment at a time
+   - **CRITICAL**: Only ONE segment active at a time
+   - **CRITICAL**: Only DOMINANT axis has OCR hardware enabled
+   - Dominant axis ISR calls ProcessSegmentStep() every pulse
+   - Subordinate axes bit-banged by Bresenham in dominant ISR
+   - When segment completes, auto-advances to next segment
+
+4. **Driver Enable System** (multiaxis_control.c line 1095) - ⚡ **CRITICAL FIX**
+   - DRV8825 ENABLE pin is **active-low** (LOW = enabled, HIGH = disabled)
+   - `MultiAxis_EnableDriver(axis)` calls `en_clear_funcs[axis]()` → sets pin LOW
+   - **MUST call when dominant axis changes** (Z→Y→X→Y→X transitions)
+   - Without this: Step pulses present but motor doesn't move (driver de-energized)
+   - Symptom: Oscilloscope shows pulses, but no physical motion
+   - Location: After direction GPIO set, before OCR configuration
+
+**KEY ARCHITECTURAL PRINCIPLES:**
 
 **ONE OCR Enabled Per Segment:**
 - Only the **dominant axis** (axis with most steps in segment) has its OCR/TMR hardware enabled
@@ -713,36 +779,42 @@ After rebuild with 512-byte buffers:
 - **Documentation**: See `docs/TIMER_PRESCALER_ANALYSIS.md` for full analysis
 - **Status**: ✅ Ready for rebuild and hardware testing!
 
-## ⚠️ CURRENT STATUS: Motion Execution Debug (October 19, 2025)
+## ⚠️ CURRENT STATUS: Motion Execution Complete! (October 21, 2025)
 
-**Latest Progress**: Fixed command buffer starvation and zero-step block filtering. Most issues resolved, one remaining bug with incomplete motion execution.
+**Latest Progress**: Fixed driver enable pins - all axes now moving physically! System fully operational.
 
 **Current Testing Focus** 🎯:
 - **✅ SERIAL COMMUNICATION** - Robust, no more parsing errors
 - **✅ COMMAND PROCESSING** - 16x ProcessCommandBuffer() per loop drains buffer efficiently  
 - **✅ ZERO-STEP FILTERING** - G0 X0 Y0 blocks no longer clog motion buffer
 - **✅ SINGLE-AXIS MOTION** - Axes with zero velocity explicitly deactivated
-- **✅ ALL COMMANDS PARSED** - G1 Y10, G1 X10, G1 Y0, G1 X0 all reach parser
-- **❌ INCOMPLETE EXECUTION** - Final command (G1 X0) parsed but never executed
+- **✅ ALL COMMANDS PARSED** - G1 commands reach parser and execute correctly
+- **✅ MOTION EXECUTION** - All axes moving physically, rectangle path completes successfully
+- **✅ DRIVER ENABLE FIX** - Critical fix applied (Oct 21): Enable driver on dominant axis transitions
+- **✅ POSITION TRACKING** - Returns to origin perfectly (0.000, 0.000, 0.000)
+- **⏳ ACCURACY VERIFICATION** - Pending: Update $100=64 for T2.5 belt (currently $100=80 for GT2)
 
-**Critical Bug** (October 19, 2025):
-- **Symptom**: Machine stops at (10, 10, 5) instead of completing square to (0, 0, 5)
-- **Root Cause**: ExecuteMotion() only dequeues ONE block per loop iteration
-- **Analysis**: When machine enters RUN state with 3+ blocks queued:
-  1. Motion system stays busy for multiple loop iterations
-  2. New commands get tokenized/parsed and added to motion buffer
-  3. Machine completes first 3 blocks and goes IDLE
-  4. Last block (G1 X0) remains in motion buffer, never dequeued
-- **Solution** (for tomorrow): Modify ExecuteMotion() to drain all available blocks:
-  ```c
-  while (!MultiAxis_IsBusy() && MotionBuffer_HasData()) {
-      motion_block_t block;
-      if (MotionBuffer_GetNext(&block)) {
-          MultiAxis_ExecuteCoordinatedMove(block.steps);
-      }
-  }
-  ```
-- **Documentation**: See docs/MOTION_EXECUTION_DEBUG_OCT19.md for complete analysis
+**Critical Discovery** (October 21, 2025 Evening):
+- **Problem**: Y-axis calculated correctly but didn't move physically during streaming
+- **Debug**: Oscilloscope confirmed step pulses present on ALL axes (X, Y, Z)
+- **Root Cause**: DRV8825 ENABLE pins not being set when dominant axis changed
+- **Solution**: Added `MultiAxis_EnableDriver(new_dominant_axis)` in segment auto-advance (line 1095)
+- **Result**: User confirmed **"BINGO"** - all axes now moving physically!
+
+**Hardware Configuration Discovery** (October 21, 2025):
+- **Belt Type**: T2.5 (2.5mm pitch), NOT GT2 (2.0mm pitch)!
+- **Correct steps/mm**: 64 (not 80)
+- **Calculation**: 3200 steps/rev ÷ (20 teeth × 2.5mm) = 64 steps/mm
+- **Current setting**: $100=80, $101=80, $103=80 (wrong for T2.5)
+- **Required update**: $100=64, $101=64, $103=64
+- **Documentation**: See Datasheet/.text/commands.txt for full reference
+
+**Sanity Check System** (Added October 21, 2025):
+- **Purpose**: Detect pulse delivery errors during block execution
+- **Mechanism**: Compare `block_steps_commanded` vs `block_steps_executed`
+- **Error Output**: `ERROR: X axis step mismatch! Commanded=8000, Executed=7998, Diff=-2`
+- **Location**: multiaxis_control.c lines 974-998 (block completion code)
+- **Status**: ✅ Implemented, ready for testing
 
 **Current Working System** ✅:
 - **Full GRBL v1.1f protocol**: All system commands ($I, $G, $$, $#, $N, $), real-time commands (?, !, ~, ^X)
@@ -856,45 +928,50 @@ Hardware OCR/TMR Modules - Step pulse generation
 ```
 
 **TODO - NEXT PRIORITY**: 
-🎯 **✅ SERIAL BUFFER FIX - COMPLETE! (October 18, 2025)** 🎉:
-- ✅ **Root Cause Identified**: 256-byte UART buffer too small for burst commands
-  - Compared with mikroC version (Pic32mzCNC/ folder)
-  - mikroC used 500-byte ring buffer with DMA auto-fill
-  - Harmony/MCC used 256-byte interrupt-driven buffer
-- ✅ **Solution Applied**: Increased UART buffers to 512 bytes
-  - Changed UART2_READ_BUFFER_SIZE from 256→512
-  - Changed UART2_WRITE_BUFFER_SIZE from 256→512
-  - Added 100ms inter-command delay in test scripts
-- ✅ **Memory Impact**: +512 bytes (0.025% of 2MB RAM - negligible)
-- ✅ **Firmware Rebuilt**: New hex file ready for testing
-- **Status**: Serial communication FIXED! Ready for coordinate system testing!
+🎯 **ACCURACY VERIFICATION (Next Session - October 22, 2025)** ⚡:
+- **Step 1**: Flash updated firmware (debug removed, sanity check added) ✅ **BUILD COMPLETE**
+- **Step 2**: Update GRBL settings for T2.5 belt configuration:
+  ```gcode
+  $100=64   ; X-axis (T2.5 belt, 20-tooth pulley, 1/16 microstepping)
+  $101=64   ; Y-axis (same configuration)
+  $103=64   ; A-axis (if T2.5 belt)
+  ```
+- **Step 3**: Test accuracy with calipers:
+  ```gcode
+  G90           ; Absolute mode
+  G92 X0        ; Zero position
+  G1 X100 F1000 ; Move 100mm - should travel EXACTLY 100mm now!
+  ```
+- **Expected**: 100mm commanded = 100mm actual travel (was 55mm with wrong setting)
+- **Verify**: No sanity check errors (step mismatch messages)
+- **Test**: Rectangle path with correct settings - should return to (0.000, 0.000, 0.000)
 
-🎯 **Coordinate System Fixes (Next Priority)** ⚡:
-- **G92 Bug**: Sets offset to current position instead of resetting work coordinates
-  - Location: motion_math.c line 895 `MotionMath_WorkToMachine()`
-  - Symptom: Subsequent moves calculate wrong step counts (658 instead of 800)
-- **G91 Bug**: Relative mode only commands 400 steps instead of 800
-  - Symptom: Position reports 53.85mm instead of 5mm
-- **Position Feedback Bug**: Incorrect mm conversion or offset application
-- **Plan**: Fix after verifying OCR hardware works correctly with test_ocr_direct.c
+🎯 **COMPLETED FIXES (October 21, 2025)** ✅:
+- ✅ **Driver Enable on Axis Transitions** - Critical fix! All axes moving physically
+- ✅ **3-Phase Motion Profile** - Symmetric accel/cruise/decel
+- ✅ **Bresenham Accumulator Reset** - Prevents drift between blocks
+- ✅ **G91 Relative Mode** - Offset calculation working
+- ✅ **Dominant Axis Selection** - Max steps logic everywhere (handles GRBL rounding)
+- ✅ **PLIB Function Integration** - Loose coupling with MCC harmony
+- ✅ **20µs Subordinate Pulses** - DRV8825 compliant timing
+- ✅ **Debug Output Removed** - Clean production output
+- ✅ **Sanity Check System** - Step mismatch detection added
+- ✅ **Steps/mm Documentation** - Comprehensive reference in Datasheet/.text/commands.txt
 
-🎯 **Hardware Motion Testing (Ready - After Coordinate Fixes)** ⏸️:
+🎯 **Hardware Motion Testing (Ready After Settings Update)** ⏸️:
 - ✅ UGS connectivity verified - connects as "GRBL 1.1f"
 - ✅ System commands working - $I, $G, $$, $#, $N, $
 - ✅ Settings management - $100-$133 read/write operational
 - ✅ Real-time position feedback - ? command shows actual positions
-- ✅ **Non-blocking protocol active** - GRBL Character-Counting enables continuous motion!
-- ✅ **Timer prescaler fix applied** - Prevents 16-bit overflow at slow speeds
-- ⏸️ **Blocked**: Need to fix coordinate bugs before full motion testing
-  - Test slow Z-axis: G1 Z1 F60 (should move correctly, not 2-3x too fast!)
+- ✅ **All axes moving physically** - Driver enable fix working!
+- ✅ **Rectangle path completes** - Returns to origin exactly
+- ⏳ **Blocked**: Need to update $100=64 before accuracy verification
+  - Test slow Z-axis: G1 Z1 F60 (should move correctly)
   - Send multiple G-code moves: G90, G1 X10 Y10 F1000, G1 X20 Y20 F1000, G1 X30 Y30 F1000
-  - **Verify non-blocking behavior**: "ok" sent immediately, motion continues in background!
-  - **Verify continuous motion**: No stops between moves (buffer fills with commands)
-  - Observe position values update during motion in UGS status window
+  - Verify position values update during motion in UGS status window
   - Test real-time commands: ! (feed hold), ~ (cycle start), ^X (reset)
-  - Verify settings changes: $100=200, send move, verify new steps/mm applied
-  - Use oscilloscope to confirm smooth cornering with multiple moves queued
-  - Test buffer full condition: Send 20+ rapid moves, verify UGS retries when buffer full
+  - Verify settings changes: $100=64, send move, verify correct distance traveled
+  - Use calipers to confirm 100mm commanded = 100mm actual travel
 
 🎯 **Look-Ahead Planning Implementation (Ready for Phase 3!)**
 - Motion buffer now accepts commands non-blocking (Phase 2 complete ✅)

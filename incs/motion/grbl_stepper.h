@@ -95,6 +95,7 @@ typedef struct
     uint8_t direction_bits;              ///< Direction bits (bit N = axis N direction)
     uint8_t active_axes_mask;            ///< Bitmask of axes with motion (bit N = axis N active)
     int32_t bresenham_counter[NUM_AXES]; ///< Bresenham error accumulator per axis
+    uint32_t block_steps[NUM_AXES];      ///< Total steps for entire block (for sanity check)
 } st_segment_t;
 
 /**
