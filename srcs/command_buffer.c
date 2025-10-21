@@ -24,7 +24,7 @@
 // *****************************************************************************
 // Debug Configuration
 // *****************************************************************************
-// #define DEBUG_MOTION_BUFFER // Enable debug output (DISABLED - floods UGS)
+#define DEBUG_MOTION_BUFFER // Enable debug output (TEMPORARILY for Bug #6 testing)
 
 // *****************************************************************************
 
@@ -301,13 +301,14 @@ uint8_t CommandBuffer_SplitLine(const gcode_line_t *tokenized_line)
         }
     }
 
-#ifdef DEBUG_MOTION_BUFFER
-    if (commands_added > 0)
-    {
-        UGS_Printf("[SPLIT] Added %u commands to buffer (total: %u)\r\n",
-                   commands_added, cmd_buffer.count);
-    }
-#endif
+    // Debug output removed (Oct 21, 2025) - production ready
+    // #ifdef DEBUG_MOTION_BUFFER
+    // if (commands_added > 0)
+    // {
+    //     UGS_Printf("[SPLIT] Added %u commands to buffer (total: %u)\r\n",
+    //                commands_added, cmd_buffer.count);
+    // }
+    // #endif
 
     return commands_added;
 }

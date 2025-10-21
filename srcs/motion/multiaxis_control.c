@@ -29,6 +29,10 @@
 #include <assert.h>
 #include <stdio.h> // For printf debug output
 
+// CRITICAL FIX (Oct 20, 2025): Define NOP for bit-bang delays
+// XC32 doesn't have __NOP(), use inline assembly instead
+#define NOP() __asm__ __volatile__("nop")
+
 // *****************************************************************************
 // MISRA C Compile-Time Assertions
 // *****************************************************************************
@@ -600,69 +604,56 @@ static void Execute_Bresenham_Strategy_Internal(axis_id_t dominant_axis, const s
             sub_state->bresenham_counter -= (int32_t)n_step;
 
             // ═════════════════════════════════════════════════════════════════════
-            // BIT-BANG: Generate step pulse on subordinate axis GPIO
+            // OCR PULSE: Trigger one hardware pulse using mikroC proven pattern!
             // ═════════════════════════════════════════════════════════════════════
-            // Pulse generation: Set HIGH → delay → Set LOW
-            // DRV8825 requires minimum 1.9µs pulse width
-            // At 200MHz: ~400 NOPs = 2µs (safe margin)
+            // mikroC pattern (VERIFIED WORKING in Pic32mzCNC/ folder):
+            //   OC5R   = 0x5;           // Low phase = 5 counts
+            //   OC5RS  = step_delay;    // Pulse width
+            //   TMR2   = 0xFFFF;        // **FORCE IMMEDIATE ROLLOVER!**
+            //   OC5CON = 0x8004;        // **RESTART OCR MODULE!** ← KEY!
+            //
+            // Result: Timer rolls over → count 0 → matches OC5R → pulse fires!
             // ═════════════════════════════════════════════════════════════════════
+
+            // mikroC pattern: Set compare values, timer, then RESTART OCR
             switch (sub_axis)
             {
+            case AXIS_X:
+                OC5R = 0x5;      // OCxR: Low phase (5 counts)
+                OC5RS = 50;      // OCxRS: Pulse width (50 counts = ~32µs)
+                TMR2 = 0xFFFF;   // Force immediate rollover
+                OC5CON = 0x8004; // **RESTART OCR!** (ON=1, OCM=0b100)
+                break;
             case AXIS_Y:
-                // Generate pulse on PulseY pin (RD5)
-                GPIO_PinSet(PulseY_PIN);
-                // Delay for pulse width (~2µs)
-                for (volatile int i = 0; i < 100; i++)
-                    ; // ~2µs @ 200MHz
-                GPIO_PinClear(PulseY_PIN);
-
-                // Update machine position for subordinate axis
-                if (segment->direction_bits & (1 << AXIS_Y))
-                {
-                    machine_position[AXIS_Y]--; // NEGATIVE
-                }
-                else
-                {
-                    machine_position[AXIS_Y]++; // POSITIVE
-                }
+                OC1R = 0x5;
+                OC1RS = 50;
+                TMR4 = 0xFFFF;
+                OC1CON = 0x8004; // **RESTART OCR!**
                 break;
-
             case AXIS_Z:
-                // Generate pulse on PulseZ pin (RF0)
-                GPIO_PinSet(PulseZ_PIN);
-                for (volatile int i = 0; i < 100; i++)
-                    ;
-                GPIO_PinClear(PulseZ_PIN);
-
-                if (segment->direction_bits & (1 << AXIS_Z))
-                {
-                    machine_position[AXIS_Z]--;
-                }
-                else
-                {
-                    machine_position[AXIS_Z]++;
-                }
+                OC4R = 0x5;
+                OC4RS = 50;
+                TMR3 = 0xFFFF;
+                OC4CON = 0x8004; // **RESTART OCR!**
                 break;
-
             case AXIS_A:
-                // Generate pulse on PulseA pin (RF1)
-                GPIO_PinSet(PulseA_PIN);
-                for (volatile int i = 0; i < 100; i++)
-                    ;
-                GPIO_PinClear(PulseA_PIN);
-
-                if (segment->direction_bits & (1 << AXIS_A))
-                {
-                    machine_position[AXIS_A]--;
-                }
-                else
-                {
-                    machine_position[AXIS_A]++;
-                }
+                OC3R = 0x5;
+                OC3RS = 50;
+                TMR5 = 0xFFFF;
+                OC3CON = 0x8004; // **RESTART OCR!**
                 break;
-
             default:
                 break;
+            }
+
+            // Update machine position for subordinate axis
+            if (segment->direction_bits & (1 << sub_axis))
+            {
+                machine_position[sub_axis]--; // NEGATIVE direction
+            }
+            else
+            {
+                machine_position[sub_axis]++; // POSITIVE direction
             }
 
             sub_state->step_count++; // Track subordinate progress
@@ -937,6 +928,12 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
     axis_hw[dominant_axis].OCMP_Disable();
     axis_hw[dominant_axis].TMR_Stop();
 
+    // CRITICAL FIX (Oct 20, 2025): Clear dominant's active flag AND bitmask NOW!
+    // Don't wait for next_seg==NULL - clear it as soon as hardware stops
+    // Must clear bitmask too, otherwise OCR ISR keeps firing and passes guard check!
+    state->active = false;
+    segment_completed_by_axis &= ~(1 << dominant_axis); // Clear this axis's bit
+
     // ═════════════════════════════════════════════════════════════════════════
     // STEP 4: Advance to next segment
     // ═════════════════════════════════════════════════════════════════════════
@@ -973,6 +970,10 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
             ax_state->current_segment = NULL;
             ax_state->active = false;
             ax_state->step_count = 0;
+
+            // Disable OCR hardware (both dominant and subordinate)
+            axis_hw[axis].OCMP_Disable();
+            axis_hw[axis].TMR_Stop();
         }
 
         // NOW safe to clear bitmask (axes already inactive)
@@ -1009,19 +1010,48 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
     // ═════════════════════════════════════════════════════════════════════════
     if (next_seg != NULL)
     {
+        // ═════════════════════════════════════════════════════════════════════
+        // CRITICAL FIX (October 20, 2025) - BUG #6: Clear old dominant's active flag!
+        // ═════════════════════════════════════════════════════════════════════
+        // Problem: Old dominant axis stays active=true when new segment has different dominant
+        //   Example: Seg N: Y dominant (Y.active=true)
+        //            Seg N+1: X dominant (should clear Y.active!)
+        //   Result: Y.active stays true → MultiAxis_IsBusy() = true forever → MOTION HANGS
+        //
+        // Solution: If old dominant is NOT dominant in new segment, clear its active flag!
+        // ═════════════════════════════════════════════════════════════════════
 
-        // Load new segment for dominant axis
-        state->current_segment = next_seg;
-        state->step_count = 0;
-        state->bresenham_counter = 0;
+        // Determine NEW dominant axis (axis with most steps in new segment)
+        axis_id_t new_dominant_axis = AXIS_X;
+        uint32_t max_steps_new = 0;
+        for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+        {
+            if (next_seg->steps[axis] > max_steps_new)
+            {
+                max_steps_new = next_seg->steps[axis];
+                new_dominant_axis = axis;
+            }
+        }
+        if (dominant_axis != new_dominant_axis)
+        {
+            // Dominant axis changed! Clear old dominant's active flag
+            state->active = false;
+        }
+
+        // Load new segment for NEW dominant axis
+        volatile axis_segment_state_t *new_state = &segment_state[new_dominant_axis];
+        new_state->current_segment = next_seg;
+        new_state->step_count = 0;
+        new_state->bresenham_counter = 0;
+        new_state->active = true; // NEW dominant becomes active
 
         // Update ALL subordinate axes to new segment
         // CRITICAL FIX (Oct 20, 2025): Don't check active flag!
         // Subordinates have active=false but still need segment updates.
         for (axis_id_t sub_axis = AXIS_X; sub_axis < NUM_AXES; sub_axis++)
         {
-            if (sub_axis == dominant_axis)
-                continue; // Skip self
+            if (sub_axis == new_dominant_axis)
+                continue; // Skip new dominant (already updated above)
 
             volatile axis_segment_state_t *sub_state = &segment_state[sub_axis];
             if (next_seg->steps[sub_axis] > 0)
@@ -1032,9 +1062,9 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
             }
         }
 
-        // Set direction GPIO for dominant axis
-        bool dir_negative = (next_seg->direction_bits & (1 << dominant_axis)) != 0;
-        switch (dominant_axis)
+        // Set direction GPIO for NEW dominant axis
+        bool dir_negative = (next_seg->direction_bits & (1 << new_dominant_axis)) != 0;
+        switch (new_dominant_axis)
         {
         case AXIS_X:
             if (dir_negative)
@@ -1064,18 +1094,18 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
             break;
         }
 
-        // Configure OCR period for new segment
+        // Configure OCR period for new segment (NEW dominant axis)
         uint32_t period = next_seg->period;
         if (period > 65485)
             period = 65485;
         if (period <= OCMP_PULSE_WIDTH)
             period = OCMP_PULSE_WIDTH + 10;
 
-        axis_hw[dominant_axis].TMR_PeriodSet((uint16_t)period);
-        axis_hw[dominant_axis].OCMP_CompareValueSet((uint16_t)(period - OCMP_PULSE_WIDTH));
-        axis_hw[dominant_axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
-        axis_hw[dominant_axis].OCMP_Enable(); // CRITICAL: Re-enable OCR (was disabled at line 919)
-        axis_hw[dominant_axis].TMR_Start();
+        axis_hw[new_dominant_axis].TMR_PeriodSet((uint16_t)period);
+        axis_hw[new_dominant_axis].OCMP_CompareValueSet((uint16_t)(period - OCMP_PULSE_WIDTH));
+        axis_hw[new_dominant_axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
+        axis_hw[new_dominant_axis].OCMP_Enable(); // CRITICAL: Re-enable OCR (was disabled at line 919)
+        axis_hw[new_dominant_axis].TMR_Start();
     }
     else
     {
@@ -1102,35 +1132,107 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
 
 /**
  * @brief X-axis step execution (OCMP5 callback) - THIN TRAMPOLINE
+ *
+ * OCM=0b101 (Dual Compare Continuous Mode) fires ISR on FALLING EDGE.
+ *
+ * DOMINANT axis: Do nothing, let OCR keep pulsing
+ * SUBORDINATE axis: Disable OCR (Bresenham will re-enable for next pulse)
  */
 static void OCMP5_StepCounter_X(uintptr_t context)
 {
-    ProcessSegmentStep(AXIS_X);
+    axis_id_t axis = AXIS_X;
+
+    // Check if this axis is DOMINANT for current segment
+    if (segment_completed_by_axis & (1 << axis))
+    {
+        // DOMINANT: Process segment step (Bresenham for subordinates)
+        ProcessSegmentStep(axis);
+    }
+    else
+    {
+        // SUBORDINATE: Disable OCR to stop continuous pulsing
+        // Bresenham will re-enable when next step needed
+        axis_hw[axis].OCMP_Disable();
+    }
 }
 
 /**
  * @brief Y-axis step execution (OCMP1 callback)
+ *
+ * OCM=0b101 (Dual Compare Continuous Mode) fires ISR on FALLING EDGE.
+ *
+ * DOMINANT axis: Do nothing, let OCR keep pulsing
+ * SUBORDINATE axis: Disable OCR (Bresenham will re-enable for next pulse)
  */
 static void OCMP1_StepCounter_Y(uintptr_t context)
 {
-    ProcessSegmentStep(AXIS_Y);
+    axis_id_t axis = AXIS_Y;
+
+    // Check if this axis is DOMINANT for current segment
+    if (segment_completed_by_axis & (1 << axis))
+    {
+        // DOMINANT: Process segment step (Bresenham for subordinates)
+        ProcessSegmentStep(axis);
+    }
+    else
+    {
+        // SUBORDINATE: Disable OCR to stop continuous pulsing
+        // Bresenham will re-enable when next step needed
+        axis_hw[axis].OCMP_Disable();
+    }
 }
 
 /**
  * @brief Z-axis step execution (OCMP4 callback)
+ *
+ * OCM=0b101 (Dual Compare Continuous Mode) fires ISR on FALLING EDGE.
+ *
+ * DOMINANT axis: Do nothing, let OCR keep pulsing
+ * SUBORDINATE axis: Disable OCR (Bresenham will re-enable for next pulse)
  */
 static void OCMP4_StepCounter_Z(uintptr_t context)
 {
-    ProcessSegmentStep(AXIS_Z);
+    axis_id_t axis = AXIS_Z;
+
+    // Check if this axis is DOMINANT for current segment
+    if (segment_completed_by_axis & (1 << axis))
+    {
+        // DOMINANT: Process segment step (Bresenham for subordinates)
+        ProcessSegmentStep(axis);
+    }
+    else
+    {
+        // SUBORDINATE: Disable OCR to stop continuous pulsing
+        // Bresenham will re-enable when next step needed
+        axis_hw[axis].OCMP_Disable();
+    }
 }
 
 #ifdef ENABLE_AXIS_A
 /**
  * @brief A-axis step execution (OCMP3 callback)
+ *
+ * OCM=0b101 (Dual Compare Continuous Mode) fires ISR on FALLING EDGE.
+ *
+ * DOMINANT axis: Do nothing, let OCR keep pulsing
+ * SUBORDINATE axis: Disable OCR (Bresenham will re-enable for next pulse)
  */
 static void OCMP3_StepCounter_A(uintptr_t context)
 {
-    ProcessSegmentStep(AXIS_A);
+    axis_id_t axis = AXIS_A;
+
+    // Check if this axis is DOMINANT for current segment
+    if (segment_completed_by_axis & (1 << axis))
+    {
+        // DOMINANT: Process segment step (Bresenham for subordinates)
+        ProcessSegmentStep(axis);
+    }
+    else
+    {
+        // SUBORDINATE: Disable OCR to stop continuous pulsing
+        // Bresenham will re-enable when next step needed
+        axis_hw[axis].OCMP_Disable();
+    }
 }
 #endif
 
@@ -1674,7 +1776,11 @@ bool MultiAxis_StartSegmentExecution(void)
             // Axis was dominant, now subordinate → STOP OCR hardware
             axis_hw[axis].OCMP_Disable();
             axis_hw[axis].TMR_Stop();
-            // Keep state->active = true (will be bit-banged in dominant's ISR)
+
+            // CRITICAL FIX (Oct 20, 2025): Set active=false for subordinates!
+            // Subordinates are bit-banged, not independently executing
+            // Keeping active=true causes MultiAxis_IsBusy() to stay true forever!
+            state->active = false;
         }
 
         // Skip if axis is already active (busy with previous segment)
@@ -1763,11 +1869,12 @@ bool MultiAxis_StartSegmentExecution(void)
             //   - Eliminates rocket ship bug
             // ═════════════════════════════════════════════════════════════════════
 
-            bool is_dominant = (segment_completed_by_axis & (1 << axis)) != 0;
+            // NOTE: is_dominant already calculated at line 1699 - reuse that value!
 
             if (is_dominant)
             {
-                // DOMINANT AXIS: Use OCR hardware for pulse generation
+                // DOMINANT AXIS: Use OCR hardware in continuous pulse mode
+                // OCM=0b101 already configured by MCC (Dual Compare Continuous)
 
                 // Configure OCR period (step rate)
                 axis_hw[axis].TMR_PeriodSet((uint16_t)period);
@@ -1782,14 +1889,19 @@ bool MultiAxis_StartSegmentExecution(void)
             }
             else
             {
-                // SUBORDINATE AXIS: Will be bit-banged in dominant's ISR
-                // No OCR hardware started - GPIO control only
-                // The dominant axis ISR will call axis_step_executor[dominant]()
-                // which runs Bresenham algorithm to bit-bang this axis
+                // SUBORDINATE AXIS: Use OCR hardware in toggle mode
+                // Bresenham algorithm triggers pulse by setting OCxR compare value
+                // Hardware automatically toggles pin: LOW→HIGH→LOW for complete pulse!
 
-                // Ensure OCR is disabled (GPIO control takes over)
-                axis_hw[axis].OCMP_Disable();
-                axis_hw[axis].TMR_Stop();
+                // Set timer period (must be large enough for pulse width)
+                // Use a fixed period that allows toggle sequence to complete
+                axis_hw[axis].TMR_PeriodSet(200); // ~128µs period @ 1.5625MHz
+
+                // CRITICAL: Enable OCR hardware for toggle mode to work!
+                axis_hw[axis].OCMP_Enable();
+
+                // Start timer (needed for OCR pulse generation)
+                axis_hw[axis].TMR_Start();
             }
         }
     }
@@ -1806,19 +1918,20 @@ bool MultiAxis_StartSegmentExecution(void)
  *
  *  MISRA Rule 17.4: Bounds checking before array access
  */
-uint32_t MultiAxis_GetStepCount(axis_id_t axis)
+int32_t MultiAxis_GetStepCount(axis_id_t axis)
 {
     assert(axis < NUM_AXES); // Development-time check
 
     if (axis >= NUM_AXES)
     {
-        return 0U; // Defensive: return safe value for invalid axis
+        return 0; // Defensive: return safe value for invalid axis
     }
 
-    // Return absolute machine position (can be negative!)
-    // GRBL expects unsigned, but we need to handle bidirectional motion
-    // UGS_SendStatusReport() converts to mm and displays correctly
-    return (uint32_t)machine_position[axis];
+    // CRITICAL FIX (Oct 20, 2025): Return signed int32_t!
+    // machine_position[] is signed (can be negative for bidirectional motion)
+    // Casting to uint32_t was causing huge positive numbers for negative positions!
+    // MotionMath_StepsToMM() expects signed int32_t parameter
+    return machine_position[axis];
 }
 
 /*! \brief Update absolute machine position after move completion

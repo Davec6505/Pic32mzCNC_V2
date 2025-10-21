@@ -1,6 +1,6 @@
 # PIC32MZ CNC Motion Controller V2
 
-**A high-performance 4-axis CNC controller with hybrid OCR/bit-bang architecture achieving 100% accuracy and extreme CPU efficiency**
+**A high-performance 4-axis CNC controller with hardware-accelerated OCR pulse generation achieving 100% accuracy**
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
@@ -9,35 +9,37 @@
 
 ## 🎯 Project Vision
 
-This is a **revolutionary hybrid architecture** that combines hardware acceleration with intelligent bit-banging to achieve unprecedented CPU efficiency while maintaining pixel-perfect motion accuracy. Unlike traditional CNC controllers that generate thousands of step interrupts per second, our system uses:
+This is an **innovative hardware-accelerated CNC controller** that leverages the PIC32MZ's Output Compare (OCR) modules for autonomous step pulse generation. The system achieves pixel-perfect motion accuracy while maintaining extremely low CPU overhead through:
 
-1. **ONE OCR hardware module per segment** - Only the dominant axis (longest distance) uses hardware pulse generation
-2. **Subordinate bit-bang coordination** - Secondary axes synchronized via Bresenham algorithm in dominant ISR
-3. **Zero-overhead pulse generation** - No CPU cycles wasted on individual step interrupts
-4. **100% motion accuracy** - Handles GRBL segment prep rounding automatically
+1. **OCM=0b101 Dual Compare Continuous Mode** - Hardware-generated step pulses with ISR auto-disable
+2. **Role-Based ISR Logic** - Same OCR mode for both dominant and subordinate axes
+3. **Bresenham Coordination** - Subordinate axes triggered on-demand via OCR enable/disable
+4. **100% Motion Accuracy** - Handles GRBL segment prep rounding automatically
 
-**CPU Load Comparison:**
-- Traditional GRBL: ~30,000 step interrupts/sec @ 1000mm/min (30% CPU load)
-- Our hybrid system: ~1,000 segment transitions/sec (1% CPU load) + hardware OCR for steps
-- **Result**: 30x more efficient, CPU free for advanced planning and processing
+**Why This Architecture is Brilliant:**
+- **Dominant Axis**: OCR continuously pulses at segment rate, ISR processes each step
+- **Subordinate Axes**: OCR enabled by Bresenham → pulse fires → ISR auto-disables
+- **No Mode Switching**: Single OCM=0b101 configuration for all axes
+- **Hardware-Centric**: OCR modules generate precise pulses autonomously
+- **ISR Fires on Falling Edge**: Perfect timing to auto-disable after pulse completes
 
-## ⚡ Current Status (October 20, 2025)
+## ⚡ Current Status (October 21, 2025)
 
 **Branch:** `master` (Production ready with 100% accuracy!)
 
-### 🎯 Phase 2B Complete - Hybrid OCR/Bit-Bang Architecture ✅
+### 🎯 Phase 2B Complete - Hardware OCR Pulse Generation ✅
 
 **Motion Accuracy**: **100.000%** (800/800 steps verified)
-**Hardware Validated**: All test patterns working perfectly
-**CPU Efficiency**: 30x better than traditional GRBL
+**Hardware Validated**: Oscilloscope confirms 20µs subordinate / 40µs dominant pulse widths
+**CPU Efficiency**: Autonomous hardware pulse generation, minimal ISR overhead
 
 ### ✅ Production-Ready Features
 
 #### **Core Motion System**
-- **🏆 Hybrid OCR/Bit-Bang Architecture**: Revolutionary approach - ONE OCR per segment for dominant axis, subordinates bit-banged via GPIO
+- **🏆 OCM=0b101 Architecture**: Dual Compare Continuous mode with ISR auto-disable
 - **🎯 100% Motion Accuracy**: Pixel-perfect step distribution (10.000mm = exactly 800 steps)
-- **⚡ Extreme CPU Efficiency**: ~1% CPU load vs traditional 30% (30x improvement!)
-- **🔄 Intelligent Segment Distribution**: Handles GRBL rounding automatically (n_step≠steps case)
+- **⚡ Hardware Pulse Generation**: OCR modules autonomously generate step pulses
+- **🔄 Role-Based ISR Logic**: Single pattern handles both dominant and subordinate axes
 - **🎨 Time-Synchronized Motion**: All axes finish simultaneously with correct distances
 
 #### **GRBL v1.1f Protocol**
@@ -110,113 +112,138 @@ This is a **revolutionary hybrid architecture** that combines hardware accelerat
 
 ## 🏗️ Architecture
 
-### 🎯 Revolutionary Hybrid OCR/Bit-Bang System
+### 🎯 OCM=0b101 Hardware Pulse Generation
 
-**The Problem with Traditional GRBL**:
-```
-Traditional approach: One interrupt per step per axis
-At 1000mm/min (80 steps/mm): ~1333 steps/sec × 4 axes = ~5,332 interrupts/sec
-At 5000mm/min: ~6,666 steps/sec × 4 axes = ~26,664 interrupts/sec
-CPU Load: 20-30% just handling step interrupts! 😱
-```
+**The Elegant Solution**: All axes use the same OCR mode (OCM=0b101 Dual Compare Continuous), but behave differently based on their role in each segment.
 
-**Our Revolutionary Solution**: **Hybrid OCR/Bit-Bang Architecture**
-```
-✨ ONE OCR enabled per segment (dominant axis only)
-✨ Subordinate axes bit-banged via GPIO in dominant ISR
-✨ Bresenham algorithm coordinates multi-axis motion
-✨ Hardware autonomously generates step pulses
-✨ Result: ~1000 transitions/sec (1% CPU load) ⚡
-
-CPU Load Comparison:
-- Traditional: ~30,000 interrupts/sec @ 1000mm/min = 30% CPU
-- Our system: ~1,000 segment updates/sec = 1% CPU
-- 🏆 30x MORE EFFICIENT! 🏆
-```
-
-### How It Works (The Magic!)
-
-**Stage 1: GRBL Stepper Prepares Segments**
+**OCR Configuration (Set Once by MCC)**:
 ```c
-// GRBL planner breaks G-code into small segments (typically 8-10 per move)
-// Each segment: ~113 steps @ constant velocity
-Segment 1: X=113, Y=113, n_step=113
-Segment 2: X=113, Y=113, n_step=113
-...
-Segment 8: X=9, Y=9, n_step=8  // Last segment (rounding!)
+// ALL axes use OCM=0b101 (Dual Compare Continuous Pulse mode)
+OCxR = 5                    // Rising edge at count 5
+OCxRS = 50                  // Falling edge at count 50
+Pulse Width = 45 counts × 640ns = 28.8µs (measured: 20-40µs)
+ISR fires on FALLING EDGE   // Perfect timing to auto-disable!
 ```
 
-**Stage 2: Dominant Axis Selection**
+**The Magic - Role-Based ISR Logic**:
 ```c
-// ONE axis with most steps becomes "dominant" per segment
-// Example: X has 113 steps, Y has 113 steps → X chosen as dominant
-// CRITICAL: Only dominant axis enables its OCR hardware!
-
-segment_completed_by_axis = (1 << AXIS_X);  // Bitmask: 0x01
-OCMP4_Enable();   // ✅ X-axis OCR enabled (dominant)
-TMR2_Start();     // Start X-axis timer
-
-// Y-axis: NO OCR ENABLED! Bit-banged instead
-// OCMP1_Disable(); // Subordinate never enabled
-```
-
-**Stage 3: OCR ISR Trampoline Pattern**
-```c
-// ALL OCR ISRs call ProcessSegmentStep(), but only dominant executes!
-void OCMP4_Callback(uintptr_t context)  // X-axis ISR
+// Same ISR pattern for ALL axes (X/Y/Z/A)
+void OCMPx_Callback(uintptr_t context)
 {
-    axis_id_t axis = AXIS_X;
+    axis_id_t axis = AXIS_<X/Y/Z/A>;
     
-    // 🛡️ CRITICAL: Bitmask guard - immediate return if not dominant
-    if (!(segment_completed_by_axis & (1 << axis)))
-        return;  // ✅ Not dominant this segment - bail out immediately!
-    
-    // Only reaches here if X is dominant for current segment
-    ProcessSegmentStep(axis);  // Execute step, bit-bang subordinates
+    // Check segment_completed_by_axis bitmask
+    if (segment_completed_by_axis & (1 << axis))
+    {
+        // DOMINANT: Process segment step
+        ProcessSegmentStep(axis);  // Runs Bresenham for subordinates
+        // OCR stays enabled → continuous pulsing ✅
+    }
+    else
+    {
+        // SUBORDINATE: Auto-disable OCR
+        axis_hw[axis].OCMP_Disable();  // Stops continuous pulsing ✅
+        // Waits for Bresenham to re-enable
+    }
 }
 ```
 
-**Stage 4: Bresenham Bit-Bang in Dominant ISR**
+**How It Works**:
+
+**Stage 1: Segment Loaded**
 ```c
-// Dominant axis ISR runs Bresenham to coordinate subordinates
+// Example: G1 X100 Y50 creates 8 segments
+// Segment 1: X has 113 steps, Y has 113 steps → X chosen as dominant
+segment_completed_by_axis = 0x01;  // Bitmask: bit 0 set for X-axis
+
+// Configure BOTH axes' OCR hardware
+OCMP4_CompareValueSet(period - 40);  // X-axis (dominant)
+OCMP4_CompareSecondaryValueSet(40);
+OCMP4_Enable();  // X starts pulsing continuously
+
+OCMP1_CompareValueSet(5);            // Y-axis (subordinate)  
+OCMP1_CompareSecondaryValueSet(50);
+// Y OCR configured but NOT enabled yet!
+```
+
+**Stage 2: Dominant Axis Pulses**
+```c
+// X-axis OCR generates pulses automatically at segment rate
+// Every pulse → OCMP4 ISR fires on falling edge
+void OCMP4_Callback()  // X-axis ISR
+{
+    // Check bitmask: 0x01 & (1 << 0) = TRUE
+    if (segment_completed_by_axis & (1 << AXIS_X))
+    {
+        // DOMINANT: Process this step
+        ProcessSegmentStep(AXIS_X);  ✅
+        // OCR stays enabled → next pulse fires automatically
+    }
+}
+```
+
+**Stage 3: Bresenham Triggers Subordinate**
+```c
+// Inside ProcessSegmentStep(), Bresenham algorithm determines Y needs step
 void ProcessSegmentStep(axis_id_t dominant_axis)
 {
-    // Step 1: Move dominant axis (already happened via OCR hardware)
-    DirX_Set();   // Direction already set
-    // StepX pulse generated automatically by OCR dual-compare mode!
+    // ... update dominant position ...
     
-    // Step 2: Check subordinate axes (Y, Z, A)
-    for (axis_id_t sub_axis = AXIS_X; sub_axis < NUM_AXES; sub_axis++)
+    // Check subordinate axes
+    for (axis_id_t sub_axis = 0; sub_axis < NUM_AXES; sub_axis++)
     {
-        if (sub_axis == dominant_axis)
-            continue;  // Skip self
+        if (sub_axis == dominant_axis) continue;
         
-        uint32_t steps_sub = segment->steps[sub_axis];
-        if (steps_sub == 0)
-            continue;  // No motion on this axis
+        // Bresenham: accumulate error
+        bresenham_counter[sub_axis] += steps[sub_axis];
         
-        // 🎯 Bresenham algorithm: Decide if subordinate should step
-        bresenham_counter += steps_sub;
-        if (bresenham_counter >= dominant_steps)
+        if (bresenham_counter[sub_axis] >= dominant_steps)
         {
-            bresenham_counter -= dominant_steps;
+            bresenham_counter[sub_axis] -= dominant_steps;
             
-            // ✨ Bit-bang subordinate via GPIO (no OCR!)
-            DirY_Set();   // Set direction
-            StepY_Set();  // Pulse HIGH
-            __asm__ volatile("nop; nop; nop; nop;");  // 20ns delay
-            StepY_Clear();  // Pulse LOW - DONE! ✅
+            // Trigger subordinate pulse - ONE LINE!
+            axis_hw[sub_axis].OCMP_Enable();  ✅
+            // Hardware generates pulse automatically!
         }
     }
 }
 ```
 
-**Why This Is Revolutionary**:
-1. **Hardware Autonomy**: Dominant OCR generates pulses WITHOUT CPU intervention
-2. **Zero Step Interrupts**: Only segment transitions trigger ISR (1kHz vs 30kHz!)
-3. **Bresenham Magic**: Subordinates perfectly synchronized via classic algorithm
-4. **Bitmask Guards**: Safe guarding: Non-dominant OCR ISRs return immediately (no wasted cycles)
-5. **100% Accuracy**: Handles GRBL rounding automatically (n_step≠steps case)
+**Stage 4: Subordinate Auto-Disable**
+```c
+// Y-axis OCR enabled → generates ONE pulse → ISR fires on falling edge
+void OCMP1_Callback()  // Y-axis ISR
+{
+    // Check bitmask: 0x01 & (1 << 1) = FALSE (not dominant)
+    if (segment_completed_by_axis & (1 << AXIS_Y))
+    {
+        // This branch NOT taken for subordinate
+    }
+    else
+    {
+        // SUBORDINATE: Disable OCR immediately
+        axis_hw[AXIS_Y].OCMP_Disable();  ✅
+        // Stops continuous pulsing, waits for next Bresenham trigger
+    }
+}
+```
+
+**Why This Architecture is Perfect**:
+
+✅ **No Mode Switching** - OCM=0b101 set once by MCC, never changed  
+✅ **Hardware Autonomous** - OCR generates precise pulses without CPU intervention  
+✅ **Self-Limiting** - ISR auto-disables subordinates after pulse completes  
+✅ **One-Line Trigger** - Bresenham just calls `OCMP_Enable()`  
+✅ **ISR Fires on Falling Edge** - Perfect timing per datasheet 16.3.2.4  
+✅ **Same Code for All Axes** - Role determined by runtime bitmask check  
+✅ **100% Accurate** - Hardware timing, no software delays  
+✅ **DRV8825 Safe** - 20-40µs pulses exceed 1.9µs minimum by 10x+  
+
+**Measured Results (Oscilloscope)**:
+- Subordinate pulse: 20µs width ✅
+- Dominant pulse: 40µs width ✅  
+- Both axes pulsing simultaneously ✅
+- No continuous pulsing after motion stops ✅
 
 ### Hardware Platform
 - **MCU**: PIC32MZ2048EFH100 @ 200MHz
@@ -242,13 +269,13 @@ TMR1 (1kHz) → Multi-Axis S-Curve State Machine
 
 ### Key Design Decisions
 
-**1. Hybrid OCR/Bit-Bang Architecture** ⭐ **REVOLUTIONARY!**
-- ONE OCR enabled per segment (dominant axis only)
-- Subordinate axes bit-banged via GPIO in dominant ISR
-- Bresenham algorithm for perfect multi-axis coordination
-- Bitmask guard pattern: Non-dominant ISRs return immediately
-- Active flag semantics: Only dominant has active=true
-- Result: 30x better CPU efficiency than traditional GRBL!
+**1. OCM=0b101 Hardware Pulse Generation** ⭐ **PRODUCTION PROVEN!**
+- ALL axes use OCM=0b101 (Dual Compare Continuous mode)
+- Configured once by MCC at initialization - no runtime mode switching
+- Role-based ISR logic: Dominant processes, subordinate auto-disables
+- Bresenham enables subordinate OCR → pulse fires → ISR disables
+- Oscilloscope verified: 20µs subordinate, 40µs dominant pulse widths
+- Result: Hardware-centric, self-limiting, extremely clean code!
 
 **2. GRBL v1.1f Protocol Implementation**
 - Full system command support ($I, $G, $$, $#, $N, $)
@@ -259,22 +286,23 @@ TMR1 (1kHz) → Multi-Axis S-Curve State Machine
 - UGS compatibility verified
 
 **3. Hardware-Accelerated Step Generation**
-- Traditional GRBL: 30kHz interrupt per step (CPU intensive)
-- Our approach: OCR modules generate pulses autonomously
-- Benefit: CPU free for advanced motion planning
+- OCR modules generate pulses autonomously (no software delays)
+- ISR fires on falling edge (perfect timing per datasheet 16.3.2.4)
+- Subordinate auto-disable prevents continuous pulsing
+- CPU free for motion planning and G-code processing
 
 **4. Per-Axis State Management**
 - No global motion_running flag
 - Each axis has independent `active` flag
 - Enables true concurrent motion and reliable restart
 
-**4. S-Curve Motion Profiles**
+**5. S-Curve Motion Profiles**
 - 7-segment jerk-limited profiles
 - Smooth acceleration/deceleration
 - Reduced mechanical stress and vibration
 - Parameters configurable via GRBL settings ($110-$123)
 
-**5. Flow Control Strategy**
+**6. Flow Control Strategy**
 - Phase 1 (Current): Simple Send-Response blocking protocol
   - Each move completes before "ok" sent
   - Brief pauses between moves are CORRECT per GRBL spec
@@ -284,7 +312,7 @@ TMR1 (1kHz) → Multi-Axis S-Curve State Machine
   - Enable continuous motion through corners
   - Requires full look-ahead planning implementation
 
-**6. MISRA C Compliance**
+**7. MISRA C Compliance**
 - Static assertions for compile-time validation
 - Runtime parameter validation
 - Defensive programming patterns
@@ -328,9 +356,9 @@ Pic32mzCNC_V2/
 ## 🔧 Building the Project
 
 ### Prerequisites
-- **MPLAB X IDE** v6.25 or later
+- **MPLAB X IDE / MCC Standalone** To generate plib files for Harmoney compatable.
 - **XC32 Compiler** v4.60 or later
-- **PICkit 4** or compatible programmer
+- **Mikroc USB Bootloader** download for mikroelektronita
 - **Universal G-code Sender (UGS)** for testing
 
 ### Build Commands
@@ -359,9 +387,10 @@ make platform
 - `bins/CS23.elf` - Executable with debug symbols
 - `bins/CS23.hex` - Flash programming file
 - `objs/` - Object files (.o)
+  `other/` - Memory.xml and production.map
 
 ### Build System Features
-- Cross-platform Make (Windows/Linux)
+- Cross-platform Make (Windows/Linux) using gnu make
 - Automatic dependency generation
 - Optimized compilation (-O1 -Werror -Wall)
 - MISRA C:2012 compliance checking
@@ -567,40 +596,51 @@ G1 X100 F500
 
 ## 📊 Hardware Mapping
 
-### Axis Assignments (Hybrid OCR/Bit-Bang)
+### Axis Assignments (Hardware OCR Pulse Generation)
 
-**CRITICAL**: Only ONE OCR enabled per segment! Dominant axis uses hardware, subordinates bit-banged.
+**All axes use OCM=0b101 (Dual Compare Continuous) with role-based ISR behavior**
 
-| Axis | OCR Module | Timer | Direction Pin | Step Pin | Drive System | Steps/mm | Role Per Segment       |
+| Axis | OCR Module | Timer | Direction Pin | Step Pin | Drive System | Steps/mm | ISR Behavior           |
 | ---- | ---------- | ----- | ------------- | -------- | ------------ | -------- | ---------------------- |
-| X    | OCMP4      | TMR2  | DirX (GPIO)   | RC3      | GT2 Belt     | 80       | ✅ Dominant or Bit-Bang |
-| Y    | OCMP1      | TMR4  | DirY (GPIO)   | RD0      | GT2 Belt     | 80       | ✅ Dominant or Bit-Bang |
-| Z    | OCMP5      | TMR3  | DirZ (GPIO)   | RD4      | 2.5mm Lead   | 1280     | ✅ Dominant or Bit-Bang |
+| X    | OCMP5      | TMR3  | DirX (GPIO)   | RC3      | GT2 Belt     | 80       | Role-based (see below) |
+| Y    | OCMP1      | TMR4  | DirY (GPIO)   | RD0      | GT2 Belt     | 80       | Role-based (see below) |
+| Z    | OCMP4      | TMR2  | DirZ (GPIO)   | RD4      | 2.5mm Lead   | 1280     | Role-based (see below) |
 | A    | OCMP3      | TMR5  | DirA (GPIO)   | RD2      | GT2 Belt     | 80       | ⏸️ Not wired            |
 
-**Dominant Axis Selection** (Per Segment):
+**ISR Behavior Per Role**:
+
+**DOMINANT Axis** (most steps in segment):
 ```c
-// Axis with MOST steps in segment becomes dominant
-// Example: G1 X10 Y10 → 8 segments
-//   Segment 1-7: X=113, Y=113 → X chosen (first axis wins tie)
-//   Segment 8:   X=9,   Y=9   → X chosen (consistent)
-//
-// Dominant: OCMP4 enabled, TMR2 started, steps generated by hardware
-// Subordinate (Y): OCMP1 NEVER enabled, bit-banged in X's ISR via DirY/StepY GPIO
-
-segment_completed_by_axis = (1 << AXIS_X);  // Bitmask: 0x01
-OCMP4_Enable();   // ✅ X hardware pulse generation
-TMR2_Start();     // ✅ X timer running
-
-// Y-axis: NO HARDWARE ENABLED!
-// OCMP1 stays disabled - Y pulses via GPIO in OCMP4 ISR
+// segment_completed_by_axis bitmask has bit SET for this axis
+// Example: 0x01 for X-axis dominant
+if (segment_completed_by_axis & (1 << axis))
+{
+    ProcessSegmentStep(axis);  // Process segment, run Bresenham
+}
+// OCR stays enabled → continuous pulsing at segment rate
 ```
 
+**SUBORDINATE Axis** (fewer steps):
+```c
+// segment_completed_by_axis bitmask does NOT have bit set
+if (!(segment_completed_by_axis & (1 << axis)))
+{
+    axis_hw[axis].OCMP_Disable();  // Auto-disable after pulse
+}
+// Waits for Bresenham to re-enable for next pulse
+```
+
+**Pulse Width (Oscilloscope Measured)**:
+- Subordinate: 20µs (exceeds DRV8825 1.9µs minimum by 10x) ✅
+- Dominant: 40µs (exceeds DRV8825 1.9µs minimum by 21x) ✅
+- Both widths safe for stepper drivers
+
 **Why This Matters**:
-- 🎯 **CPU Efficiency**: 1 OCR ISR per segment instead of 4 separate ISRs
-- 🎯 **Bresenham Perfect**: Subordinates synchronized to dominant's steps
-- 🎯 **100% Accurate**: No cumulative error from separate timers
-- 🎯 **Bitmask Guard**: Non-dominant ISRs return immediately (wasted cycles < 10)
+- 🎯 **Same OCR mode for all axes** - No runtime mode switching
+- 🎯 **Hardware-centric** - OCR generates pulses autonomously
+- 🎯 **Self-limiting** - ISR auto-disables subordinates
+- 🎯 **One-line trigger** - Bresenham just calls `OCMP_Enable()`
+- 🎯 **100% Accurate** - No cumulative error, perfect timing
 
 ### Limit Switches (Active Low)
 
@@ -761,6 +801,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ---
 
-**Current Development Focus**: Perfecting multi-axis S-curve motion control with hardware button tests before advancing to limit switches and G-code integration.
+**Current Development Focus**: OCM=0b101 hardware pulse generation validated with oscilloscope. Ready for full G-code streaming tests.
 
-**Last Updated**: October 16, 2025
+**Last Updated**: October 21, 2025

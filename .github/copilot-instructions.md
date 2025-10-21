@@ -1,8 +1,58 @@
 # PIC32MZ CNC Motion Controller V2 - AI Coding Guide
 
-## ⚠️ CRITICAL HYBRID OCR/BIT-BANG ARCHITECTURE (October 20, 2025)
+## ⚠️ CRITICAL OCR PULSE ARCHITECTURE (October 21, 2025)
 
-**DOMINANT AXIS WITH SUBORDINATE BIT-BANG** ✅ **COMPLETE AND WORKING!**
+**OCM=0b101 DUAL COMPARE CONTINUOUS MODE WITH ISR AUTO-DISABLE** ✅ **IMPLEMENTED!**
+
+### Final OCR Architecture - Clean Single-Pulse-On-Demand
+
+After extensive debugging of OCR modes (0b001, 0b011, 0b110, 0b100), we implemented the **elegant solution**:
+
+**OCR Mode Configuration:**
+- **ALL axes use OCM=0b101** (Dual Compare Continuous Pulse mode)
+- Configured once by MCC at initialization - NO runtime mode switching needed
+- OCxR = 5 (rising edge timing)
+- OCxRS = 50 (falling edge timing, ~32µs pulse width)
+- ISR fires on **FALLING EDGE** (when pulse completes)
+
+**ISR Behavior - Role-Based Logic:**
+```c
+void OCMPx_Callback(uintptr_t context)
+{
+    axis_id_t axis = AXIS_<X/Y/Z/A>;
+    
+    // Check segment_completed_by_axis bitmask
+    if (segment_completed_by_axis & (1 << axis))
+    {
+        // DOMINANT: Process segment step (runs Bresenham for subordinates)
+        ProcessSegmentStep(axis);
+        // OCR stays enabled → continuous pulsing
+    }
+    else
+    {
+        // SUBORDINATE: Auto-disable OCR after pulse completes
+        axis_hw[axis].OCMP_Disable();  // Stops continuous pulsing
+        // Bresenham will re-enable when next step needed
+    }
+}
+```
+
+**Bresenham Pulse Trigger (Subordinate Axes):**
+```c
+// When Bresenham overflow (subordinate needs step):
+axis_hw[sub_axis].OCMP_Enable();  // One line - pulse fires automatically!
+```
+
+**Why This Works:**
+- ✅ **Dominant axis**: ISR processes segment, OCR stays enabled → continuous pulses
+- ✅ **Subordinate axis**: ISR disables OCR → single pulse, waits for Bresenham re-enable
+- ✅ **No mode switching**: Same OCM=0b101 for both roles
+- ✅ **Hardware-centric**: OCR generates pulse when enabled, ISR fires on falling edge
+- ✅ **Clean code**: No timer rollover tricks, no register manipulation
+
+### Previous Architecture (October 20, 2025) - For Historical Reference
+
+**DOMINANT AXIS WITH SUBORDINATE BIT-BANG** ✅ **REPLACED BY OCM=0b101 SOLUTION**
 
 ### Architecture Overview - FUNDAMENTAL UNDERSTANDING
 

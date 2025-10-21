@@ -35,6 +35,7 @@
 #include "motion/motion_buffer.h"                      /* For MotionBuffer_Pause/Resume/Clear */
 #include "motion/multiaxis_control.h"                  /* For MultiAxis_EmergencyStop, debug counters */
 #include "motion/grbl_stepper.h"                       /* For GRBLStepper_GetBufferCount */
+#include "motion/grbl_planner.h"                       /* For GRBLPlanner_GetPosition - planner target position */
 #include "config/default/peripheral/uart/plib_uart2.h" /* For UART2 direct access */
 #include <string.h>
 #include <ctype.h>
@@ -121,7 +122,7 @@ void GCode_HandleControlChar(char c)
     {
     case GCODE_CTRL_STATUS_REPORT:
     {
-        /* Get machine positions (absolute position from home) */
+        /* Get machine positions from hardware step counters (actual executed position) */
         float mpos_x = MotionMath_GetMachinePosition(AXIS_X);
         float mpos_y = MotionMath_GetMachinePosition(AXIS_Y);
         float mpos_z = MotionMath_GetMachinePosition(AXIS_Z);
@@ -136,9 +137,7 @@ void GCode_HandleControlChar(char c)
 #if (NUM_AXES > 3)
         /* A-axis position available but not reported in standard GRBL status */
         (void)mpos_a; /* Suppress unused warning - kept for future 4-axis status */
-#endif
-
-        /* Determine machine state */
+#endif                /* Determine machine state */
         const char *state;
         if (MultiAxis_IsBusy())
         {

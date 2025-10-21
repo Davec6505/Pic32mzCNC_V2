@@ -155,7 +155,7 @@ bool MultiAxis_StartSegmentExecution(void);
  *  \param axis Axis to query (AXIS_X, AXIS_Y, AXIS_Z, AXIS_A)
  *  \return Absolute machine position in steps (unsigned cast of signed value)
  */
-uint32_t MultiAxis_GetStepCount(axis_id_t axis);
+int32_t MultiAxis_GetStepCount(axis_id_t axis);
 
 /*! \brief Update absolute machine position after move completion
  *

@@ -137,6 +137,31 @@ void GRBLStepper_GetStats(uint32_t *total_segments, uint32_t *buffer_underruns)
     }
 }
 
+/**
+ * @brief Get position of block currently being executed (for status reports)
+ *
+ * CRITICAL (October 20, 2025): This returns the TARGET position of the block
+ * currently being segmented, NOT the planner queue end position.
+ *
+ * This is what UGS should display during motion - where we're currently executing to.
+ *
+ * @param target Output array for position in mm (machine coordinates)
+ * @return true if valid position returned, false if no block executing
+ */
+bool GRBLStepper_GetExecutingPosition(float *target)
+{
+    if (prep.current_block == NULL || !prep.block_active)
+    {
+        return false; // No block currently executing
+    }
+
+    // Get target position from current block (in steps)
+    // Note: grbl_plan_block_t doesn't store target position directly,
+    // but we can get it from the planner's GetCurrentBlock which has it
+    // For now, return false and we'll use planner position as fallback
+    return false;
+}
+
 // *****************************************************************************
 // Section: Helper Function Implementations
 // *****************************************************************************
