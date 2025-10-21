@@ -363,6 +363,8 @@ void TIM2_IRQHandler(void) {
 - ✅ DMA support for timer updates (could auto-load next period!)
 - ✅ 32-bit timers available (no 16-bit overflow issues)
 
+**NOTE**: PIC32MZ **also has DMA** - we could implement auto-load on our current hardware! See Phase 5 Advanced Optimization.
+
 **Challenges:**
 - ⚠️ No "dual compare" like PIC32 (rising + falling edge)
 - ⚠️ Must use PWM mode instead (compare value = pulse width directly)
@@ -602,6 +604,162 @@ void pio0_irq0_handler(void) {
 - Conference paper or journal article
 - Open-source benchmark suite
 - Industry recognition for innovation
+
+---
+
+### **DMA Auto-Load Optimization** (1-2 weeks) 🔥 **NEW DISCOVERY!**
+**Goal**: Eliminate dominant axis ISR entirely using DMA for period updates
+
+**CRITICAL INSIGHT**: PIC32MZ has **8 DMA channels** - we can use them for zero-CPU step generation!
+
+**Current Architecture** (ISR-based):
+```c
+void OCMP4_Callback(uintptr_t context) {
+    // Dominant axis ISR runs ProcessSegmentStep()
+    // Updates Bresenham counters for subordinate axes
+    // ISR overhead: ~2-5µs per pulse
+}
+```
+
+**DMA Architecture** (Zero-CPU!):
+```c
+// Pre-calculate array of OCR periods for entire segment:
+uint16_t period_array[800];  // For 800-step segment (10mm @ 80 steps/mm)
+for (int i = 0; i < 800; i++) {
+    float velocity = CalculateSCurveVelocity(i);  // S-curve interpolation
+    period_array[i] = (uint16_t)(TMR_CLOCK_HZ / velocity);
+}
+
+// Configure DMA to auto-load TMR2_PR on each OCR4 interrupt:
+DMA_ChannelTransferAdd(
+    DMA_CHANNEL_0,
+    (void*)period_array,      // Source: Pre-calculated periods
+    (void*)&TMR2PR,           // Destination: Timer period register
+    800,                      // Transfer count (one per step)
+    1,                        // Cell size (16-bit)
+    DMA_TRIGGER_OCR4          // Trigger: OCR4 compare match
+);
+
+// Result: Hardware updates timer period automatically!
+// CPU only involved when segment completes (800 steps later)
+```
+
+**Benefits:**
+- ✅ **Zero ISR overhead** during segment execution
+- ✅ **Perfect S-curve velocity** (no quantization to 1kHz TMR1)
+- ✅ **CPU free** for look-ahead planning during motion
+- ✅ **Smoother acceleration** (period updated every step, not every 1ms)
+
+**DMA Configuration Details** (PIC32MZ):
+```c
+// DMA Channel 0: X-axis (TMR2 period auto-update)
+DMA_ChannelSettingsSet(
+    DMA_CHANNEL_0,
+    DMA_CHANNEL_TRANSFER_SIZE_16,     // 16-bit transfers (TMR2PR)
+    DMA_CHANNEL_EVENT_START_IRQ_EN,   // Start on trigger
+    DMA_CHANNEL_ADDRESSING_MODE_SRC_AUTO_INC,  // Increment source (array)
+    DMA_CHANNEL_ADDRESSING_MODE_DEST_FIXED     // Fixed destination (TMR2PR)
+);
+
+// Set trigger: OCR4 interrupt (each pulse fires DMA)
+DMA_ChannelTriggerSet(DMA_CHANNEL_0, DMA_TRIGGER_OCR4);
+
+// Enable interrupt when transfer complete (segment done):
+DMA_ChannelInterruptEnable(DMA_CHANNEL_0, DMA_INT_BLOCK_TRANSFER_COMPLETE);
+
+// Enable DMA channel:
+DMA_ChannelEnable(DMA_CHANNEL_0);
+```
+
+**Bresenham Integration** (Still Needed!):
+- ✅ **Dominant axis**: DMA handles period updates automatically
+- ✅ **Subordinate axes**: Bresenham runs in **DMA completion ISR** (not per-step!)
+  ```c
+  void DMA0_CompleteISR(void) {
+      // Dominant segment complete - only fires once per 800 steps!
+      ProcessSegmentComplete(AXIS_X);
+      
+      // Load next segment's period array:
+      LoadNextSegmentDMA(AXIS_X);
+  }
+  ```
+
+**Memory Requirements:**
+```c
+// Per-segment storage (worst case):
+uint16_t period_array_X[800];  // 1600 bytes
+uint16_t period_array_Y[800];  // 1600 bytes
+uint16_t period_array_Z[800];  // 1600 bytes
+uint16_t period_array_A[800];  // 1600 bytes
+// Total: 6.4KB for all 4 axes (fits easily in 512KB RAM!)
+
+// Could reduce with double-buffering:
+uint16_t period_buffer[2][800];  // 3200 bytes total
+// CPU fills buffer[1] while DMA reads buffer[0]
+```
+
+**Performance Impact:**
+```
+Current ISR-based (dominant axis):
+- ISR overhead: 2-5µs per pulse
+- At 5,000 steps/sec: 10,000-25,000µs/sec = 1-2.5% CPU
+
+DMA-based (dominant axis):
+- ISR overhead: 0µs per pulse (DMA handles it!)
+- At 5,000 steps/sec: 0µs/sec = 0% CPU
+- Only fires on segment complete: ~1µs per 10mm = negligible!
+
+Result: 100x CPU reduction for step generation!
+```
+
+**Implementation Phases:**
+1. **Week 1**: Single-axis DMA proof-of-concept (X-axis only)
+   - Pre-calculate constant velocity array
+   - Configure DMA channel 0
+   - Verify period updates automatically
+   - Test with oscilloscope (frequency changes smoothly)
+
+2. **Week 2**: S-curve integration
+   - Calculate S-curve velocity profile into array
+   - Verify smooth acceleration/deceleration
+   - Compare to current TMR1-based S-curve
+   - Measure actual velocity with scope
+
+3. **Week 3**: Multi-axis coordination
+   - Configure DMA channels 0-3 for all axes
+   - Implement Bresenham in DMA completion ISR
+   - Test coordinated diagonal moves
+   - Verify subordinate axes still bit-banged correctly
+
+4. **Week 4**: Testing and optimization
+   - Long-duration stress test (100,000 step moves)
+   - Measure CPU load (should be <0.1%!)
+   - Double-buffer optimization
+   - Documentation
+
+**Challenges:**
+- ⚠️ **DMA channel availability**: PIC32MZ has 8 channels, we'd use 4 (still leaves 4 for other tasks)
+- ⚠️ **Memory usage**: 6.4KB per segment (manageable with 512KB RAM)
+- ⚠️ **Complexity**: More complex setup than ISR-based approach
+- ⚠️ **Debugging**: Hardware DMA harder to debug than software ISR
+
+**When to Implement:**
+- ✅ **After Phase 3 complete** (look-ahead working)
+- ✅ **After Phase 4 complete** (all features functional)
+- ⚠️ **Not critical** - current ISR overhead already low (1-2.5% CPU)
+- 🎯 **Research value** - Could be published in academic paper!
+
+**Comparable Systems:**
+- **Klipper (3D printing)**: Uses DMA on STM32 for exactly this purpose!
+- **Result**: "Zero-latency" step generation, CPU free for complex kinematics
+- **Our innovation**: First open-source CNC to use **DMA for S-curve profiles**!
+
+**Academic Paper Potential:**
+- Title: "Zero-ISR Step Generation for CNC Motion Control Using DMA-Driven S-Curve Profiles"
+- Impact: Could become reference architecture for next-generation controllers
+- Benefit: Proves hardware-accelerated motion control is the future
+
+---
 
 ### **Advanced Kinematics** (6+ months)
 **Goal**: Leverage freed CPU bandwidth for complex machines
