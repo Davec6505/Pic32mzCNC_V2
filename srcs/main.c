@@ -47,11 +47,14 @@
 #include "motion/multiaxis_control.h" // Multi-axis coordinated motion
 
 // *****************************************************************************
-// External Test Functions (test_ocr_direct.c)
+// External Test Functions (test_ocr_direct.c) - NOW IN LIBS FOLDER
 // *****************************************************************************
-extern void TestOCR_CheckCommands(void);
-extern void TestOCR_ExecuteTest(void);
-extern void TestOCR_ResetCounters(void);
+// Note: test_ocr_direct.c moved to libs/ folder
+// To use: build shared library with 'make shared_lib' and link with USE_SHARED_LIB=1
+// Or copy back to srcs/ for direct compilation
+// extern void TestOCR_CheckCommands(void);
+// extern void TestOCR_ExecuteTest(void);
+// extern void TestOCR_ResetCounters(void);
 
 // *****************************************************************************
 // Debug: UART RX Callback (DISABLED - causes race conditions with polling)
@@ -651,9 +654,10 @@ int main(void)
   while (true)
   {
     /* OCR Direct Hardware Test - Check for 'T' command */
-    TestOCR_CheckCommands();
-    TestOCR_ExecuteTest();
-    TestOCR_ResetCounters();
+    // Note: test_ocr_direct.c moved to libs/ folder - functions not available
+    // TestOCR_CheckCommands();
+    // TestOCR_ExecuteTest();
+    // TestOCR_ResetCounters();
 
     /* Stage 1: Process incoming serial data → Command Buffer (64 entries)
      * - Receives lines from UART

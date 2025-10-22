@@ -6,6 +6,19 @@ MODULE     := CS23
 # The device is expected to be a PIC32MZ family device.
 DEVICE     := 32MZ2048EFH100
 
+# Build configuration: Default, Debug, or Release
+# Controls output directory structure and optimization level
+# Usage: make all BUILD_CONFIG=Debug    (debug build with -g3 -O0)
+#        make all BUILD_CONFIG=Release  (optimized build with -O3)
+#        make all                       (balanced build with -g -O1)
+BUILD_CONFIG ?= Default
+
+# Library control: set USE_SHARED_LIB=1 to link against pre-built library
+# Usage: make shared_lib             (builds libCS23shared.a from libs/*.c)
+#        make all USE_SHARED_LIB=1    (links executable against library)
+#        make all                     (compiles all sources directly)
+USE_SHARED_LIB ?= 0
+
 # Memory configuration for dynamic allocation
 # These control heap and stack sizes for the PIC32MZ application
 HEAP_SIZE  := 20480    # 20KB heap for dynamic memory allocation
@@ -37,11 +50,20 @@ CLEAN=make clean DRY_RUN=$(DRY_RUN)
 BUILD_DIR=make build_dir
 
 all:
-	@echo "######  BUILDING   ########"
-	cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE)
+	@echo "######  BUILDING EXECUTABLE ($(BUILD_CONFIG))  ########"
+ifeq ($(USE_SHARED_LIB),1)
+	@echo "######  (Using pre-built shared library)  ########"
+endif
+	cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE) USE_SHARED_LIB=$(USE_SHARED_LIB) BUILD_CONFIG=$(BUILD_CONFIG)
 	@echo "###### BIN TO HEX ########"
-	cd bins && "$(COMPILER_LOCATION)/xc32-bin2hex" $(MODULE)
-	@echo "######  BUILD COMPLETE   ########"
+	cd bins/$(BUILD_CONFIG) && "$(COMPILER_LOCATION)/xc32-bin2hex" $(MODULE)
+	@echo "######  BUILD COMPLETE (bins/$(BUILD_CONFIG)/$(MODULE).hex)  ########"
+
+# Build shared library from libs/*.c files
+shared_lib:
+	@echo "######  BUILDING SHARED LIBRARY ($(BUILD_CONFIG))  ########"
+	cd srcs && $(BUILD) shared_lib COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) BUILD_CONFIG=$(BUILD_CONFIG)
+	@echo "######  SHARED LIBRARY COMPLETE (libs/$(BUILD_CONFIG)/libCS23shared.a)  ########"
 
 # Quiet build - shows only errors, warnings, and completion status
 quiet:
@@ -136,7 +158,11 @@ help: cmdlets
 HELP_ENTRIES = \
     make build_dir            | Start by testing build directories output (DRY_RUN=1 default). ; \
     make build_dir DRY_RUN=0  | Create build directories (set DRY_RUN=1 to simulate). ; \
-    make all                  | Build the project (full output). ; \
+    make all                  | Build Default configuration (balanced -g -O1). ; \
+    make all BUILD_CONFIG=Debug | Build Debug configuration (-g3 -O0, full symbols). ; \
+    make all BUILD_CONFIG=Release | Build Release configuration (-O3 optimized). ; \
+    make shared_lib           | Build shared library from libs/*.c files. ; \
+    make all USE_SHARED_LIB=1 | Build executable linked against pre-built library. ; \
     make quiet                | Build with filtered output (errors/warnings only). ; \
     make clean                | Clean build outputs. ; \
     make platform             | Show platform information. ; \
@@ -174,7 +200,7 @@ endif
 
 
 
-.PHONY: all quiet build_dir clean install find-source grep-pattern list-files debug platform cmdlets 
+.PHONY: all quiet build_dir clean install find-source grep-pattern list-files debug platform cmdlets shared_lib 
 
 
 # TODOS

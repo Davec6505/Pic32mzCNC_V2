@@ -91,17 +91,36 @@ endif
 # The directories are used to store object files, binaries, source files, include files, and other files.
 # The directories are created relative to the project root directory.
 # The project root directory is expected to be one level above the srcs directory.
-# The project root directory is expected to contain the srcs, objs, incs, bins, and other directories.
+# The project root directory is expected to contain the srcs, objs, incs, bins, libs, and other directories.
 # The objs directory is used to store object files.
 # The incs directory is used to store header files.
 # The bins directory is used to store binaries.
+# The libs directory is used to store static libraries (.a files).
 # The other directory is used to store other files such as maps and XML files.
 ROOT     := ..
-OBJ_DIR  := $(ROOT)/objs
+
+# Build configuration: Default, Debug, or Release
+# Controls optimization level and output directory structure
+BUILD_CONFIG ?= Default
+
+# Output directories based on configuration
+BASE_BIN_DIR  := $(ROOT)/bins
+BASE_LIB_DIR  := $(ROOT)/libs
+BASE_OBJ_DIR  := $(ROOT)/objs
+BASE_OUT_DIR  := $(ROOT)/other
+
+BIN_DIR  := $(BASE_BIN_DIR)/$(BUILD_CONFIG)
+LIB_DIR  := $(BASE_LIB_DIR)/$(BUILD_CONFIG)
+OBJ_DIR  := $(BASE_OBJ_DIR)/$(BUILD_CONFIG)
+OUT_DIR  := $(BASE_OUT_DIR)/$(BUILD_CONFIG)
+
 INC_DIR  := $(ROOT)/incs
-BIN_DIR  := $(ROOT)/bins
 SRC_DIR  := $(ROOT)/srcs
-OUT_DIR  := $(ROOT)/other
+
+# Library control: set USE_SHARED_LIB=1 to link against pre-built library
+# If enabled, builds library from libs/*.c and links against it
+# If disabled, compiles all sources directly into executable
+USE_SHARED_LIB ?= 0
 
 
 # Source files and object files
@@ -115,8 +134,25 @@ endef
 # Get all source files and filter out test files for production CNC build
 ALL_SRCS := $(call get_c_files,$(SRC_DIR))
 EXCLUDED_FILES := $(SRC_DIR)/gcode_test_app.c $(SRC_DIR)/gcode_test_framework.c $(SRC_DIR)/gcode_parser_dma.c
-SRCS := $(filter-out $(EXCLUDED_FILES),$(ALL_SRCS))
-OBJS := $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
+
+# Library source files (placed in BASE_LIB_DIR folder - these can be built as separate library)
+LIB_SRCS := $(wildcard $(BASE_LIB_DIR)/*.c)
+LIB_OBJS := $(LIB_SRCS:$(BASE_LIB_DIR)/%.c=$(OBJ_DIR)/libs/%.o)
+
+# Main application sources (exclude library sources if USE_SHARED_LIB=1)
+ifeq ($(USE_SHARED_LIB),1)
+    # Link against pre-built library - exclude library sources from main build
+    SRCS := $(filter-out $(EXCLUDED_FILES),$(ALL_SRCS))
+    OBJS := $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
+    # Add library to link command
+    LINK_LIBS := -L"$(LIB_DIR)" -lCS23shared
+else
+    # Compile everything directly (include library sources in main build)
+    SRCS := $(filter-out $(EXCLUDED_FILES),$(ALL_SRCS))
+    OBJS := $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
+    OBJS += $(LIB_OBJS)
+    LINK_LIBS :=
+endif
 
 
 # The assembly files are expected to be in the srcs directory & sub-directories.
@@ -142,16 +178,27 @@ ifeq ($(COMPILER),c99)
 CC := "$(COMPILER_LOCATION)/xc32-gcc"
 MCU := -mprocessor=$(DEVICE)
 STD := c99
-# Debug mode control: set DEBUG=1 on command line to enable diagnostic output
-# Usage: make all DEBUG=1  (enables -DDEBUG_MOTION_BUFFER)
-#        make all          (production build, no debug output)
-ifeq ($(DEBUG),1)
-FLAGS := -Werror -Wall -MP -MMD -DDEBUG_MOTION_BUFFER
-$(info *** DEBUG MODE ENABLED: -DDEBUG_MOTION_BUFFER defined ***)
+
+# Configuration-specific compiler flags
+ifeq ($(BUILD_CONFIG),Debug)
+    # Debug: Full debug symbols, no optimization, debug defines
+    OPT_FLAGS := -g3 -O0
+    CONFIG_DEFINES := -DDEBUG -DXPRJ_Debug=Debug -DDEBUG_MOTION_BUFFER
+    $(info *** DEBUG BUILD: -g3 -O0 with debug symbols ***)
+else ifeq ($(BUILD_CONFIG),Release)
+    # Release: Aggressive optimization, no debug symbols
+    OPT_FLAGS := -O3 -DNDEBUG
+    CONFIG_DEFINES := -DXPRJ_Release=Release
+    $(info *** RELEASE BUILD: -O3 optimized ***)
 else
-FLAGS := -Werror -Wall -MP -MMD
-$(info *** PRODUCTION BUILD: Debug output disabled ***)
+    # Default: Balanced optimization with basic debug info
+    OPT_FLAGS := -g -O1
+    CONFIG_DEFINES := -DXPRJ_Default=Default
+    $(info *** DEFAULT BUILD: -g -O1 balanced ***)
 endif
+
+FLAGS := -Werror -Wall -MP -MMD $(CONFIG_DEFINES)
+
 else
 CC := "$(COMPILER_LOCATION)/xc32"
 MCU := -mprocessor=$(DEVICE)
@@ -172,29 +219,41 @@ INCS := -I"$(INC_DIR)" $(INC_FLAGS) -I"$(DFP_INCLUDE)"
 
 
 #Direct the compiler outputs for .o files from .c or .cpp code  -x c
-DIRECT_OBJ := $(CC)  -g  -c $(MCU)  -ffunction-sections -fdata-sections -O1 -fno-common 			$(INCS)  $(FLAGS) -MF $(@:.o=.d) -DXPRJ_default=default -mdfp="$(DFP)"
+DIRECT_OBJ := $(CC) $(OPT_FLAGS) -c $(MCU) -ffunction-sections -fdata-sections -fno-common $(INCS) $(FLAGS) -mdfp="$(DFP)"
 			
 
 LINKER_SCRIPT := $(DFP)/xc32/$(DEVICE)/p$(DEVICE).ld
-DIRECT_LINK := $(CC)  $(MCU) -nostartfiles -DXPRJ_default=default -mdfp="$(DFP)" 				-Wl,--defsym=__MPLAB_BUILD=1,--script="$(LINKER_SCRIPT)",--defsym=_min_heap_size=$(HEAP_SIZE),--defsym=_min_stack_size=$(STACK_SIZE),--gc-sections,--no-code-in-dinit,--no-dinit-in-serial-mem,-Map="$(OUT_DIR)/production.map",--memorysummary,$(OUT_DIR)/memoryfile.xml 
+DIRECT_LINK := $(CC) $(MCU) -nostartfiles $(CONFIG_DEFINES) -mdfp="$(DFP)" -Wl,--defsym=__MPLAB_BUILD=1,--script="$(LINKER_SCRIPT)",--defsym=_min_heap_size=$(HEAP_SIZE),--defsym=_min_stack_size=$(STACK_SIZE),--gc-sections,--no-code-in-dinit,--no-dinit-in-serial-mem,-Map="$(OUT_DIR)/$(BUILD_CONFIG).map",--memorysummary,$(OUT_DIR)/memoryfile.xml 
 
 
 
-DIRECT_ASM :=   -c  -DXPRJ_default=default    -Wa,--defsym=__MPLAB_BUILD=1,-MD=$(OBJ_DIR)/startup/startup.o.asm.d,--gdwarf-2 -mdfp="$(DFP)" -MMD -MF $(OBJ_DIR)/startup/startup.o.d
+DIRECT_ASM := -c $(CONFIG_DEFINES) -Wa,--defsym=__MPLAB_BUILD=1,-MD=$(OBJ_DIR)/startup/startup.o.asm.d,--gdwarf-2 -mdfp="$(DFP)" -MMD -MF $(OBJ_DIR)/startup/startup.o.d
 
-# Define the default target (which is built when make is invoked without any arguments)
+# Default target: build executable
 $(BIN_DIR)/$(MODULE): $(OBJS)
 	@echo "Building project for $(DEVICE)"
+ifeq ($(USE_SHARED_LIB),1)
+	@echo "Linking with pre-built shared library: libCS23shared.a"
+	$(DIRECT_LINK) -o $@ $^ $(LINK_LIBS)
+else
 	@echo "Linking object files to create the final executable"
-	$(DIRECT_LINK) -o $@ $^ 
+	$(DIRECT_LINK) -o $@ $^
+endif
 	@echo "Build complete. Output is in $(BIN_DIR)"
 
 # Compile all source files to object files
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@echo "Compiling $< to $@"
 	@$(call MKDIR,$(dir $@))
-	$(DIRECT_OBJ) $< -o $@
+	$(DIRECT_OBJ) -MF $(@:.o=.d) $< -o $@
 	@echo "Object file created: $@"
+
+# Compile library source files (from BASE_LIB_DIR folder - not config-specific)
+$(OBJ_DIR)/libs/%.o: $(BASE_LIB_DIR)/%.c
+	@echo "Compiling library source $< to $@"
+	@$(call MKDIR,$(dir $@))
+	$(DIRECT_OBJ) -MF $(@:.o=.d) $< -o $@
+	@echo "Library object file created: $@"
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.S
 	@echo "Compiling assembly file $< to object file $@"
@@ -202,9 +261,27 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.S
 	$(CC) $(MCU) $(DIRECT_ASM) -o $@ $<
 	@echo "Object file created: $@"
 
+# Build shared library from libs/*.c files
+$(LIB_DIR)/libCS23shared.a: $(LIB_OBJS)
+	@echo "Creating shared library from $(words $(LIB_OBJS)) object file(s)"
+	@echo "Library sources: $(LIB_SRCS)"
+	@$(call MKDIR,$(LIB_DIR))
+	"$(COMPILER_LOCATION)/xc32-ar" rcs $@ $^
+	@echo "Shared library created: $@"
+	@echo "Library size:"
+ifeq ($(OS),Windows_NT)
+	@powershell -Command "Get-Item '$@' | Select-Object Name, @{Name='Size(KB)';Expression={[math]::Round(\$$_.Length/1KB,2)}}"
+else
+	@ls -lh $@
+endif
+
+# Target to build only the shared library
+shared_lib: $(LIB_DIR)/libCS23shared.a
+	@echo "Shared library build complete!"
 
 
-.PHONY: clean build_dir debug help platform rem_dir
+
+.PHONY: clean build_dir debug help platform rem_dir shared_lib
 
 # Show platform-specific configuration
 platform:
@@ -229,24 +306,32 @@ SRC_DIRS := $(sort $(dir $(wildcard $(SRC_DIR)/*/)) $(dir $(wildcard $(SRC_DIR)/
 SRC_SUBDIRS := $(sort $(filter-out startup/,$(SRC_DIRS:$(SRC_DIR)/%=%)))
 
 build_dir: 
-	@echo "Creating build base directories if they do not exist ($(detected_OS))"
-	@$(call MKDIR,$(OBJ_DIR))
-	@$(call MKDIR,$(BIN_DIR))
+ake	@echo "Creating build directories for configuration: $(BUILD_CONFIG) ($(detected_OS))"
+	@echo "Creating base directories..."
+	@$(call MKDIR,$(BASE_BIN_DIR))
+	@$(call MKDIR,$(BASE_LIB_DIR))
+	@$(call MKDIR,$(BASE_OBJ_DIR))
+	@$(call MKDIR,$(BASE_OUT_DIR))
 	@$(call MKDIR,$(SRC_DIR))
 	@$(call MKDIR,$(INC_DIR))
+	@echo "Creating configuration-specific directories..."
+	@$(call MKDIR,$(BIN_DIR))
+	@$(call MKDIR,$(LIB_DIR))
+	@$(call MKDIR,$(OBJ_DIR))
 	@$(call MKDIR,$(OUT_DIR))
 	@echo "Creating subdirectories in OBJ_DIR and INC_DIR based on SRC_DIR structure"
 	@$(foreach subdir,$(SRC_SUBDIRS),$(call MKDIR,$(OBJ_DIR)/$(subdir)) && $(call MKDIR,$(INC_DIR)/$(subdir)) &&) echo "Created peripheral directories"
 	@echo "Moving header files from src subdirectories to corresponding inc subdirectories"
 	@$(foreach subdir,$(SRC_SUBDIRS),$(foreach header,$(wildcard $(SRC_DIR)/$(subdir)*.h),$(call MOVE,$(header),$(INC_DIR)/$(subdir)) &&)) echo "Headers moved"
-	@echo "Build directories created successfully"
+	@echo "Build directories created successfully for $(BUILD_CONFIG)"
 
 
 
 
 clean:
-	@echo "Cleaning up object files and binaries ($(detected_OS)) with DRY_RUN=$(DRY_RUN)"
+	@echo "Cleaning up object files, binaries, and libraries ($(detected_OS)) with DRY_RUN=$(DRY_RUN)"
 	@$(call RM,$(BIN_DIR)/,*)
+	@$(call RM,$(LIB_DIR)/,*.a)
 	@$(call RM,$(OBJ_DIR)/,*.o)
 	@$(call RM,$(OUT_DIR)/,*)
 	@echo "Clean complete."
@@ -284,6 +369,12 @@ debug_path:
 # Display the source files, object files, and include directories
 debug:
 	@echo "Build system debug info ($(detected_OS)):"
+	@echo "Build configuration: $(BUILD_CONFIG)"
+	@echo "Use shared library: $(USE_SHARED_LIB)"
+	@echo "Executable target: $(BIN_DIR)/$(MODULE)"
+	@echo "Library target: $(LIB_DIR)/libCS23shared.a"
+	@echo "Optimization flags: $(OPT_FLAGS)"
+	@echo "Config defines: $(CONFIG_DEFINES)"
 	@echo "Source files:"
 	@$(foreach src,$(SRCS),echo "  $(src)" &&) echo ""
 	@echo "Object files:"
