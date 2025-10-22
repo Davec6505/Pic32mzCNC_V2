@@ -244,15 +244,29 @@ static bool prep_segment(void)
     float nominal_speed_sqr = (prep.current_block->programmed_rate / 60.0f) *
                               (prep.current_block->programmed_rate / 60.0f);
 
-    // CRITICAL FIX (October 21, 2025): Implement proper deceleration!
-    // Calculate required exit velocity based on remaining distance
-    // This ensures smooth deceleration at end of block
-
-    // Get block's target exit velocity (from planner junction optimization)
-    // GRBL planner stores entry_speed_sqr for THIS block (our start speed)
-    // Exit speed should be next block's entry speed (or zero if last block)
-    // For now, conservatively decelerate to entry speed (safe for junctions)
-    float block_exit_speed = sqrtf(prep.current_block->entry_speed_sqr) / 60.0f; // Convert mm/min to mm/sec
+    // CRITICAL FIX (October 22, 2025 - Phase 3): Look ahead for exit velocity!
+    // GRBL's elegant design: Exit speed of block[N] = Entry speed of block[N+1]
+    // Planner ensures continuity: block[N].exit == block[N+1].entry
+    //
+    // Example: 90° corner at 1000mm/min programmed rate
+    //   Block 1: entry_speed_sqr = 0, exit = 500000 (sqrt = 707mm/min, junction limit)
+    //   Block 2: entry_speed_sqr = 500000 (our junction speed!), exit = 0 (last block)
+    //
+    // By looking ahead to next block's entry, we get smooth cornering without stops!
+    
+    grbl_plan_block_t *next_block = GRBLPlanner_GetNextBlock(prep.current_block);
+    
+    float block_exit_speed;
+    if (next_block != NULL)
+    {
+        // Exit at next block's entry speed for smooth junction transition
+        block_exit_speed = sqrtf(next_block->entry_speed_sqr) / 60.0f; // Convert mm/min to mm/sec
+    }
+    else
+    {
+        // Last block in buffer - decelerate to zero (complete stop)
+        block_exit_speed = 0.0f;
+    }
 
     // Calculate deceleration distance needed to reach block exit speed from current speed
     float current_speed_sqr = prep.current_speed * prep.current_speed;

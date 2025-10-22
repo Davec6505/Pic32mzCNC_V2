@@ -375,6 +375,34 @@ void GRBLPlanner_DiscardCurrentBlock(void)
     }
 }
 
+/*! \brief Get next block in buffer (for stepper look-ahead)
+ *  Phase 3 Addition: Enables stepper to determine exit velocity
+ *
+ *  CRITICAL INSIGHT:
+ *    GRBL stores entry_speed_sqr for each block.
+ *    Exit speed of block[N] = Entry speed of block[N+1]
+ *    This function allows stepper to look ahead for smooth junctions.
+ *
+ *  \param current_block Pointer to current block being executed
+ *  \return Pointer to next block, or NULL if current is last in buffer
+ */
+grbl_plan_block_t *GRBLPlanner_GetNextBlock(grbl_plan_block_t *current_block)
+{
+    /* Calculate current block's index in ring buffer */
+    uint8_t current_index = (uint8_t)(current_block - block_buffer);
+
+    /* Get next block index (with wraparound) */
+    uint8_t next_index = GRBLPlanner_NextBlockIndex(current_index);
+
+    /* Check if next block exists (not at buffer head) */
+    if (next_index == block_buffer_head)
+    {
+        return NULL; /* Current block is last in buffer - decelerate to zero */
+    }
+
+    return &block_buffer[next_index];
+}
+
 // *****************************************************************************
 // Section: Public API - Position Tracking
 // *****************************************************************************

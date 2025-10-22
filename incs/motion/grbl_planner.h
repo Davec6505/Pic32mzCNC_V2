@@ -411,4 +411,24 @@ void GRBLPlanner_GetPosition(float *target);
  */
 uint8_t GRBLPlanner_NextBlockIndex(uint8_t block_index);
 
+/*! \brief Get next block in buffer (for stepper look-ahead)
+ *
+ *  Phase 3 Addition (October 22, 2025): Enables continuous motion through junctions
+ *
+ *  Returns pointer to next block in buffer for exit velocity determination.
+ *  In GRBL, exit speed of block[N] = entry speed of block[N+1].
+ *  This function allows stepper to look ahead for smooth cornering.
+ *
+ *  Usage by stepper:
+ *    grbl_plan_block_t *next = GRBLPlanner_GetNextBlock(current_block);
+ *    float exit_speed = (next != NULL) ? sqrt(next->entry_speed_sqr) : 0.0f;
+ *
+ *  \param current_block Pointer to block currently being executed
+ *  \return Pointer to next block, or NULL if current is last in buffer
+ *
+ *  Thread Safety: ISR-safe (read-only access to buffer pointers)
+ *  MISRA Rule 8.7: External linkage (called from grbl_stepper.c)
+ */
+grbl_plan_block_t *GRBLPlanner_GetNextBlock(grbl_plan_block_t *current_block);
+
 #endif // GRBL_PLANNER_H
