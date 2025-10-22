@@ -21,6 +21,7 @@
 #include "serial_wrapper.h"
 #include "gcode_parser.h"
 #include "config/default/peripheral/uart/plib_uart2.h"
+#include "config/default/peripheral/gpio/plib_gpio.h"  // For LED debug
 #include <string.h>
 
 // *****************************************************************************
@@ -53,6 +54,9 @@ void Serial_RxCallback(uintptr_t context)
 {
     // This is called when UART2_Read() completes (1 byte received)
     uint8_t data = uart_rx_byte;
+
+    // DEBUG: Toggle LED2 to prove ISR is being called
+    LED2_Toggle();
 
     // GRBL Pattern: Check for real-time commands and SET FLAG (don't execute in ISR!)
     // ISR context cannot safely call UART blocking functions
@@ -140,7 +144,15 @@ void Serial_WriteString(const char *str)
 
 uint8_t Serial_Available(void)
 {
-    return (uint8_t)((rx_buffer.head - rx_buffer.tail) & (SERIAL_RX_BUFFER_SIZE - 1));
+    uint8_t available = (uint8_t)((rx_buffer.head - rx_buffer.tail) & (SERIAL_RX_BUFFER_SIZE - 1));
+    
+    /* DEBUG: Flash LED when data available */
+    if (available > 0)
+    {
+        LED2_Toggle();  // LED2 - proves data is in ring buffer
+    }
+    
+    return available;
 }
 
 uint8_t Serial_GetRealtimeCommand(void)

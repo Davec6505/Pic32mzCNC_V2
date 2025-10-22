@@ -212,6 +212,15 @@ float MotionMath_GetMaxVelocityMMPerMin(axis_id_t axis);
  */
 float MotionMath_GetJunctionDeviation(void);
 
+/*! \brief Get arc tolerance ($12 setting)
+ *
+ *  Returns maximum deviation allowed from true arc when converting
+ *  to linear segments. Default 0.002mm provides smooth arcs.
+ *
+ *  \return Arc tolerance in mm
+ */
+float MotionMath_GetArcTolerance(void);
+
 /*! \brief Get steps per mm for specified axis
  *
  *  Returns GRBL $100-$103 setting directly.

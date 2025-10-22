@@ -109,6 +109,13 @@ static void ProcessSerialRx(void)
   static char line_buffer[256] = {0}; /* Initialize to zeros on first use */
   static size_t line_pos = 0;         /* Track position across calls */
   static bool line_complete = false;  /* Flag for complete line */
+  static uint32_t serial_rx_call_count = 0;  /* DEBUG: Count function calls */
+
+  /* DEBUG: Print every 10 calls to show this function executes */
+  if (++serial_rx_call_count % 10 == 0)
+  {
+    UGS_Printf("[DEBUG_RX] ProcessSerialRx called %lu times\r\n", serial_rx_call_count);
+  }
 
   /* Check if serial data available in RX ring buffer
    * GRBL serial: Interrupt-driven RX (Priority 5/0), 256-byte buffer
@@ -306,6 +313,12 @@ static void ProcessSerialRx(void)
        */
       uint8_t commands_added = CommandBuffer_SplitLine(&tokenized);
 
+      /* DEBUG: Show command buffer activity */
+     // LED2_Toggle();  // LED2 toggle - hardware proof of execution
+      UGS_Printf("[MSG:SERIAL Added %u commands, buffer_count=%u]\r\n", 
+                 commands_added, CommandBuffer_GetCount());
+
+
       if (commands_added > 0)
       {
         /* Commands successfully added to buffer
@@ -377,6 +390,9 @@ static void ProcessSerialRx(void)
  */
 static void ProcessCommandBuffer(void)
 {
+  /* DEBUG: Prove this function is called */
+  LED2_Toggle();
+  
   /* Modal position tracking - preserve unspecified axes (CRITICAL for GRBL planner!)
    * In G90 absolute mode, when "G1 X10" is sent, Y/Z should maintain last position.
    * Parser only fills in specified axes, so we must merge with modal position. */
@@ -401,6 +417,19 @@ static void ProcessCommandBuffer(void)
   if (motion_count < 15) /* Changed from 12 to 15 - process more aggressively */
   {
     command_entry_t cmd;
+    
+    /* DEBUG: Check command buffer state */
+    uint8_t cmd_buf_count = CommandBuffer_GetCount();
+    
+    /* ALWAYS print - even if buffer empty */
+    static uint32_t empty_check_counter = 0;
+    if (cmd_buf_count > 0 || ++empty_check_counter > 50000)
+    {
+      UGS_Printf("[MSG:CMDBUF count=%u HasData=%d check=%lu]\r\n", 
+                 cmd_buf_count, CommandBuffer_HasData(), empty_check_counter);
+      if (empty_check_counter > 50000) empty_check_counter = 0;
+    }
+    
     if (CommandBuffer_GetNext(&cmd))
     {
 #ifdef DEBUG_MOTION_BUFFER
@@ -433,11 +462,11 @@ static void ProcessCommandBuffer(void)
                           move.axis_words[AXIS_Z] ||
                           move.axis_words[AXIS_A];
 
-#ifdef DEBUG_MOTION_BUFFER
-        UGS_Printf("[PARSE] '%s' -> motion=%d (X:%d Y:%d Z:%d)\r\n",
-                   reconstructed_line, has_motion,
-                   move.axis_words[AXIS_X], move.axis_words[AXIS_Y], move.axis_words[AXIS_Z]);
-#endif
+        /* ALWAYS print parse result for debugging */
+        UGS_Printf("[MSG:PARSE '%s' motion=%d mode=%u X=%d Y=%d ijk=%d]\r\n",
+                   reconstructed_line, has_motion, move.motion_mode,
+                   move.axis_words[AXIS_X], move.axis_words[AXIS_Y],
+                   move.arc_has_ijk);
 
         if (has_motion)
         {
@@ -524,8 +553,26 @@ static void ProcessCommandBuffer(void)
           }
           /* Future: PL_COND_FLAG_SYSTEM_MOTION for G28/G30 */
 
-          /* Add to GRBL planner (replaces MotionBuffer_Add) */
-          if (!GRBLPlanner_BufferLine(target_machine, &pl_data))
+          /* ═══════════════════════════════════════════════════════════════
+           * ARC CONVERSION: G2/G3 → Multiple G1 Segments (October 22, 2025)
+           * ═══════════════════════════════════════════════════════════════
+           * TEMPORARY: Arc support not yet integrated with GRBL planner!
+           * For now, reject arc commands with error message.
+           * TODO: Implement arc-to-segment conversion that calls GRBLPlanner_BufferLine()
+           * ═══════════════════════════════════════════════════════════════ */
+          if (move.motion_mode == 2 || move.motion_mode == 3)
+          {
+            #ifdef DEBUG_MOTION_BUFFER
+            UGS_Printf("[MAIN] Arc detected but NOT SUPPORTED yet: mode=%u, ijk=%d, I=%.3f J=%.3f\r\n",
+                       move.motion_mode, move.arc_has_ijk,
+                       move.arc_center_offset[AXIS_X], move.arc_center_offset[AXIS_Y]);
+            #endif
+            UGS_Print("error:33 - Arc commands (G2/G3) not yet integrated with GRBL planner\r\n");
+          }
+          else
+          {
+            /* Add to GRBL planner (replaces MotionBuffer_Add) */
+            if (!GRBLPlanner_BufferLine(target_machine, &pl_data))
           {
             /* Planner rejected move (zero-length or buffer full)
              * Log warning but continue (command already parsed) */
@@ -558,6 +605,7 @@ static void ProcessCommandBuffer(void)
                        buffer_count);
           }
 #endif
+          } /* End of else block for non-arc motion */
         }
         /* Modal-only commands (G90, M3, etc.) don't need planner */
       }
@@ -649,7 +697,7 @@ int main(void)
 
   /* Send startup message to UGS */
   UGS_Print("\r\n");
-  UGS_Print("Grbl 1.1f ['$' for help]\r\n");
+  UGS_Print("Grbl 1.1f ['$' for help]....\r\n");
   UGS_SendOK(); /* Main application loop - Three-stage pipeline */
   while (true)
   {
@@ -665,6 +713,7 @@ int main(void)
      * - Splits: ["G92"], ["G0", "X10"]
      * - Sends "ok" immediately (~175µs response time)
      */
+    UGS_Print("[MSG: Calling ProcessSerialRx]\r\n");
     ProcessSerialRx();
 
     /* Real-Time Command Processing (GRBL Pattern)
@@ -696,6 +745,17 @@ int main(void)
      * real-time command processing!
      */
     uint8_t cmd_count = 0;
+    
+    /* DEBUG: Show main loop processing state */
+    static uint32_t loop_debug_counter = 0;
+    if (++loop_debug_counter > 50000)
+    {
+      UGS_Printf("[MSG:MAINLOOP CmdBuf=%u MotBuf=%u HasData=%d]\r\n",
+                 CommandBuffer_GetCount(), MotionBuffer_GetCount(), 
+                 CommandBuffer_HasData());
+      loop_debug_counter = 0;
+    }
+    
     while (cmd_count < 16 && MotionBuffer_GetCount() < 15 && CommandBuffer_HasData())
     {
       ProcessCommandBuffer();

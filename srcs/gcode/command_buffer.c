@@ -24,7 +24,7 @@
 // *****************************************************************************
 // Debug Configuration
 // *****************************************************************************
-#define DEBUG_MOTION_BUFFER // Enable debug output (TEMPORARILY for Bug #6 testing)
+// DEBUG_MOTION_BUFFER now controlled via Makefile (not defined here)
 
 // *****************************************************************************
 

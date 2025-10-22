@@ -193,8 +193,8 @@ else ifeq ($(BUILD_CONFIG),Release)
 else
     # Default: Balanced optimization with basic debug info
     OPT_FLAGS := -g -O1
-    CONFIG_DEFINES := -DXPRJ_Default=Default
-    $(info *** DEFAULT BUILD: -g -O1 balanced ***)
+    CONFIG_DEFINES := -DXPRJ_Default=Default -DDEBUG_MOTION_BUFFER
+    $(info *** DEFAULT BUILD: -g -O1 balanced with arc debug ***)
 endif
 
 FLAGS := -Werror -Wall -MP -MMD $(CONFIG_DEFINES)

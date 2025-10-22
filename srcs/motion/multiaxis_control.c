@@ -665,8 +665,9 @@ static void Execute_Bresenham_Strategy_Internal(axis_id_t dominant_axis, const s
 
             sub_state->step_count++; // Track subordinate progress
 
-            // SANITY CHECK (Oct 21, 2025): Increment block execution counter
-            sub_state->block_steps_executed++; // Track actual pulses delivered by OCR
+            // NOTE (Oct 22, 2025): Do NOT increment block_steps_executed for subordinates!
+            // Subordinates are bit-banged (software GPIO), not hardware OCR pulses.
+            // Only dominant axis increments block_steps_executed (line 588).
         }
     }
 }

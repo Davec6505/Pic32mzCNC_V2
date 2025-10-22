@@ -779,9 +779,35 @@ After rebuild with 512-byte buffers:
 - **Documentation**: See `docs/TIMER_PRESCALER_ANALYSIS.md` for full analysis
 - **Status**: ✅ Ready for rebuild and hardware testing!
 
-## ⚠️ CURRENT STATUS: Motion Execution Complete! (October 21, 2025)
+## ⚠️ CRITICAL KNOWN ISSUES (October 22, 2025)
 
-**Latest Progress**: Fixed driver enable pins - all axes now moving physically! System fully operational.
+### � Circular Interpolation - Arc-to-Segment Conversion (IMPLEMENTED - TESTING PENDING)
+- **Issue**: G2/G3 arc commands were not executing properly in Universal G-code Sender
+- **Status**: ✅ **IMPLEMENTATION COMPLETE (October 22, 2025)** - ⏳ **HARDWARE TESTING PENDING**
+- **Solution**: Implemented GRBL-style arc-to-segment conversion algorithm
+  - IJK format (center offsets) fully implemented
+  - Automatic segment calculation from $12 arc_tolerance
+  - Small angle approximation for performance
+  - Recursive segment addition to motion buffer
+- **Implementation Details**: See docs/ARC_IMPLEMENTATION.md
+- **Test Files**: 
+  - tests/04_arc_test.gcode (NEW - arc interpolation tests)
+  - tests/03_circle_20segments.gcode (20 linear segments - baseline comparison)
+- **Known Limitations**:
+  - ❌ R parameter (radius format) not implemented
+  - ❌ G18/G19 plane selection not implemented (only XY/G17)
+  - ❌ Full circle handling not implemented
+  - ❌ Arc error validation minimal
+- **Next Steps**: Flash firmware and test with actual G2/G3 commands
+- **Priority**: HIGH - Implementation complete, needs hardware verification
+
+## ⚠️ CURRENT STATUS: Motion Execution Complete! (October 22, 2025)
+
+**Latest Progress**: 
+- ✅ Fixed driver enable pins - all axes moving physically! System fully operational.
+- ✅ Multi-configuration build system complete (Default/Debug/Release)
+- ✅ Shared library build system implemented and working
+- ⚠️ Circular interpolation (G2/G3) needs debugging in UGS
 
 **Current Testing Focus** 🎯:
 - **✅ SERIAL COMMUNICATION** - Robust, no more parsing errors
@@ -880,6 +906,10 @@ incs/
       └── motion_math.h             // Unit conversions, look-ahead support (398 lines)
 
 docs/
+  ├── BUILD_SYSTEM_COMPLETE_OCT22.md // Multi-config build system (Oct 22, 2025) ✨NEW
+  ├── MULTI_CONFIG_BUILD_SYSTEM.md  // Build configuration guide ✨NEW (Oct 22)
+  ├── SHARED_LIBRARY_QUICK_REF.md   // Library workflow reference ✨NEW (Oct 22)
+  ├── LIBRARY_BUILD_VERIFICATION.md // XC32 toolchain verification ✨NEW (Oct 22)
   ├── COMMAND_BUFFER_ARCHITECTURE.md // Command separation architecture (450 lines) ✨NEW
   ├── COMMAND_BUFFER_TESTING.md     // Testing guide (550 lines) ✨NEW
   ├── BUILD_SUCCESS_COMMAND_BUFFER.md // Build verification (420 lines) ✨NEW
@@ -890,6 +920,18 @@ docs/
   ├── MAKEFILE_QUIET_BUILD.md       // make quiet target documentation ✨NEW
   ├── TIMER_PRESCALER_ANALYSIS.md   // Prescaler fix analysis (1:2 → 1:16) ✨NEW
   └── plantuml/                      // Architecture visualization (9 diagrams) ✨NEW
+
+libs/
+  ├── test_ocr_direct.c             // OCR hardware test (moved from srcs/ Oct 22) ✨UPDATED
+  ├── README.md                     // Library usage guide ✨NEW (Oct 22)
+  ├── Default/                      // Default config library output ✨NEW (Oct 22)
+  ├── Debug/                        // Debug config library output ✨NEW (Oct 22)
+  └── Release/                      // Release config library output ✨NEW (Oct 22)
+
+bins/
+  ├── Default/                      // Default config executables ✨NEW (Oct 22)
+  ├── Debug/                        // Debug config executables ✨NEW (Oct 22)
+  └── Release/                      // Release config executables ✨NEW (Oct 22)
       ├── README.md                  // PlantUML setup and viewing guide
       ├── QUICK_REFERENCE.md         // PlantUML syntax cheat sheet
       ├── TEMPLATE_NEW_PROJECT.puml  // Reusable template
@@ -908,6 +950,8 @@ docs/
 - **Per-axis motion limits** (Z can be slower than XY)
 - **Centralized settings** (motion_math.c for GRBL $100-$133)
 - **Centralized types** (motion_types.h - single source of truth)
+- **Multi-configuration builds** (Default/Debug/Release with separate outputs) ✨**NEW - October 22, 2025**
+- **Shared library support** (libs/ folder for modular compilation) ✨**NEW - October 22, 2025**
 - **MISRA C:2012 compliant** (safety-critical embedded code standards)
 - **XC32 optimized** (minimal RAM footprint, optimal flash placement)
 - **Visual documentation** (PlantUML diagrams for architecture understanding)
@@ -1012,6 +1056,42 @@ M5                   ; Spindle off
 ## Architecture Overview
 
 This is a **modular embedded CNC controller** for the PIC32MZ2048EFH100 microcontroller with **hardware-accelerated multi-axis S-curve motion profiles**. The system uses independent OCR (Output Compare) modules for pulse generation, eliminating the need for GRBL's traditional 30kHz step interrupt.
+
+### Build System Architecture (October 22, 2025) ✨**COMPLETE**
+
+**Multi-Configuration Support:**
+```bash
+# Three configurations with separate outputs
+make all                           # Default: -g -O1 (balanced)
+make all BUILD_CONFIG=Debug        # Debug: -g3 -O0 (full symbols)
+make all BUILD_CONFIG=Release      # Release: -O3 (optimized)
+
+# Shared library system
+make shared_lib                    # Build libs/*.c into libCS23shared.a
+make all USE_SHARED_LIB=1          # Link against pre-built library
+```
+
+**Directory Structure:**
+```
+bins/{Default,Debug,Release}/      # Executables per configuration
+libs/{Default,Debug,Release}/      # Libraries per configuration
+libs/*.c                            # Source files for library compilation
+objs/{Default,Debug,Release}/      # Object files per configuration
+other/{Default,Debug,Release}/     # Map files per configuration
+```
+
+**Configuration Flags:**
+- **Default**: `-g -O1` - Balanced development (primary workflow)
+- **Debug**: `-g3 -O0 -DDEBUG -DDEBUG_MOTION_BUFFER` - Full debug symbols
+- **Release**: `-O3 -DNDEBUG` - Maximum optimization for production
+
+**Library System Benefits:**
+- **Modular compilation**: Only files in `libs/` become library
+- **Faster builds**: Library compiled once, main code links against it
+- **Flexible workflow**: `USE_SHARED_LIB=0` (direct) or `USE_SHARED_LIB=1` (library)
+- **Current example**: `test_ocr_direct.c` (OCR hardware testing)
+
+**Documentation**: See `docs/BUILD_SYSTEM_COMPLETE_OCT22.md` for complete details.
 
 ### Core Architecture Pattern (Current - October 2025)
 ```

@@ -249,6 +249,12 @@ typedef struct
     bool absolute_mode;        // G90 (true) or G91 (false)
     bool axis_words[NUM_AXES]; // Which axes specified in command
     uint8_t motion_mode;       // G0, G1, G2, G3, etc.
+    
+    // Arc parameters (for G2/G3)
+    float arc_center_offset[3]; // I, J, K offsets from current position (mm)
+    float arc_radius;           // R parameter (mm) - alternative to IJK
+    bool arc_has_ijk;           // True if IJK specified (center format)
+    bool arc_has_radius;        // True if R specified (radius format)
 } parsed_move_t;
 
 //=============================================================================

@@ -324,6 +324,11 @@ float MotionMath_GetSetting(uint8_t setting_id)
     return 0.0f; // Unknown setting
 }
 
+float MotionMath_GetArcTolerance(void)
+{
+    return motion_settings.arc_tolerance;
+}
+
 // *****************************************************************************
 // Unit Conversions
 // *****************************************************************************

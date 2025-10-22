@@ -1055,10 +1055,27 @@ bool GCode_ParseLine(const char *line, parsed_move_t *move)
             break;
 
         case 'I':
+            /* Arc center offset - X axis */
+            move->arc_center_offset[AXIS_X] = value;
+            move->arc_has_ijk = true;
+            break;
+            
         case 'J':
+            /* Arc center offset - Y axis */
+            move->arc_center_offset[AXIS_Y] = value;
+            move->arc_has_ijk = true;
+            break;
+            
         case 'K':
-            /* Arc parameters (for G2/G3) */
-            /* TODO: Implement arc support */
+            /* Arc center offset - Z axis */
+            move->arc_center_offset[AXIS_Z] = value;
+            move->arc_has_ijk = true;
+            break;
+            
+        case 'R':
+            /* Arc radius (alternative to IJK) */
+            move->arc_radius = value;
+            move->arc_has_radius = true;
             break;
 
         case 'P':
