@@ -183,7 +183,9 @@ STD := c99
 ifeq ($(BUILD_CONFIG),Debug)
     # Debug: Full debug symbols, no optimization, debug defines
     OPT_FLAGS := -g3 -O0
-    CONFIG_DEFINES := -DDEBUG -DXPRJ_Debug=Debug -DDEBUG_MOTION_BUFFER
+    CONFIG_DEFINES := -DDEBUG -DXPRJ_Debug=Debug
+    # Debug builds enable DEBUG_MOTION_BUFFER by default
+    DEBUG_MOTION_BUFFER := 1
     $(info *** DEBUG BUILD: -g3 -O0 with debug symbols ***)
 else ifeq ($(BUILD_CONFIG),Release)
     # Release: Aggressive optimization, no debug symbols
@@ -193,8 +195,14 @@ else ifeq ($(BUILD_CONFIG),Release)
 else
     # Default: Balanced optimization with basic debug info
     OPT_FLAGS := -g -O1
-    CONFIG_DEFINES := -DXPRJ_Default=Default -DDEBUG_MOTION_BUFFER
-    $(info *** DEFAULT BUILD: -g -O1 balanced with arc debug ***)
+    CONFIG_DEFINES := -DXPRJ_Default=Default
+    $(info *** DEFAULT BUILD: -g -O1 balanced ***)
+endif
+
+# Add DEBUG_MOTION_BUFFER if enabled (either from root Makefile or Debug build)
+ifeq ($(DEBUG_MOTION_BUFFER),1)
+    CONFIG_DEFINES += -DDEBUG_MOTION_BUFFER
+    $(info *** DEBUG_MOTION_BUFFER enabled ***)
 endif
 
 FLAGS := -Werror -Wall -MP -MMD $(CONFIG_DEFINES)

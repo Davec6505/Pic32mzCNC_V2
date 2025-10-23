@@ -1,5 +1,44 @@
 # PIC32MZ CNC Motion Controller V2 - AI Coding Guide
 
+## ⚠️ CRITICAL MAKEFILE ARCHITECTURE (October 22, 2025)
+
+**NEVER MODIFY BUILD CONFIGURATION LOGIC IN srcs/Makefile DIRECTLY!**
+
+The project uses a **two-tier Makefile design** that must be respected:
+
+1. **Root Makefile** (`Makefile` in project root):
+   - Controls ALL build parameters: `BUILD_CONFIG`, `DEBUG_MOTION_BUFFER`, `USE_SHARED_LIB`, etc.
+   - Passes parameters down to `srcs/Makefile`
+   - This is where configuration changes should be made
+
+2. **Sub Makefile** (`srcs/Makefile`):
+   - Receives parameters from root Makefile
+   - Implements build logic based on received parameters
+   - Should NOT define new configuration variables
+
+**Example of correct approach:**
+```makefile
+# Root Makefile - CORRECT place to add new config
+DEBUG_MOTION_BUFFER ?= 0  # Add here
+cd srcs && $(BUILD) ... DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER)  # Pass down
+
+# srcs/Makefile - receives and uses
+ifeq ($(DEBUG_MOTION_BUFFER),1)
+    CONFIG_DEFINES += -DDEBUG_MOTION_BUFFER  # Use received parameter
+endif
+```
+
+**User's Design Methodology:**
+- Root controls policy (what options are available)
+- Sub implements policy (how options are compiled)
+- This took significant effort to design - respect the architecture!
+
+**When user asks to change build behavior:**
+1. First check if it's a root-level config change
+2. Propose changes to root Makefile
+3. Only modify srcs/Makefile if implementing new build logic
+4. Always ask before changing Makefile structure
+
 ## ⚠️ CRITICAL OCR PULSE ARCHITECTURE (October 21, 2025)
 
 **OCM=0b101 DUAL COMPARE CONTINUOUS MODE WITH ISR AUTO-DISABLE** ✅ **IMPLEMENTED!**

@@ -1142,10 +1142,43 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
         if (period <= OCMP_PULSE_WIDTH)
             period = OCMP_PULSE_WIDTH + 10;
 
+        // CRITICAL FIX (Oct 23, 2025): Complete hardware reset sequence!
+        // PIC32MZ OCR modules require specific shutdown/reconfigure sequence
+        // to prevent spurious pulses during register updates.
+        
+        // Step 1: Disable OCR output (stops pulse generation)
+        axis_hw[new_dominant_axis].OCMP_Disable();
+        
+        // Step 2: Stop timer (halts counter incrementing)
+        axis_hw[new_dominant_axis].TMR_Stop();
+        
+        // Step 3: Clear timer counter to prevent rollover glitch
+        // CRITICAL: Direct register write - no PLIB function exists for this!
+        switch (new_dominant_axis)
+        {
+        case AXIS_X:
+            TMR2 = 0;  // Reset counter
+            break;
+        case AXIS_Y:
+            TMR4 = 0;
+            break;
+        case AXIS_Z:
+            TMR3 = 0;
+            break;
+        case AXIS_A:
+            TMR5 = 0;
+            break;
+        default:
+            break;
+        }
+        
+        // Step 4: Reconfigure registers while hardware is fully stopped
         axis_hw[new_dominant_axis].TMR_PeriodSet((uint16_t)period);
         axis_hw[new_dominant_axis].OCMP_CompareValueSet((uint16_t)(period - OCMP_PULSE_WIDTH));
         axis_hw[new_dominant_axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
-        axis_hw[new_dominant_axis].OCMP_Enable(); // CRITICAL: Re-enable OCR (was disabled at line 919)
+        
+        // Step 5: Re-enable in correct order (OCR first, then timer)
+        axis_hw[new_dominant_axis].OCMP_Enable();
         axis_hw[new_dominant_axis].TMR_Start();
     }
     else

@@ -123,6 +123,7 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
 
   /* Try to prepare segments until buffer full or no blocks */
   uint8_t segments_prepped = 0;
+  
   while (segments_prepped < 3)
   { // Prep up to 3 segments per ISR call
     bool success = GRBLStepper_PrepSegment();
@@ -133,6 +134,21 @@ static void MotionManager_TMR9_ISR(uint32_t status, uintptr_t context)
     segments_prepped++;
     prep_success++;
   }
+  
+  /* CRITICAL (October 23, 2025): DO NOT print from ISR!
+   * 
+   * Printing from TMR9 ISR @ 10ms causes serial buffer corruption:
+   *   - UART TX can't keep up with 100Hz debug messages
+   *   - Output becomes interleaved: "[GRBL] Buffered: Work(0.TMR9] Prepped..."
+   *   - UGS sees corrupted messages and auto-pauses communication
+   * 
+   * This was causing the mysterious "stops after 4-5 moves" bug!
+   * 
+   * If you need to debug segment prep, use statistics from main loop:
+   *   - GRBLStepper_GetBufferCount() for segment buffer state
+   *   - GRBLPlanner_GetBufferCount() for planner block count
+   *   - prep_calls and prep_success counters (queried from main loop)
+   */
 
   /* PHASE 2B: Segment execution start (REMOVED October 20, 2025)
    *

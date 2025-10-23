@@ -145,13 +145,6 @@ void Serial_WriteString(const char *str)
 uint8_t Serial_Available(void)
 {
     uint8_t available = (uint8_t)((rx_buffer.head - rx_buffer.tail) & (SERIAL_RX_BUFFER_SIZE - 1));
-    
-    /* DEBUG: Flash LED when data available */
-    if (available > 0)
-    {
-        LED2_Toggle();  // LED2 - proves data is in ring buffer
-    }
-    
     return available;
 }
 

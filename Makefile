@@ -13,6 +13,12 @@ DEVICE     := 32MZ2048EFH100
 #        make all                       (balanced build with -g -O1)
 BUILD_CONFIG ?= Default
 
+# Debug flags control: set DEBUG_MOTION_BUFFER=1 to enable debug output
+# Usage: make all DEBUG_MOTION_BUFFER=1  (enable motion buffer debug messages)
+#        make all BUILD_CONFIG=Debug     (Debug builds have it enabled by default)
+#        make all                        (disabled by default)
+DEBUG_MOTION_BUFFER ?= 0
+
 # Library control: set USE_SHARED_LIB=1 to link against pre-built library
 # Usage: make shared_lib             (builds libCS23shared.a from libs/*.c)
 #        make all USE_SHARED_LIB=1    (links executable against library)
@@ -21,8 +27,8 @@ USE_SHARED_LIB ?= 0
 
 # Memory configuration for dynamic allocation
 # These control heap and stack sizes for the PIC32MZ application
-HEAP_SIZE  := 20480    # 20KB heap for dynamic memory allocation
-STACK_SIZE := 20480    # 20KB stack for function calls and local variables
+HEAP_SIZE  := 65536    # 64KB heap for dynamic memory allocation
+STACK_SIZE := 65536    # 64KB stack for function calls and local variables
 
 # Compiler location and DFP (Device Family Pack) location
 # The compiler location is expected to be the path to the xc32-gcc compiler.
@@ -54,7 +60,7 @@ all:
 ifeq ($(USE_SHARED_LIB),1)
 	@echo "######  (Using pre-built shared library)  ########"
 endif
-	cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE) USE_SHARED_LIB=$(USE_SHARED_LIB) BUILD_CONFIG=$(BUILD_CONFIG)
+	cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE) USE_SHARED_LIB=$(USE_SHARED_LIB) BUILD_CONFIG=$(BUILD_CONFIG) DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER)
 	@echo "###### BIN TO HEX ########"
 	cd bins/$(BUILD_CONFIG) && "$(COMPILER_LOCATION)/xc32-bin2hex" $(MODULE)
 	@echo "######  BUILD COMPLETE (bins/$(BUILD_CONFIG)/$(MODULE).hex)  ########"
@@ -62,7 +68,7 @@ endif
 # Build shared library from libs/*.c files
 shared_lib:
 	@echo "######  BUILDING SHARED LIBRARY ($(BUILD_CONFIG))  ########"
-	cd srcs && $(BUILD) shared_lib COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) BUILD_CONFIG=$(BUILD_CONFIG)
+	cd srcs && $(BUILD) shared_lib COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) BUILD_CONFIG=$(BUILD_CONFIG) DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER)
 	@echo "######  SHARED LIBRARY COMPLETE (libs/$(BUILD_CONFIG)/libCS23shared.a)  ########"
 
 # Quiet build - shows only errors, warnings, and completion status

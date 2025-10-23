@@ -669,6 +669,13 @@ bool GRBLPlanner_BufferLine(float *target, grbl_plan_line_data_t *pl_data)
     /* Reject zero-length blocks (no motion) */
     if (block->step_event_count == 0)
     {
+#ifdef DEBUG_MOTION_BUFFER
+        UGS_Printf("[GRBL] REJECTED zero-length: target=(%.3f,%.3f,%.3f) pl.pos=(%.3f,%.3f,%.3f)\r\n",
+                   target[AXIS_X], target[AXIS_Y], target[AXIS_Z],
+                   MotionMath_StepsToMM(pl.position[AXIS_X], AXIS_X),
+                   MotionMath_StepsToMM(pl.position[AXIS_Y], AXIS_Y),
+                   MotionMath_StepsToMM(pl.position[AXIS_Z], AXIS_Z));
+#endif
         return PLAN_EMPTY_BLOCK;
     }
 

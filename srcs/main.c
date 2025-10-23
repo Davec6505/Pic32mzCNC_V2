@@ -40,6 +40,7 @@
 #include "serial_wrapper.h"           // GRBL serial using MCC plib_uart2
 #include "ugs_interface.h"            // UGS protocol layer (uses serial_wrapper)
 #include "gcode_parser.h"             // G-code parsing
+#include "arc_converter.h"            // Arc-to-segment conversion (G2/G3)
 #include "command_buffer.h"           // Command separation and buffering (NEW!)
 #include "motion/motion_buffer.h"     // Motion planning ring buffer (OLD - being replaced)
 #include "motion/grbl_planner.h"      // GRBL planner (NEW - Phase 1)
@@ -109,13 +110,13 @@ static void ProcessSerialRx(void)
   static char line_buffer[256] = {0}; /* Initialize to zeros on first use */
   static size_t line_pos = 0;         /* Track position across calls */
   static bool line_complete = false;  /* Flag for complete line */
-  static uint32_t serial_rx_call_count = 0;  /* DEBUG: Count function calls */
+  //static uint32_t serial_rx_call_count = 0;  /* DEBUG: Count function calls */
 
-  /* DEBUG: Print every 10 calls to show this function executes */
-  if (++serial_rx_call_count % 10 == 0)
-  {
-    UGS_Printf("[DEBUG_RX] ProcessSerialRx called %lu times\r\n", serial_rx_call_count);
-  }
+  /* DEBUG: Print every 1000 calls to show this function executes */
+  //if (++serial_rx_call_count % 1000 == 0)
+  //{
+  //  UGS_Printf("[DEBUG_RX] ProcessSerialRx called %lu times\r\n", serial_rx_call_count);
+  //}
 
   /* Check if serial data available in RX ring buffer
    * GRBL serial: Interrupt-driven RX (Priority 5/0), 256-byte buffer
@@ -313,12 +314,6 @@ static void ProcessSerialRx(void)
        */
       uint8_t commands_added = CommandBuffer_SplitLine(&tokenized);
 
-      /* DEBUG: Show command buffer activity */
-     // LED2_Toggle();  // LED2 toggle - hardware proof of execution
-      UGS_Printf("[MSG:SERIAL Added %u commands, buffer_count=%u]\r\n", 
-                 commands_added, CommandBuffer_GetCount());
-
-
       if (commands_added > 0)
       {
         /* Commands successfully added to buffer
@@ -342,6 +337,10 @@ static void ProcessSerialRx(void)
          *   - Commands added → send "ok" immediately
          *   - Buffer full → DON'T send "ok" (UGS retries)
          */
+#ifdef DEBUG_MOTION_BUFFER
+        UGS_Printf("[CMD_ADD] Added %d commands, buffer now has %d\r\n",
+                   commands_added, CommandBuffer_GetCount());
+#endif
         UGS_SendOK();
       }
       else
@@ -399,8 +398,9 @@ static void ProcessCommandBuffer(void)
   static float modal_position[NUM_AXES] = {0.0f, 0.0f, 0.0f, 0.0f};
 
   /* Only process commands if motion buffer has space
+   * CRITICAL FIX (October 23, 2025): Use GRBL planner buffer, NOT MotionBuffer!
    * Process aggressively - only block when buffer is truly full (15/16 blocks) */
-  uint8_t motion_count = MotionBuffer_GetCount();
+  uint8_t motion_count = GRBLPlanner_GetBufferCount();
 
 #ifdef DEBUG_MOTION_BUFFER
   static uint32_t debug_counter = 0;
@@ -408,7 +408,7 @@ static void ProcessCommandBuffer(void)
   {
     if (motion_count >= 15)
     {
-      UGS_Printf("[PROCBUF] Motion buffer near full (%d blocks), waiting...\r\n", motion_count);
+      UGS_Printf("[PROCBUF] GRBL planner near full (%d blocks), waiting...\r\n", motion_count);
     }
     debug_counter = 0;
   }
@@ -418,22 +418,11 @@ static void ProcessCommandBuffer(void)
   {
     command_entry_t cmd;
     
-    /* DEBUG: Check command buffer state */
-    uint8_t cmd_buf_count = CommandBuffer_GetCount();
-    
-    /* ALWAYS print - even if buffer empty */
-    static uint32_t empty_check_counter = 0;
-    if (cmd_buf_count > 0 || ++empty_check_counter > 50000)
-    {
-      UGS_Printf("[MSG:CMDBUF count=%u HasData=%d check=%lu]\r\n", 
-                 cmd_buf_count, CommandBuffer_HasData(), empty_check_counter);
-      if (empty_check_counter > 50000) empty_check_counter = 0;
-    }
-    
     if (CommandBuffer_GetNext(&cmd))
     {
 #ifdef DEBUG_MOTION_BUFFER
-      UGS_Printf("[PROCBUF] Got command from buffer (motion_count=%d)\r\n", motion_count);
+      UGS_Printf("[PROCBUF] Got command from buffer (planner=%d, cmd_buf=%d)\r\n", 
+                 motion_count, CommandBuffer_GetCount());
 #endif
 
       /* Reconstruct line from tokens for parser
@@ -462,12 +451,6 @@ static void ProcessCommandBuffer(void)
                           move.axis_words[AXIS_Z] ||
                           move.axis_words[AXIS_A];
 
-        /* ALWAYS print parse result for debugging */
-        UGS_Printf("[MSG:PARSE '%s' motion=%d mode=%u X=%d Y=%d ijk=%d]\r\n",
-                   reconstructed_line, has_motion, move.motion_mode,
-                   move.axis_words[AXIS_X], move.axis_words[AXIS_Y],
-                   move.arc_has_ijk);
-
         if (has_motion)
         {
           /* ═══════════════════════════════════════════════════════════════
@@ -485,16 +468,31 @@ static void ProcessCommandBuffer(void)
           float target_work[NUM_AXES];    /* Work coordinates from G-code */
           float target_machine[NUM_AXES]; /* Machine coordinates for planner */
 
+#ifdef DEBUG_MOTION_BUFFER
           UGS_Printf("[MODAL] Pre-merge modal: X=%.3f Y=%.3f | Parsed: X=%.3f(%d) Y=%.3f(%d)\r\n",
                      modal_position[AXIS_X], modal_position[AXIS_Y],
                      move.target[AXIS_X], move.axis_words[AXIS_X],
                      move.target[AXIS_Y], move.axis_words[AXIS_Y]);
 
-#ifdef DEBUG_MOTION_BUFFER
+
           UGS_Printf("[MODAL] Before merge: modal=(%.3f,%.3f,%.3f) parsed=(%.3f,%.3f,%.3f) words=(%d,%d,%d)\r\n",
                      modal_position[AXIS_X], modal_position[AXIS_Y], modal_position[AXIS_Z],
                      move.target[AXIS_X], move.target[AXIS_Y], move.target[AXIS_Z],
                      move.axis_words[AXIS_X], move.axis_words[AXIS_Y], move.axis_words[AXIS_Z]);
+#endif
+
+          /* CRITICAL (Oct 22, 2025): Save starting position BEFORE merge for arc conversion
+           * Arc commands (G2/G3) need the ORIGINAL starting position, not the endpoint.
+           * modal_position will be updated during merge, so capture it now. */
+          float start_position[NUM_AXES];
+          for (uint8_t axis = 0; axis < NUM_AXES; axis++)
+          {
+            start_position[axis] = modal_position[axis];
+          }
+          
+#ifdef DEBUG_MOTION_BUFFER
+          UGS_Printf("[MODAL] start_position (work coords before merge): X=%.3f Y=%.3f Z=%.3f\r\n",
+                     start_position[AXIS_X], start_position[AXIS_Y], start_position[AXIS_Z]);
 #endif
 
           for (uint8_t axis = 0; axis < NUM_AXES; axis++)
@@ -527,13 +525,14 @@ static void ProcessCommandBuffer(void)
              * Formula: MPos = WPos + work_offset + g92_offset */
             target_machine[axis] = MotionMath_WorkToMachine(target_work[axis], (axis_id_t)axis);
           }
-          
+
+ #ifdef DEBUG_MOTION_BUFFER         
           UGS_Printf("[MODAL] Post-merge: target_work=(%.3f,%.3f) target_machine=(%.3f,%.3f) mode=%s\r\n",
                      target_work[AXIS_X], target_work[AXIS_Y],
                      target_machine[AXIS_X], target_machine[AXIS_Y],
                      move.absolute_mode ? "G90" : "G91");
 
-#ifdef DEBUG_MOTION_BUFFER
+
           UGS_Printf("[MODAL] After merge: target_work=(%.3f,%.3f,%.3f) target_machine=(%.3f,%.3f,%.3f)\r\n",
                      target_work[AXIS_X], target_work[AXIS_Y], target_work[AXIS_Z],
                      target_machine[AXIS_X], target_machine[AXIS_Y], target_machine[AXIS_Z]);
@@ -556,18 +555,62 @@ static void ProcessCommandBuffer(void)
           /* ═══════════════════════════════════════════════════════════════
            * ARC CONVERSION: G2/G3 → Multiple G1 Segments (October 22, 2025)
            * ═══════════════════════════════════════════════════════════════
-           * TEMPORARY: Arc support not yet integrated with GRBL planner!
-           * For now, reject arc commands with error message.
-           * TODO: Implement arc-to-segment conversion that calls GRBLPlanner_BufferLine()
+           * Convert circular arcs into linear segments and buffer to GRBL planner
+           * 
+           * CRITICAL (Oct 23, 2025): Arc converter needs MACHINE coordinates!
+           * - start_position: Work coords before modal merge → convert to machine
+           * - target_machine: Machine coords after work-to-machine conversion
+           * - center_offset: I,J,K offsets from parsed move (relative, in mm)
            * ═══════════════════════════════════════════════════════════════ */
           if (move.motion_mode == 2 || move.motion_mode == 3)
           {
             #ifdef DEBUG_MOTION_BUFFER
-            UGS_Printf("[MAIN] Arc detected but NOT SUPPORTED yet: mode=%u, ijk=%d, I=%.3f J=%.3f\r\n",
-                       move.motion_mode, move.arc_has_ijk,
-                       move.arc_center_offset[AXIS_X], move.arc_center_offset[AXIS_Y]);
+            UGS_Printf("[MAIN] Arc detected: mode=G%u, I=%.3f J=%.3f, target=(%.3f,%.3f)\r\n",
+                       move.motion_mode, 
+                       move.arc_center_offset[AXIS_X], move.arc_center_offset[AXIS_Y],
+                       move.target[AXIS_X], move.target[AXIS_Y]);
             #endif
-            UGS_Print("error:33 - Arc commands (G2/G3) not yet integrated with GRBL planner\r\n");
+            
+            /* Convert start_position from work coordinates to machine coordinates
+             * CRITICAL FIX (Oct 23, 2025): start_position is in work coords, but arc
+             * converter needs machine coords! */
+            float start_machine[NUM_AXES];
+            for (uint8_t axis = 0; axis < NUM_AXES; axis++)
+            {
+                start_machine[axis] = MotionMath_WorkToMachine(start_position[axis], (axis_id_t)axis);
+            }
+            
+#ifdef DEBUG_MOTION_BUFFER
+            UGS_Printf("[ARC] start_machine=(%.3f,%.3f,%.3f) target_machine=(%.3f,%.3f,%.3f)\r\n",
+                       start_machine[AXIS_X], start_machine[AXIS_Y], start_machine[AXIS_Z],
+                       target_machine[AXIS_X], target_machine[AXIS_Y], target_machine[AXIS_Z]);
+#endif
+            
+            /* Convert arc to segments using arc converter module
+             * CRITICAL: Pass machine coordinates, not work coordinates!
+             * - start_machine: Start position in machine coords
+             * - target_machine: Target position in machine coords
+             * - move.arc_center_offset: I,J,K from parser (relative offsets)
+             */
+            bool arc_success = ArcConverter_ConvertToSegments(
+                move.motion_mode,           /* G2 or G3 */
+                start_machine,              /* Start MACHINE position */
+                target_machine,             /* Target MACHINE position */
+                move.arc_center_offset,     /* I,J,K offsets */
+                &pl_data                    /* Feedrate, spindle, etc. */
+            );
+            
+            // Update modal position to arc endpoint (even if arc failed, position should update)
+            if (arc_success)
+            {
+              for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+              {
+                if (move.axis_words[axis])
+                {
+                  modal_position[axis] = target_work[axis];
+                }
+              }
+            }
           }
           else
           {
@@ -697,7 +740,7 @@ int main(void)
 
   /* Send startup message to UGS */
   UGS_Print("\r\n");
-  UGS_Print("Grbl 1.1f ['$' for help]....\r\n");
+  UGS_Print("Grbl 1.1f ['$' for help]\r\n");
   UGS_SendOK(); /* Main application loop - Three-stage pipeline */
   while (true)
   {
@@ -713,7 +756,6 @@ int main(void)
      * - Splits: ["G92"], ["G0", "X10"]
      * - Sends "ok" immediately (~175µs response time)
      */
-    UGS_Print("[MSG: Calling ProcessSerialRx]\r\n");
     ProcessSerialRx();
 
     /* Real-Time Command Processing (GRBL Pattern)
@@ -738,6 +780,9 @@ int main(void)
      * 2. Command buffer empty - nothing left to process
      * 3. Safety limit reached (16 iterations) - prevent infinite loop
      *
+     * CRITICAL FIX (October 23, 2025): Use GRBLPlanner buffer, NOT MotionBuffer!
+     * The old MotionBuffer is unused - all moves go through GRBL planner now.
+     *
      * This is NON-BLOCKING: Max execution time ~100µs (16 × ~6µs per command)
      * Main loop returns every ~1ms to check real-time commands (E-stop, feed hold)
      *
@@ -745,22 +790,40 @@ int main(void)
      * real-time command processing!
      */
     uint8_t cmd_count = 0;
-    
-    /* DEBUG: Show main loop processing state */
-    static uint32_t loop_debug_counter = 0;
-    if (++loop_debug_counter > 50000)
+    uint8_t planner_count = GRBLPlanner_GetBufferCount();
+    bool has_cmds = CommandBuffer_HasData();
+    uint8_t cmd_buf_count = CommandBuffer_GetCount();
+
+#ifdef DEBUG_MOTION_BUFFER
+    static uint32_t loop_debug = 0;
+    /* Print debug MORE frequently during testing - every ~10000 iterations
+     * to catch timing issues with command processing */
+    if (++loop_debug > 10000 && (planner_count > 0 || cmd_buf_count > 0 || has_cmds))
     {
-      UGS_Printf("[MSG:MAINLOOP CmdBuf=%u MotBuf=%u HasData=%d]\r\n",
-                 CommandBuffer_GetCount(), MotionBuffer_GetCount(), 
-                 CommandBuffer_HasData());
-      loop_debug_counter = 0;
+      UGS_Printf("[LOOP] planner=%d, cmd_buf=%d, hasData=%d, will_run=%d\r\n",
+                 planner_count, cmd_buf_count, has_cmds ? 1 : 0, 
+                 (planner_count < 15 && has_cmds) ? 1 : 0);
+      loop_debug = 0;
     }
-    
-    while (cmd_count < 16 && MotionBuffer_GetCount() < 15 && CommandBuffer_HasData())
+#endif
+
+    while (cmd_count < 16 && planner_count < 15 && has_cmds)
     {
       ProcessCommandBuffer();
       cmd_count++;
+      planner_count = GRBLPlanner_GetBufferCount();  /* Update after each iteration */
+      has_cmds = CommandBuffer_HasData();
     }
+    
+#ifdef DEBUG_MOTION_BUFFER
+    /* CRITICAL DEBUG (Oct 23): Why isn't 5th command being processed?
+     * This will print when the while loop exits to show WHY it stopped */
+    if (has_cmds && cmd_count == 0)
+    {
+      UGS_Printf("[LOOP_EXIT] Commands waiting but loop didn't run! planner=%d, has_cmds=%d\r\n",
+                 planner_count, has_cmds ? 1 : 0);
+    }
+#endif
 
     /* Stage 3: Motion Execution → Hardware
      * CRITICAL FIX (October 20, 2025):

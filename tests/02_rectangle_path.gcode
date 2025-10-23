@@ -15,6 +15,11 @@ G1 X20.000 Y0.000   ; Move to corner 1
 G1 X20.000 Y10.000  ; Corner 2 (90° junction)
 G1 X0.000 Y10.000   ; Corner 3 (90° junction)
 G1 X0.000 Y0.000    ; Corner 4 (90° junction) - back to start
+; Rectangle path (4 corners)
+G1 X20.000 Y0.000   ; Move to corner 1
+G1 X20.000 Y10.000  ; Corner 2 (90° junction)
+G1 X0.000 Y10.000   ; Corner 3 (90° junction)
+G1 X0.000 Y0.000    ; Corner 4 (90° junction) - back to start
 
 ; Test complete
 M0 ; Program stop

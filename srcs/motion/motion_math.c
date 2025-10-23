@@ -181,7 +181,7 @@ void MotionMath_LoadDefaultSettings(void)
 
     // $11: Junction deviation (mm) - Cornering tolerance
     // Smaller = sharper corners (slower), Larger = smoother corners (faster)
-    motion_settings.junction_deviation = 0.01f; // 0.01mm = tight corners
+    motion_settings.junction_deviation = 0.0f; // TEMPORARY: Disable junction optimization to test (Oct 23, 2025)
 
     // $12: Arc tolerance (mm) - G2/G3 interpolation
     motion_settings.arc_tolerance = 0.002f; // 0.002mm = smooth arcs
