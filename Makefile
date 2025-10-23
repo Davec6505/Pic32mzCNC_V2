@@ -13,6 +13,17 @@ DEVICE     := 32MZ2048EFH100
 #        make all                       (balanced build with -g -O1)
 BUILD_CONFIG ?= Default
 
+# Override optimization flags for Release when using free XC32 (avoids -O3 license warning)
+# Policy: Root Makefile controls configuration; sub-Makefile implements it.
+# We pass OPT_FLAGS on the command line so it takes precedence without editing srcs/Makefile logic.
+ifeq ($(BUILD_CONFIG),Release)
+	# XC32 Free does not support -O3 without PRO license; use -O2 to keep -Werror clean
+	RELEASE_OPT_FLAGS ?= -O1 -DNDEBUG
+	EXTRA_MAKE_VARS := OPT_FLAGS="$(RELEASE_OPT_FLAGS)"
+else
+	EXTRA_MAKE_VARS :=
+endif
+
 # Debug flags control: set DEBUG_MOTION_BUFFER=1 to enable debug output
 # Usage: make all DEBUG_MOTION_BUFFER=1  (enable motion buffer debug messages)
 #        make all BUILD_CONFIG=Debug     (Debug builds have it enabled by default)
@@ -41,7 +52,7 @@ STACK_SIZE := 65536    # 64KB stack for function calls and local variables
 ifeq ($(OS),Windows_NT)
     COMPILER_LOCATION := C:/Program Files/Microchip/xc32/v4.60/bin
 #	DFP_LOCATION := C:/Users/Automation/.mchp_packs
-    DFP_LOCATION := C:/Program Files/Microchip/MPLABX/v6.25/packs
+	DFP_LOCATION := C:/Program Files/Microchip/MPLABX/v6.25/packs
 else
     COMPILER_LOCATION := /opt/microchip/xc32/v4.60/bin
     DFP_LOCATION := /opt/microchip/mplabx/v6.25/packs
@@ -60,7 +71,7 @@ all:
 ifeq ($(USE_SHARED_LIB),1)
 	@echo "######  (Using pre-built shared library)  ########"
 endif
-	cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE) USE_SHARED_LIB=$(USE_SHARED_LIB) BUILD_CONFIG=$(BUILD_CONFIG) DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER)
+	cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE) USE_SHARED_LIB=$(USE_SHARED_LIB) BUILD_CONFIG=$(BUILD_CONFIG) DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER) $(EXTRA_MAKE_VARS)
 	@echo "###### BIN TO HEX ########"
 	cd bins/$(BUILD_CONFIG) && "$(COMPILER_LOCATION)/xc32-bin2hex" $(MODULE)
 	@echo "######  BUILD COMPLETE (bins/$(BUILD_CONFIG)/$(MODULE).hex)  ########"

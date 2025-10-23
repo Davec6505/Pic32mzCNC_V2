@@ -628,7 +628,7 @@ static void Execute_Bresenham_Strategy_Internal(axis_id_t dominant_axis, const s
             case AXIS_X:
                 OCMP5_CompareValueSet(5);          // OCxR: Rising edge
                 OCMP5_CompareSecondaryValueSet(36); // OCxRS: Falling edge (31 count pulse)
-                TMR2 = 0xFFFF;                      // Force immediate rollover
+                TMR3 = 0xFFFF;                      // Force immediate rollover (AXIS_X uses TMR3)
                 OCMP5_Enable();                     // Restart OCR module
                 break;
             case AXIS_Y:
@@ -640,7 +640,7 @@ static void Execute_Bresenham_Strategy_Internal(axis_id_t dominant_axis, const s
             case AXIS_Z:
                 OCMP4_CompareValueSet(5);
                 OCMP4_CompareSecondaryValueSet(36);
-                TMR3 = 0xFFFF;
+                TMR2 = 0xFFFF;                      // AXIS_Z uses TMR2 per hardware table
                 OCMP4_Enable();
                 break;
             case AXIS_A:

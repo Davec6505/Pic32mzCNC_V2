@@ -164,6 +164,19 @@ extern "C"
      */
     bool GCode_IsControlChar(char c);
 
+/**
+ * @brief Check if line contains at least one GRBL word letter
+ *
+ * @param s Line to check
+ * @return true if line has at least one GRBL word letter, false otherwise
+ *
+ * Treat a line as meaningful only if it contains at least one GRBL word letter
+ * Valid letters: G, M, X, Y, Z, A, B, C, I, J, K, F, S, T, P, L, N, R, D, H, $
+ *
+ */
+    bool LineHasGrblWordLetter(const char *s);
+
+
     /**
      * @brief Handle real-time control character (called from ISR)
      *
@@ -349,6 +362,11 @@ extern "C"
      * @brief Clear last error message
      */
     void GCode_ClearError(void);
+
+    /**
+     * @brief Print current parser modal state to UGS
+     */
+    void GCode_PrintParserState(void);
 
     //=============================================================================
     // DEBUGGING

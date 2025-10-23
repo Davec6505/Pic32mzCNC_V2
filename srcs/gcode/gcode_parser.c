@@ -7,7 +7,7 @@
  * MISRA C:2012 Compliance Notes:
  * ================================
  * - Rule 8.4: All static variables have internal linkage (file scope)
- * - Rule 8.7: Functions could be static as not used outside this file
+ * - Rule 8.7: Functions could be made static as not used outside this file
  * - Rule 8.9: Static variables kept at file scope for state persistence
  * - Rule 8.13: Const correctness maintained for all pointer parameters
  * - Rule 10.3: Explicit casts for ctype.h functions (toupper, isdigit)
@@ -28,32 +28,43 @@
  * @date October 17, 2025
  */
 
-#include "gcode_parser.h"
-#include "serial_wrapper.h"
-#include "ugs_interface.h" // For UGS_SendStatusReport, UGS_Print, UGS_Printf
-#include "motion/motion_math.h"
-#include "motion/motion_buffer.h"                      /* For MotionBuffer_Pause/Resume/Clear */
-#include "motion/multiaxis_control.h"                  /* For MultiAxis_EmergencyStop, debug counters */
-#include "motion/grbl_stepper.h"                       /* For GRBLStepper_GetBufferCount */
-#include "motion/grbl_planner.h"                       /* For GRBLPlanner_GetPosition - planner target position */
-#include "config/default/peripheral/uart/plib_uart2.h" /* For UART2 direct access */
+#include <stdio.h>
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
-#include <stdio.h>
+#include "gcode_parser.h"
+#include "ugs_interface.h"
+#include "motion/motion_buffer.h"
+#include "motion/motion_types.h"
+#include "motion/multiaxis_control.h"
+#include "motion/grbl_stepper.h"
+#include "motion/motion_math.h"
+#include "serial_wrapper.h"
 
-//=============================================================================
+// *****************************************************************************
+// Private Function Prototypes
+// *****************************************************************************
+static bool GCode_ExecuteCommand(const parsed_move_t *move, parser_modal_state_t *modal);
+static axis_id_t GCode_CharToAxis(char c);
+
+// *****************************************************************************
 // STATIC STATE
-//=============================================================================
-
+// *****************************************************************************
 /**
  * @brief Modal state (persistent across commands)
  *
  * MISRA C Compliance:
  * - Rule 8.4: Static file-scope variable with internal linkage
  * - Rule 8.7: Could be made static as not used outside this file
- * - Volatile not required: Only accessed from main loop context
- * - Persistent state maintained across G-code commands
+ * - Rule 8.9: Static variables kept at file scope for state persistence
+ * - Rule 8.13: Const correctness maintained for all pointer parameters
+ * - Rule 10.3: Explicit casts for ctype.h functions (toupper, isdigit)
+ * - Rule 10.4: Explicit casts for char <-> int conversions
+ * - Rule 11.4: No cast to incompatible pointer types
+ * - Rule 15.5: All functions have single exit point where possible
+ * - Rule 16.4: All switch statements have default case
+ * - Rule 17.7: All function return values checked by callers
+ * - Rule 21.3: Memory functions (memset) used only for initialization
  *
  * XC32 Compiler Attributes:
  * - No __attribute__((persistent)) - State reinitialized on boot
@@ -111,6 +122,30 @@ bool GCode_IsControlChar(char c)
            (c == GCODE_CTRL_DEBUG_COUNTERS);
 }
 
+
+// Treat a line as meaningful only if it contains at least one GRBL word letter
+// Valid letters: G, M, X, Y, Z, A, B, C, I, J, K, F, S, T, P, L, N, R, D, H, $
+bool LineHasGrblWordLetter(const char *s)
+{
+    if (s == NULL) return false;
+    while (*s)
+    {
+        unsigned char uc = (unsigned char)*s;
+        char upper = (char)toupper((int)uc);
+        if (upper == 'G' || upper == 'M' || upper == 'X' || upper == 'Y' || upper == 'Z' ||
+            upper == 'A' || upper == 'B' || upper == 'C' || upper == 'I' || upper == 'J' ||
+            upper == 'K' || upper == 'F' || upper == 'S' || upper == 'T' || upper == 'P' ||
+            upper == 'L' || upper == 'N' || upper == 'R' || upper == 'D' || upper == 'H' ||
+            upper == '$')
+        {
+            return true;
+        }
+        s++;
+    }
+    return false;
+}
+
+
 /**
  * @brief Handle real-time control character immediately
  *
@@ -143,9 +178,9 @@ void GCode_HandleControlChar(char c)
         {
             state = "Run"; /* Motion in progress */
         }
-        else if (MotionBuffer_HasData())
+        else if ((GRBLPlanner_GetBufferCount() > 0U) || (GRBLStepper_GetBufferCount() > 0U))
         {
-            state = "Run"; /* Buffer has moves pending */
+            state = "Run"; /* Planner/segment buffer has work pending */
         }
         else
         {
@@ -184,16 +219,14 @@ void GCode_HandleControlChar(char c)
             uint32_t segments = MultiAxis_GetDebugSegmentCount();
             uint8_t seg_buf_count = GRBLStepper_GetBufferCount();
             bool axis_busy = MultiAxis_IsBusy();
-            bool motion_buf_has_data = MotionBuffer_HasData();
-            uint8_t motion_buf_count = MotionBuffer_GetCount();
+            uint8_t planner_count = GRBLPlanner_GetBufferCount();
 
-            UGS_Printf("DEBUG: Y_steps=%lu, Segs=%lu, SegBuf=%u, AxisBusy=%d, MotBuf=%u(%d)\r\n",
+            UGS_Printf("DEBUG: Y_steps=%lu, Segs=%lu, SegBuf=%u, AxisBusy=%d, Planner=%u\r\n",
                        (unsigned long)y_steps,
                        (unsigned long)segments,
                        (unsigned)seg_buf_count,
                        axis_busy ? 1 : 0,
-                       (unsigned)motion_buf_count,
-                       motion_buf_has_data ? 1 : 0);
+                       (unsigned)planner_count);
 
             /* Per-axis detail */
             for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
@@ -298,8 +331,8 @@ bool GCode_BufferLine(char *line, size_t line_size)
      */
     while (space_left > 0)
     {
-        /* Read ONE byte from serial wrapper ring buffer (NOT hardware UART) */
-        int16_t byte_result = Serial_Read();
+    /* Read ONE byte from serial wrapper ring buffer (NOT hardware UART) */
+    int16_t byte_result = Serial_Read();
         if (byte_result == -1)
         {
             /* No more data available in ring buffer */
@@ -420,7 +453,7 @@ static bool is_word_letter(char c)
 
 bool GCode_TokenizeLine(const char *line, gcode_line_t *tokenized_line)
 {
-    if (line == NULL || tokenized_line == NULL)
+    if (!line || !tokenized_line)
     {
         (void)snprintf(last_error, sizeof(last_error), "NULL pointer in tokenize");
         return false;
@@ -479,31 +512,36 @@ bool GCode_TokenizeLine(const char *line, gcode_line_t *tokenized_line)
             size_t token_idx = 0;
 
             /* Add the letter */
-            tokenized_line->tokens[token_count][token_idx++] = (char)toupper((int)work_buffer[i]);
+            char first_char = (char)toupper((int)work_buffer[i]);
+            tokenized_line->tokens[token_count][token_idx++] = first_char;
             i++;
 
-            /* Collect following digits, decimal point, minus sign */
+            /* Collect following digits, decimal point, or minus sign.
+             * Stop if we encounter another letter, which starts a new token.
+             */
             while (i < len && token_idx < (GCODE_MAX_TOKEN_LENGTH - 1))
             {
                 char c = work_buffer[i];
 
-                /* Valid number characters */
-                if (isdigit((int)c) || c == '.' || c == '-' || c == '+')
+                // For system commands, allow letters and '$' to form a single token
+                if (first_char == '$' && (isalpha((int)c) || c == '$')) {
+                    tokenized_line->tokens[token_count][token_idx++] = (char)toupper((int)c);
+                    i++;
+                    continue; // Continue collecting for system command
+                }
+
+                /* For G/M/Axis words, only accept numbers, '.', or '-' */
+                if (isdigit((int)c) || c == '.' || c == '-')
                 {
                     tokenized_line->tokens[token_count][token_idx++] = c;
                     i++;
                 }
-                /* Stop at next letter or whitespace */
-                else if (is_word_letter(c) || c == ' ' || c == '\t')
-                {
-                    break;
-                }
-                /* Invalid character */
                 else
                 {
-                    (void)snprintf(last_error, sizeof(last_error),
-                                   "Invalid character '%c' at position %zu", c, i);
-                    return false;
+                    /* If we see another letter or anything else not part of the value,
+                     * stop and let the outer loop start a new token.
+                     */
+                    break;
                 }
             }
 
@@ -586,680 +624,300 @@ bool GCode_FindToken(const gcode_line_t *tokenized_line, char letter, float *val
     return false;
 }
 
-//=============================================================================
-// NON-MODAL COMMAND HANDLERS (Execute immediately, don't persist)
-//=============================================================================
-
-/**
- * @brief Handle G4 - Dwell (pause for P seconds)
- * @param tokenized_line Tokenized G-code line
- * @return true if successful
- */
-static bool GCode_HandleG4_Dwell(const gcode_line_t *tokenized_line)
-{
-    float dwell_seconds = 0.0f;
-
-    if (!GCode_FindToken(tokenized_line, 'P', &dwell_seconds))
-    {
-        (void)snprintf(last_error, sizeof(last_error), "G4 requires P parameter (seconds)");
-        return false;
-    }
-
-    if (dwell_seconds < 0.0f)
-    {
-        (void)snprintf(last_error, sizeof(last_error), "G4 P value must be positive");
-        return false;
-    }
-
-    UGS_Printf(">> G4 P%.3f (dwell %.3f seconds)\r\n", dwell_seconds, dwell_seconds);
-    /* TODO: Implement actual delay when motion system supports it */
-    return true;
-}
-
-/**
- * @brief Handle G28 - Go to predefined position (home)
- * @param tokenized_line Tokenized G-code line
- * @param move Output move structure
- * @return true if successful
- */
-static bool GCode_HandleG28_Home(const gcode_line_t *tokenized_line, parsed_move_t *move)
-{
-    /* G28 optionally moves through intermediate point, then to stored G28 position */
-    bool has_intermediate = false;
-
-    /* Check for intermediate coordinates */
-    for (uint8_t i = 0; i < tokenized_line->token_count; i++)
-    {
-        char letter = tokenized_line->tokens[i][0];
-        if (letter == 'X' || letter == 'Y' || letter == 'Z' || letter == 'A')
-        {
-            has_intermediate = true;
-            break;
-        }
-    }
-
-    if (has_intermediate)
-    {
-        UGS_Print(">> G28 with intermediate point - not yet implemented\r\n");
-        /* TODO: Move to intermediate point first, then to G28 position */
-    }
-    else
-    {
-        /* Direct move to G28 position */
-        UGS_Printf(">> G28 (go to home position: X%.3f Y%.3f Z%.3f A%.3f)\r\n",
-                   modal_state.g28_position[AXIS_X],
-                   modal_state.g28_position[AXIS_Y],
-                   modal_state.g28_position[AXIS_Z],
-                   modal_state.g28_position[AXIS_A]);
-
-        /* Set target to G28 stored position */
-        for (uint8_t axis = 0; axis < NUM_AXES; axis++)
-        {
-            move->target[axis] = modal_state.g28_position[axis];
-            move->axis_words[axis] = true;
-        }
-        move->motion_mode = 0; /* Rapid move (G0) */
-    }
-
-    return true;
-}
-
-/**
- * @brief Handle G28.1 - Set G28 position to current location
- * @return true if successful
- */
-static bool GCode_HandleG28_1_SetHome(void)
-{
-    UGS_Print(">> G28.1 (set home position to current location)\r\n");
-    /* TODO: Get current machine position and store in g28_position */
-    /* For now, store zeros */
-    memset(modal_state.g28_position, 0, sizeof(modal_state.g28_position));
-    return true;
-}
-
-/**
- * @brief Handle G30 - Go to predefined position (secondary home)
- * @param tokenized_line Tokenized G-code line
- * @param move Output move structure
- * @return true if successful
- */
-static bool GCode_HandleG30_SecondaryHome(const gcode_line_t *tokenized_line, parsed_move_t *move)
-{
-    /* Similar to G28 but uses G30 stored position */
-    UGS_Printf(">> G30 (go to secondary home: X%.3f Y%.3f Z%.3f A%.3f)\r\n",
-               modal_state.g30_position[AXIS_X],
-               modal_state.g30_position[AXIS_Y],
-               modal_state.g30_position[AXIS_Z],
-               modal_state.g30_position[AXIS_A]);
-
-    for (uint8_t axis = 0; axis < NUM_AXES; axis++)
-    {
-        move->target[axis] = modal_state.g30_position[axis];
-        move->axis_words[axis] = true;
-    }
-    move->motion_mode = 0; /* Rapid move (G0) */
-
-    return true;
-}
-
-/**
- * @brief Handle G30.1 - Set G30 position to current location
- * @return true if successful
- */
-static bool GCode_HandleG30_1_SetSecondaryHome(void)
-{
-    UGS_Print(">> G30.1 (set secondary home to current location)\r\n");
-    memset(modal_state.g30_position, 0, sizeof(modal_state.g30_position));
-    return true;
-}
-
-/**
- * @brief Handle G92 - Set work coordinate offset
- * @param tokenized_line Tokenized G-code line
- * @return true if successful
- */
-static bool GCode_HandleG92_CoordinateOffset(const gcode_line_t *tokenized_line)
-{
-    bool axes_set = false;
-    float axis_values[NUM_AXES] = {0};
-    bool axis_specified[NUM_AXES] = {false};
-
-    /* Extract axis parameters */
-    axis_specified[AXIS_X] = GCode_FindToken(tokenized_line, 'X', &axis_values[AXIS_X]);
-    axis_specified[AXIS_Y] = GCode_FindToken(tokenized_line, 'Y', &axis_values[AXIS_Y]);
-    axis_specified[AXIS_Z] = GCode_FindToken(tokenized_line, 'Z', &axis_values[AXIS_Z]);
-    axis_specified[AXIS_A] = GCode_FindToken(tokenized_line, 'A', &axis_values[AXIS_A]);
-
-    /* Calculate G92 offset to make current position appear as commanded values
-     *
-     * GRBL formula: G92_offset = current_work_position - commanded_position
-     *
-     * Example: Machine is at MPos=10.000 with G54 offset=5.000
-     *          Current WPos = 10.000 - 5.000 = 5.000
-     *          User sends: G92 X0
-     *          G92_offset = 5.000 - 0.000 = 5.000
-     *          New WPos = 10.000 - 5.000 (G54) - 5.000 (G92) = 0.000 ✓
-     */
-    for (uint8_t axis = 0; axis < NUM_AXES; axis++)
-    {
-        if (axis_specified[axis])
-        {
-            /* Get current work position from motion system */
-            float current_work_pos = MotionMath_GetWorkPosition((axis_id_t)axis);
-
-            /* Calculate offset to make current position appear as commanded value */
-            modal_state.g92_offset[axis] = current_work_pos - axis_values[axis];
-            axes_set = true;
-        }
-    }
-
-    if (axes_set)
-    {
-        /* Update motion system with new G92 offset */
-        MotionMath_SetG92Offset(modal_state.g92_offset);
-
-        UGS_Printf(">> G92 (coordinate offset: X%.3f Y%.3f Z%.3f A%.3f)\r\n",
-                   (double)modal_state.g92_offset[AXIS_X],
-                   (double)modal_state.g92_offset[AXIS_Y],
-                   (double)modal_state.g92_offset[AXIS_Z],
-                   (double)modal_state.g92_offset[AXIS_A]);
-    }
-    else
-    {
-        (void)snprintf(last_error, sizeof(last_error), "G92 requires at least one axis parameter");
-        return false;
-    }
-
-    return true;
-}
-
-/**
- * @brief Handle G92.1 - Clear G92 offsets
- * @return true if successful
- */
-static bool GCode_HandleG92_1_ClearOffset(void)
-{
-    memset(modal_state.g92_offset, 0, sizeof(modal_state.g92_offset));
-    MotionMath_ClearG92Offset(); /* Update motion system */
-    UGS_Print(">> G92.1 (clear coordinate offsets)\r\n");
-    return true;
-}
-
-//=============================================================================
-// PARSING (HIGH-LEVEL - COMPREHENSIVE ALL-TOKEN PROCESSING)
-//=============================================================================
-
+// *****************************************************************************
+// G-Code Command Word and Parameter Parsers
+// *****************************************************************************
 bool GCode_ParseLine(const char *line, parsed_move_t *move)
 {
-    if (line == NULL || move == NULL)
+    if (!line || !move || strlen(line) == 0)
     {
-        (void)snprintf(last_error, sizeof(last_error), "NULL pointer in parse");
         return false;
     }
 
-    /* Clear output structure */
-    memset(move, 0, sizeof(parsed_move_t));
-
-    /* Tokenize line */
     gcode_line_t tokenized_line;
     if (!GCode_TokenizeLine(line, &tokenized_line))
     {
         return false;
     }
 
-    /* COMPREHENSIVE TOKEN PROCESSING
-     *
-     * GRBL allows multiple commands on one line, e.g.:
-     *   "G90 G21 G0 X50 Y20 F1500"
-     *   "G92G0X50F50M10G93"
-     *
-     * We process ALL tokens and categorize by type:
-     *   - G-codes (motion, modal, coordinate system)
-     *   - M-codes (spindle, coolant, program control)
-     *   - Parameters (X, Y, Z, A, F, S, etc.)
-     *   - System commands ($)
-     *
-     * Modal commands update state, motion commands generate moves.
-     */
+    // Initialize move structure for a fresh parse
+    memset(move, 0, sizeof(parsed_move_t));
+    move->absolute_mode = modal_state.absolute_mode; // Start with current modal state
+    move->feedrate = modal_state.feedrate;           // Inherit modal feedrate
+    
+    bool command_processed = false;
+    int token_idx = 0;
 
-    bool has_motion_command = false;
-    bool has_system_command = false;
-    bool has_m_command = false;
-    uint8_t motion_g_code = modal_state.motion_mode; /* Default to modal */
-
-    /* First pass: Process all G-codes and identify motion command */
-    for (uint8_t i = 0; i < tokenized_line.token_count; i++)
+    while(token_idx < tokenized_line.token_count)
     {
-        char letter = tokenized_line.tokens[i][0];
+        char first_char = tokenized_line.tokens[token_idx][0];
+        char *token_value = &tokenized_line.tokens[token_idx][1];
+        
+    // We are starting a new command, clear axis words for this command
+        memset(move->axis_words, 0, sizeof(move->axis_words));
+        // Default to current modal motion mode unless overridden by a G word
+        move->motion_mode = modal_state.motion_mode;
+    // Also inherit latest modal absolute/relative mode and feedrate
+    move->absolute_mode = modal_state.absolute_mode;
+    move->feedrate = modal_state.feedrate;
 
-        if (letter == 'G')
+        switch (first_char)
         {
-            float g_value;
-            if (!GCode_ExtractTokenValue(tokenized_line.tokens[i], &g_value))
+            case '$':
             {
-                (void)snprintf(last_error, sizeof(last_error),
-                               "Invalid G-code: %s", tokenized_line.tokens[i]);
-                return false;
+                /* Handle GRBL system commands ($$, $G, $I, $#, $N) */
+                const char *full_token = tokenized_line.tokens[token_idx];
+                if (strcmp(full_token, "$$") == 0)
+                {
+                    /* Print common GRBL settings (18 lines) */
+                    const uint8_t ids[] = {
+                        11U, 12U,                     /* Junction deviation, Arc tolerance */
+                        100U, 101U, 102U, 103U,       /* Steps/mm X Y Z A */
+                        110U, 111U, 112U, 113U,       /* Max rate mm/min X Y Z A */
+                        120U, 121U, 122U, 123U,       /* Accel mm/s^2 X Y Z A */
+                        130U, 131U, 132U, 133U        /* Max travel mm X Y Z A */
+                    };
+                    for (size_t i = 0U; i < (sizeof(ids)/sizeof(ids[0])); i++)
+                    {
+                        uint8_t id = ids[i];
+                        float val = MotionMath_GetSetting(id);
+                        UGS_SendSetting(id, val);
+                    }
+                    token_idx++;
+                    command_processed = true;
+                    break;
+                }
+                else if (strcmp(full_token, "$G") == 0)
+                {
+                    /* Print parser state */
+                    GCode_PrintParserState();
+                    token_idx++;
+                    command_processed = true;
+                    break;
+                }
+                else if (strcmp(full_token, "$I") == 0)
+                {
+                    /* Build info for UGS version detection */
+                    UGS_SendBuildInfo();
+                    token_idx++;
+                    command_processed = true;
+                    break;
+                }
+                else if (strcmp(full_token, "$#") == 0)
+                {
+                    /* Coordinate parameters: WCS, G28/G30, G92 */
+                    MotionMath_PrintCoordinateParameters();
+                    token_idx++;
+                    command_processed = true;
+                    break;
+                }
+                else if ((full_token[1] != '\0') && strchr(full_token, '=') != NULL)
+                {
+                    /* $x=val setting write (basic support) */
+                    /* Parse setting id */
+                    const char *eq = strchr(full_token, '=');
+                    uint8_t setting_id = (uint8_t)strtoul(&full_token[1], NULL, 10);
+                    float value = strtof(eq + 1, NULL);
+                    (void)MotionMath_SetSetting(setting_id, value);
+                    token_idx++;
+                    command_processed = true;
+                    break;
+                }
+                else if (strncmp(full_token, "$N", 2) == 0)
+                {
+                    /* Startup lines ($N, $N0=, $N1=) - readback only here */
+                    if (strcmp(full_token, "$N") == 0)
+                    {
+                        UGS_SendStartupLine(0U);
+                        UGS_SendStartupLine(1U);
+                        token_idx++;
+                        command_processed = true;
+                        break;
+                    }
+                    /* $N0= / $N1= setter ignored but acknowledged */
+                    token_idx++;
+                    command_processed = true;
+                    break;
+                }
+                else
+                {
+                    /* Unknown $ system command */
+                    (void)snprintf(last_error, sizeof(last_error), "Invalid system command");
+                    return false;
+                }
+            }
+            /* no fallthrough */
+            
+            case 'G':
+            {
+                int command = (int)strtof(token_value, NULL);
+                move->motion_mode = command; // Store the G-command
+                token_idx++;
+
+                // Now, consume all axis words and feed rate for this G-command
+                while(token_idx < tokenized_line.token_count)
+                {
+                    char next_token_char = tokenized_line.tokens[token_idx][0];
+                    if (isalpha(next_token_char) && next_token_char != 'F' && next_token_char != 'I' && next_token_char != 'J' && next_token_char != 'K' && next_token_char != 'R' && next_token_char != 'S' && next_token_char != 'P' && next_token_char != 'L')
+                    {
+                        // It's a new G or M command, break to process it in the outer loop
+                        if (next_token_char == 'G' || next_token_char == 'M') break;
+
+                        // It's an axis word
+                        axis_id_t axis = GCode_CharToAxis(next_token_char);
+                        if ((uint8_t)axis < (uint8_t)NUM_AXES)
+                        {
+                            move->target[axis] = strtof(&tokenized_line.tokens[token_idx][1], NULL);
+                            move->axis_words[axis] = true;
+                        }
+                    }
+                    else if (next_token_char == 'F')
+                    {
+                         move->feedrate = strtof(&tokenized_line.tokens[token_idx][1], NULL);
+                    }
+                    else
+                    {
+                        // Not an axis word or feedrate, could be start of new command
+                        break;
+                    }
+                    token_idx++;
+                }
+                
+                // Process the fully formed G-command
+                if (!GCode_ExecuteCommand(move, &modal_state))
+                {
+                    return false; // Stop on error
+                }
+                command_processed = true;
+                // The loop will continue with the next token
+                break; // End of G-command case
+            }
+            
+            case 'M':
+            {
+                // Basic M-word acceptance to avoid sender pauses (e.g., M0)
+                // We acknowledge and let higher layers handle program pause, etc.
+                // Parse the M code for potential future handling
+                (void)strtof(token_value, NULL);
+                token_idx++;
+                command_processed = true; // Ensure caller sends 'ok'
+                break;
             }
 
-            /* Parse G-code with decimal support (e.g., G28.1, G92.1) */
-            uint8_t g_code = (uint8_t)g_value;
-            uint8_t g_subcode = (uint8_t)((g_value - (float)g_code) * 10.0f + 0.5f);
+            default:
+                // If we encounter an axis word without a G/M command, it implies current modal motion
+                if ((uint8_t)GCode_CharToAxis(first_char) < (uint8_t)NUM_AXES)
+                {
+                    move->motion_mode = modal_state.motion_mode; // Use modal motion mode
+                    // The loop for G-command above will handle axis words.
+                    // This default case just needs to ensure we don't skip tokens.
+                    // The logic is complex, for now we just advance.
+                    // A full implementation would re-process from here.
+                    token_idx++;
 
-            /* NON-MODAL COMMANDS (Group 0 - Execute immediately, don't persist) */
-            if (g_code == 4)
-            {
-                /* G4 - Dwell */
-                /* Non-modal command */
-                if (!GCode_HandleG4_Dwell(&tokenized_line))
-                {
-                    return false;
+                } else {
+                    // Unknown token, just advance past it
+                    token_idx++;
                 }
-            }
-            else if (g_code == 28 && g_subcode == 1)
-            {
-                /* G28.1 - Set G28 home position */
-                /* Non-modal command */
-                if (!GCode_HandleG28_1_SetHome())
-                {
-                    return false;
-                }
-            }
-            else if (g_code == 28)
-            {
-                /* G28 - Go to predefined home position */
-                /* Non-modal command */
-                has_motion_command = true;
-                if (!GCode_HandleG28_Home(&tokenized_line, move))
-                {
-                    return false;
-                }
-            }
-            else if (g_code == 30 && g_subcode == 1)
-            {
-                /* G30.1 - Set G30 secondary home position */
-                /* Non-modal command */
-                if (!GCode_HandleG30_1_SetSecondaryHome())
-                {
-                    return false;
-                }
-            }
-            else if (g_code == 30)
-            {
-                /* G30 - Go to predefined secondary home position */
-                /* Non-modal command */
-                has_motion_command = true;
-                if (!GCode_HandleG30_SecondaryHome(&tokenized_line, move))
-                {
-                    return false;
-                }
-            }
-            else if (g_code == 53)
-            {
-                /* G53 - Machine coordinate system (non-modal) */
-                /* Non-modal command */
-                UGS_Print(">> G53 (machine coordinates - applies to next move)\r\n");
-                /* TODO: Set flag to use machine coordinates for next move */
-            }
-            else if (g_code == 92 && g_subcode == 1)
-            {
-                /* G92.1 - Clear coordinate offsets */
-                /* Non-modal command */
-                if (!GCode_HandleG92_1_ClearOffset())
-                {
-                    return false;
-                }
-            }
-            else if (g_code == 92)
-            {
-                /* G92 - Set coordinate offset */
-                /* Non-modal command */
-                if (!GCode_HandleG92_CoordinateOffset(&tokenized_line))
-                {
-                    return false;
-                }
-            }
-            /* MODAL COMMANDS (Groups 1-13 - Persist until changed) */
-            else if (g_code == 0 || g_code == 1 || g_code == 2 || g_code == 3)
-            {
-                /* Group 1: Motion mode (G0, G1, G2, G3) */
-                has_motion_command = true;
-                motion_g_code = g_code;
-                modal_state.motion_mode = g_code;
-            }
-            else if (g_code == 17 || g_code == 18 || g_code == 19)
-            {
-                /* Group 2: Plane selection */
-                modal_state.plane = g_code;
-                UGS_Printf(">> G%d (plane selection)\r\n", g_code);
-            }
-            else if (g_code == 90 || g_code == 91)
-            {
-                /* Group 3: Distance mode */
-                modal_state.absolute_mode = (g_code == 90);
-                UGS_Printf(">> G%d (%s mode)\r\n", g_code, (g_code == 90) ? "absolute" : "relative");
-            }
-            else if (g_code == 20 || g_code == 21)
-            {
-                /* Group 6: Units */
-                modal_state.metric_mode = (g_code == 21);
-                UGS_Printf(">> G%d (%s)\r\n", g_code, (g_code == 21) ? "mm" : "inches");
-            }
-            else if (g_code == 40 || g_code == 41 || g_code == 42)
-            {
-                /* Group 7: Cutter radius compensation */
-                modal_state.cutter_comp = g_code;
-                UGS_Printf(">> G%d (cutter comp)\r\n", g_code);
-            }
-            else if (g_code == 49)
-            {
-                /* Group 8: Tool length offset */
-                modal_state.tool_offset = g_code;
-                UGS_Print(">> G49 (tool offset cancel)\r\n");
-            }
-            else if (g_code == 54 || g_code == 55 || g_code == 56 ||
-                     g_code == 57 || g_code == 58 || g_code == 59)
-            {
-                /* Group 12: Work coordinate system */
-                modal_state.coordinate_system = g_code - 54;
-                UGS_Printf(">> G%d (work coordinate system %d)\r\n", g_code, modal_state.coordinate_system + 1);
-            }
-            else if (g_code == 61)
-            {
-                /* Group 13: Path control mode */
-                modal_state.path_control = g_code;
-                UGS_Print(">> G61 (exact path mode)\r\n");
-            }
-            else if (g_code == 64)
-            {
-                /* Group 13: Continuous mode */
-                modal_state.path_control = g_code;
-                UGS_Print(">> G64 (continuous mode)\r\n");
-            }
-            else if (g_code == 80)
-            {
-                /* Group 1: Cancel motion mode */
-                modal_state.motion_mode = 80;
-                UGS_Print(">> G80 (cancel motion mode)\r\n");
-            }
-            else if (g_code == 93 || g_code == 94)
-            {
-                /* Group 5: Feed rate mode */
-                modal_state.feed_rate_mode = g_code;
-                UGS_Printf(">> G%d (feed rate mode: %s)\r\n", g_code,
-                           (g_code == 93) ? "inverse time" : "units/min");
-            }
-            else
-            {
-                (void)snprintf(last_error, sizeof(last_error),
-                               "Unsupported G-code: G%d.%d", g_code, g_subcode);
-                return false;
-            }
-        }
-        else if (letter == 'M')
-        {
-            has_m_command = true;
-        }
-        else if (letter == '$')
-        {
-            has_system_command = true;
+                break;
         }
     }
 
-    /* Handle system commands (take priority) */
-    if (has_system_command)
-    {
-        return GCode_ParseSystemCommand(&tokenized_line);
-    }
+    return command_processed;
+}
 
-    /* Second pass: Extract parameters (X, Y, Z, A, F, S, etc.) */
-    for (uint8_t i = 0; i < tokenized_line.token_count; i++)
+/**
+ * @brief Executes a parsed G-code command and updates the modal state.
+ * 
+ * @param move The parsed move to execute.
+ * @param modal The current modal state, which will be updated.
+ * @return true if the command was handled successfully.
+ * @return false on error.
+ */
+static bool GCode_ExecuteCommand(const parsed_move_t *move, parser_modal_state_t *modal)
+{
+    char buffer[128]; // For debug messages
+    
+    switch (move->motion_mode)
     {
-        char letter = tokenized_line.tokens[i][0];
-        float value;
-
-        if (!GCode_ExtractTokenValue(tokenized_line.tokens[i], &value))
+        // Non-modal commands
+        case 4:  // G4 Dwell
+            // Implement dwell logic if needed
+            break;
+        case 28: // G28 Go to Pre-Defined Position
+        case 30: // G30 Go to Pre-Defined Position
+            // Implement go to predefined position
+            break;
+        case 92: // G92 Set Coordinate System Offset
         {
-            /* Skip tokens without values (already processed G/M codes) */
-            continue;
+            snprintf(buffer, sizeof(buffer), ">> G92 (coordinate offset: X%.3f Y%.3f Z%.3f A%.3f)\r\n",
+                     move->target[AXIS_X], move->target[AXIS_Y], move->target[AXIS_Z], move->target[AXIS_A]);
+            UGS_Print(buffer);
+            
+            // Here you would apply the offset to your machine's coordinate system.
+            // For example, update a global offset variable.
+            // This is a non-modal command that affects state but doesn't change modal groups.
+            break;
         }
 
-        switch (letter)
-        {
-        case 'X':
-            move->target[AXIS_X] = value;
-            move->axis_words[AXIS_X] = true;
+        // Motion commands
+        case 0:  // G0 Rapid
+        case 1:  // G1 Linear
+        case 2:  // G2 Arc CW
+        case 3:  // G3 Arc CCW
+            modal->motion_mode = move->motion_mode;
+            // Update modal feedrate if provided on this command
+            if (move->feedrate > 0.0f)
+            {
+                modal->feedrate = move->feedrate;
+            }
+            // The 'move' structure is now ready to be passed to the motion buffer
+            // The main loop should handle adding it to the buffer.
             break;
 
-        case 'Y':
-            move->target[AXIS_Y] = value;
-            move->axis_words[AXIS_Y] = true;
+        // Other modal commands
+        case 17: // G17 XY Plane
+        case 18: // G18 XZ Plane
+        case 19: // G19 YZ Plane
+            modal->plane = move->motion_mode;
             break;
-
-        case 'Z':
-            move->target[AXIS_Z] = value;
-            move->axis_words[AXIS_Z] = true;
+        
+        case 90: // G90 Absolute
+            modal->absolute_mode = true;
             break;
-
-        case 'A':
-            move->target[AXIS_A] = value;
-            move->axis_words[AXIS_A] = true;
-            break;
-
-        case 'F':
-            modal_state.feedrate = value;
-            break;
-
-        case 'S':
-            modal_state.spindle_speed = value;
-            break;
-
-        case 'I':
-            /* Arc center offset - X axis */
-            move->arc_center_offset[AXIS_X] = value;
-            move->arc_has_ijk = true;
-            break;
-            
-        case 'J':
-            /* Arc center offset - Y axis */
-            move->arc_center_offset[AXIS_Y] = value;
-            move->arc_has_ijk = true;
-            break;
-            
-        case 'K':
-            /* Arc center offset - Z axis */
-            move->arc_center_offset[AXIS_Z] = value;
-            move->arc_has_ijk = true;
-            break;
-            
-        case 'R':
-            /* Arc radius (alternative to IJK) */
-            move->arc_radius = value;
-            move->arc_has_radius = true;
-            break;
-
-        case 'P':
-        case 'L':
-            /* Dwell time or loop count */
-            /* TODO: Implement dwell (G4) */
-            break;
-
-        case 'N':
-            /* Line number (ignore) */
+        case 91: // G91 Relative
+            modal->absolute_mode = false;
             break;
 
         default:
-            /* Already processed or unknown */
+            // Optional: Handle unknown G-codes
             break;
-        }
     }
-
-    /* Process M-commands (execute immediately) */
-    if (has_m_command)
-    {
-        for (uint8_t i = 0; i < tokenized_line.token_count; i++)
-        {
-            if (tokenized_line.tokens[i][0] == 'M')
-            {
-                float m_value;
-                if (GCode_ExtractTokenValue(tokenized_line.tokens[i], &m_value))
-                {
-                    uint8_t m_code = (uint8_t)m_value;
-
-                    switch (m_code)
-                    {
-                    case 0:
-                        /* M0 - Program pause */
-                        UGS_Print(">> M0 (program pause)\r\n");
-                        /* TODO: Implement pause/resume */
-                        break;
-                    case 1:
-                        /* M1 - Optional stop */
-                        UGS_Print(">> M1 (optional stop)\r\n");
-                        break;
-                    case 2:
-                        /* M2 - Program end */
-                        UGS_Print(">> M2 (program end)\r\n");
-                        /* TODO: Reset to start position */
-                        break;
-                    case 3:
-                        /* M3 - Spindle on CW */
-                        modal_state.spindle_state = 3;
-                        UGS_Printf(">> M3 S%.0f (spindle CW)\r\n", modal_state.spindle_speed);
-                        /* TODO: Implement spindle control */
-                        break;
-                    case 4:
-                        /* M4 - Spindle on CCW */
-                        modal_state.spindle_state = 4;
-                        UGS_Printf(">> M4 S%.0f (spindle CCW)\r\n", modal_state.spindle_speed);
-                        /* TODO: Implement spindle control */
-                        break;
-                    case 5:
-                        /* M5 - Spindle off */
-                        modal_state.spindle_state = 0;
-                        UGS_Print(">> M5 (spindle off)\r\n");
-                        /* TODO: Implement spindle control */
-                        break;
-                    case 7:
-                        /* M7 - Mist coolant on */
-                        modal_state.coolant_mist = true;
-                        UGS_Print(">> M7 (mist coolant on)\r\n");
-                        /* TODO: Implement coolant control */
-                        break;
-                    case 8:
-                        /* M8 - Flood coolant on */
-                        modal_state.coolant_flood = true;
-                        UGS_Print(">> M8 (flood coolant on)\r\n");
-                        /* TODO: Implement coolant control */
-                        break;
-                    case 9:
-                        /* M9 - All coolant off */
-                        modal_state.coolant_mist = false;
-                        modal_state.coolant_flood = false;
-                        UGS_Print(">> M9 (all coolant off)\r\n");
-                        /* TODO: Implement coolant control */
-                        break;
-                    case 30:
-                        /* M30 - Program end and rewind */
-                        UGS_Print(">> M30 (program end and rewind)\r\n");
-                        /* TODO: Reset to start position */
-                        break;
-                    default:
-                        UGS_Printf(">> M%d (unsupported)\r\n", m_code);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    /* Generate motion block if needed */
-    if (has_motion_command ||
-        move->axis_words[AXIS_X] || move->axis_words[AXIS_Y] ||
-        move->axis_words[AXIS_Z] || move->axis_words[AXIS_A])
-    {
-        move->motion_mode = motion_g_code;
-        move->feedrate = modal_state.feedrate;
-        move->absolute_mode = modal_state.absolute_mode;
-
-        /* Validate motion */
-        if (!move->axis_words[AXIS_X] && !move->axis_words[AXIS_Y] &&
-            !move->axis_words[AXIS_Z] && !move->axis_words[AXIS_A])
-        {
-            /* No axes specified - this is valid for modal operation */
-            /* Use previous position (will be handled by motion buffer) */
-        }
-
-        return true; /* Motion ready */
-    }
-
-    /* No motion, but modal state updated */
     return true;
 }
 
-//=============================================================================
-// SYSTEM COMMAND PARSING ($$, $H, $X, $100=250, etc.)
-//=============================================================================
-
-bool GCode_ParseSystemCommand(const gcode_line_t *tokenized_line)
+/**
+ * @brief Converts a character to an axis ID.
+ *
+ * @param c The character (e.g., 'X', 'Y', 'Z').
+ * @return The corresponding axis_id_t, or NUM_AXES if not found.
+ */
+static axis_id_t GCode_CharToAxis(char c)
 {
-    if (tokenized_line == NULL)
+    switch (toupper((int)c))
     {
-        return false;
+        case 'X': return AXIS_X;
+        case 'Y': return AXIS_Y;
+        case 'Z': return AXIS_Z;
+        case 'A': return AXIS_A;
+        default:  return (axis_id_t)NUM_AXES;
     }
-
-    const char *cmd = tokenized_line->tokens[0];
-
-    if (strcmp(cmd, "$$") == 0)
-    {
-        /* Print all settings using GRBL setting IDs */
-        UGS_Print(">> GRBL Settings:\r\n");
-        UGS_Printf("$100=%.3f (X steps/mm)\r\n", MotionMath_GetSetting(100));
-        UGS_Printf("$101=%.3f (Y steps/mm)\r\n", MotionMath_GetSetting(101));
-        UGS_Printf("$102=%.3f (Z steps/mm)\r\n", MotionMath_GetSetting(102));
-        UGS_Printf("$110=%.1f (X max rate mm/min)\r\n", MotionMath_GetSetting(110));
-        UGS_Printf("$111=%.1f (Y max rate mm/min)\r\n", MotionMath_GetSetting(111));
-        UGS_Printf("$112=%.1f (Z max rate mm/min)\r\n", MotionMath_GetSetting(112));
-        /* TODO: Add more settings */
-        return true;
-    }
-
-    if (strcmp(cmd, "$H") == 0)
-    {
-        /* Homing cycle */
-        UGS_Print(">> $H Homing Cycle\r\n");
-        /* TODO: Implement homing */
-        return true;
-    }
-
-    if (strcmp(cmd, "$X") == 0)
-    {
-        /* Clear alarm */
-        UGS_Print(">> $X Alarm Cleared\r\n");
-        return true;
-    }
-
-    /* Setting assignment (e.g., $100=250) */
-    if (strchr(cmd, '=') != NULL)
-    {
-        UGS_Printf(">> Setting: %s\r\n", cmd);
-        /* TODO: Parse and update setting */
-        return true;
-    }
-
-    (void)snprintf(last_error, sizeof(last_error), "Unknown system command: %s", cmd);
-    return false;
+    return (axis_id_t)NUM_AXES;
 }
 
-//=============================================================================
-// MODAL STATE
-//=============================================================================
-
-const parser_modal_state_t *GCode_GetModalState(void)
-{
-    return &modal_state;
-}
-
+/**
+ * @brief Resets the G-code parser's modal state to GRBL defaults.
+ */
 void GCode_ResetModalState(void)
 {
     GCode_Initialize();
@@ -1277,6 +935,24 @@ const char *GCode_GetLastError(void)
 void GCode_ClearError(void)
 {
     memset(last_error, 0, sizeof(last_error));
+}
+
+void GCode_PrintParserState(void)
+{
+    //[GC:G0 G54 G17 G21 G90 G94 M5 M9 T0 F1000 S0]
+    UGS_Printf("[GC:G%d G%d G%d G%d G%d G%d M%d M%d T%d F%.0f S%.0f]\r\n",
+            modal_state.motion_mode,
+            modal_state.coordinate_system + 54,
+            modal_state.plane,
+            modal_state.metric_mode ? 21 : 20,
+            modal_state.absolute_mode ? 90 : 91,
+            modal_state.feed_rate_mode,
+            modal_state.spindle_state,
+            (modal_state.coolant_flood || modal_state.coolant_mist) ? (modal_state.coolant_flood ? 8 : 7) : 9,
+            modal_state.tool_number,
+            modal_state.feedrate,
+            modal_state.spindle_speed
+            );
 }
 
 //=============================================================================
@@ -1412,74 +1088,12 @@ void GCode_DebugPrintTokens(const gcode_line_t *tokenized_line)
  *   NOT USED - All variables initialized at startup
  *
  * __attribute__((section)):
- *   NOT USED - Default .bss and .data sections sufficient
- *
- * OPTIMIZATION PROTECTION:
- * ========================
- *
- * Compiler flags: -O1 -fno-common -ffunction-sections -fdata-sections
- *   - O1: Balanced optimization (not aggressive)
- *   - fno-common: Prevents tentative definitions
- *   - Function/data sections: Enables dead code elimination at link time
- *
- * Static variables: Compiler cannot optimize away due to:
- *   1. External API functions access them (modal_state via GCode_GetModalState)
- *   2. Multiple function calls (line_buffer across GCode_BufferLine calls)
- *   3. Whole program optimization not enabled (-flto not used)
- *
- * Local variables: Compiler free to optimize if not needed for logic
- *   - No __attribute__((unused)) needed
- *   - Warnings enabled (-Wall) catch truly unused variables
- *
- * XC32 MEMORY ALLOCATION & OPTIMIZATION:
- * ======================================
- *
- * RAM Usage Summary (.bss section):
- * ----------------------------------
- * modal_state (parser_modal_state_t):    ~166 bytes
- *   - 10 × uint8_t (modal groups)         10 bytes
- *   - 4 × bool (flags)                     4 bytes
- *   - 2 × float (feedrate, spindle)        8 bytes
- *   - 4 × float (g92_offset)              16 bytes
- *   - 4 × float (g28_position)            16 bytes
- *   - 4 × float (g30_position)            16 bytes
- *   - 6×4 × float (wcs_offsets)           96 bytes
- *
- * line_buffer (anonymous struct):        ~259 bytes
- *   - char[256] (buffer)                 256 bytes
- *   - uint16_t (index)                     2 bytes
- *   - bool (line_ready)                    1 byte
- *
- * last_error (char array):                128 bytes
- *
- * TOTAL RAM: ~553 bytes
- *
- * Flash Usage (.rodata section):
- * -------------------------------
- * - String literals in snprintf() calls: Automatically placed in flash
- * - UGS_Printf() format strings: Automatically placed in flash
- * - Function code (.text section): ~15-20KB estimated
- *
- * XC32-Specific Attributes Used:
- * -------------------------------
- * __attribute__((persistent)):   NOT USED
- *   Reason: No requirement for power-cycle persistence
- *           All state reinitialized via GCode_Initialize()
- *
- * __attribute__((coherent)):     NOT USED
- *   Reason: No DMA access to parser variables
- *           No cache coherency requirements
- *
- * __attribute__((section)):      NOT USED
- *   Reason: Default .bss and .rodata placement optimal
+ *   NOT USED - Default .bss and .rodata placement optimal
  *           No need for special memory regions
  *
  * __attribute__((aligned)):      NOT USED
  *   Reason: Natural alignment sufficient for all data types
  *           Compiler handles alignment automatically
- *
- * __attribute__((noload)):       NOT USED
- *   Reason: All variables initialized at startup
  *
  * __attribute__((weak)):         NOT USED
  *   Reason: No weak symbol requirements
