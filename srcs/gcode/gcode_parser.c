@@ -205,11 +205,49 @@ void GCode_HandleControlChar(char c)
         break;
 
     case GCODE_CTRL_SOFT_RESET:
-        /* Emergency stop and reset */
+        /* GRBL v1.1f Compliant Soft Reset (Ctrl-X)
+         * 
+         * Requirements per GRBL protocol:
+         * 1. Stop all motion immediately
+         * 2. Clear all motion/planner/segment buffers
+         * 3. Reset parser modal state to power-on defaults
+         * 4. Clear work coordinate systems (G54-G59 offsets)
+         * 5. Clear G92 temporary offsets
+         * 6. Reset to IDLE state (clear any alarm conditions)
+         * 7. Send startup messages for UGS identification
+         * 8. Send "ok" for flow control (critical!)
+         * 
+         * This enables emergency stop functionality and allows UGS
+         * to recover from error states without power cycling.
+         */
+        
+        /* 1. Emergency stop all motion */
         MultiAxis_StopAll();
-        MotionBuffer_Clear();
-        GCode_ResetModalState();
-        UGS_Print(">> System Reset\r\n");
+        
+        /* 2. Clear all buffers */
+        MotionBuffer_Clear();       /* High-level motion buffer (ring buffer) */
+        GRBLPlanner_Reset();        /* GRBL planner buffer (look-ahead planning) */
+        GRBLStepper_Reset();        /* GRBL stepper segment buffer (execution) */
+        
+        /* 3. Reset parser modal state to power-on defaults
+         * Note: GCode_Initialize() already clears:
+         *   - G92 offsets (modal_state.g92_offset)
+         *   - Work coordinate offsets (modal_state.wcs_offsets)
+         *   - G28/G30 stored positions
+         *   - Modal groups to GRBL v1.1f defaults
+         */
+        GCode_ResetModalState();    /* Calls GCode_Initialize() internally */
+        
+        /* 4. Send GRBL startup sequence (required for UGS protocol) */
+        UGS_Print("\r\n");          /* Clear line for visual separation */
+        UGS_SendBuildInfo();        /* Send [VER:1.1f.20251017:PIC32MZ CNC V2] */
+        UGS_Print("[MSG:Reset to continue]\r\n");  /* Informational message */
+        
+        /* 5. Send "ok" for flow control (CRITICAL!)
+         * UGS waits for "ok" before sending next command.
+         * Without this, sender hangs indefinitely.
+         */
+        UGS_SendOK();
         break;
 
     case GCODE_CTRL_DEBUG_COUNTERS:
