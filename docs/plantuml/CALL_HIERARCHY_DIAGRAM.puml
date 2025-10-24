@@ -1,0 +1,345 @@
+@startuml Motion_Control_Call_Hierarchy
+title PIC32MZ CNC Motion Control - Complete Call Hierarchy
+skinparam componentStyle rectangle
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontSize 10
+
+' ═══════════════════════════════════════════════════════════════════════════
+' COLOR SCHEME
+' ═══════════════════════════════════════════════════════════════════════════
+!define MAIN_COLOR #E3F2FD
+!define ISR_COLOR #FFEBEE
+!define API_COLOR #E8F5E9
+!define HELPER_COLOR #FFF3E0
+!define HARDWARE_COLOR #F3E5F5
+
+' ═══════════════════════════════════════════════════════════════════════════
+' SYSTEM INITIALIZATION FLOW
+' ═══════════════════════════════════════════════════════════════════════════
+package "System Initialization" <<Rectangle>> MAIN_COLOR {
+    component main as "main()\n[main.c:54]" MAIN_COLOR
+    
+    package "Harmony3 Peripherals" <<Cloud>> HARDWARE_COLOR {
+        component SYS_Init as "SYS_Initialize()\n[Generated Code]" HARDWARE_COLOR
+        component CLK_Init as "CLK_Initialize()" HARDWARE_COLOR
+        component GPIO_Init as "GPIO_Initialize()" HARDWARE_COLOR
+        component TMR2_Init as "TMR2_Initialize()\nX-axis timer" HARDWARE_COLOR
+        component TMR3_Init as "TMR3_Initialize()\nZ-axis timer" HARDWARE_COLOR
+        component TMR4_Init as "TMR4_Initialize()\nY-axis timer" HARDWARE_COLOR
+        component TMR5_Init as "TMR5_Initialize()\nA-axis timer" HARDWARE_COLOR
+        component OCMP1_Init as "OCMP1_Initialize()\nY-axis pulses" HARDWARE_COLOR
+        component OCMP3_Init as "OCMP3_Initialize()\nA-axis pulses" HARDWARE_COLOR
+        component OCMP4_Init as "OCMP4_Initialize()\nZ-axis pulses" HARDWARE_COLOR
+        component OCMP5_Init as "OCMP5_Initialize()\nX-axis pulses" HARDWARE_COLOR
+        component TMR9_Init as "TMR9_Initialize()\nMotion Manager @10ms" HARDWARE_COLOR
+        component UART2_Init as "UART2_Initialize()\nSerial @115200" HARDWARE_COLOR
+    }
+    
+    component UGS_Init as "UGS_Initialize()\n[ugs_interface.c]" API_COLOR
+    component Serial_Init as "Serial_Initialize()\nRing buffer setup" HELPER_COLOR
+    
+    component GRBL_Plan_Init as "GRBLPlanner_Initialize()\n[grbl_planner.c]" API_COLOR
+    component MotionMath_Init as "MotionMath_InitializeSettings()\nLoad $100-$133" HELPER_COLOR
+    
+    component Multi_Init as "MultiAxis_Initialize()\n[multiaxis_control.c:2120]" API_COLOR
+    component RegisterCallbacks as "Register OCR Callbacks\nOCMP1/3/4/5" HELPER_COLOR
+    component SetStrategy as "MultiAxis_SetStepStrategy()\n× 4 axes" HELPER_COLOR
+    component RegisterTMR9 as "TMR9_CallbackRegister()\nMotion Manager ISR" HELPER_COLOR
+    
+    component GCode_Init as "GCode_Initialize()\n[gcode_parser.c]" API_COLOR
+    component BuildInfo as "UGS_SendBuildInfo()\nVersion string" HELPER_COLOR
+}
+
+main --> SYS_Init
+SYS_Init --> CLK_Init
+SYS_Init --> GPIO_Init
+SYS_Init --> TMR2_Init
+SYS_Init --> TMR3_Init
+SYS_Init --> TMR4_Init
+SYS_Init --> TMR5_Init
+SYS_Init --> OCMP1_Init
+SYS_Init --> OCMP3_Init
+SYS_Init --> OCMP4_Init
+SYS_Init --> OCMP5_Init
+SYS_Init --> TMR9_Init
+SYS_Init --> UART2_Init
+
+main --> UGS_Init
+UGS_Init --> Serial_Init
+
+main --> GRBL_Plan_Init
+GRBL_Plan_Init --> MotionMath_Init
+
+main --> Multi_Init
+Multi_Init --> MotionMath_Init
+Multi_Init --> RegisterCallbacks
+Multi_Init --> SetStrategy
+Multi_Init --> RegisterTMR9
+
+main --> GCode_Init
+main --> BuildInfo
+
+' ═══════════════════════════════════════════════════════════════════════════
+' MAIN LOOP PROCESSING
+' ═══════════════════════════════════════════════════════════════════════════
+package "Main Loop (Polling @ ~10kHz)" <<Rectangle>> MAIN_COLOR {
+    component MainLoop as "while(true)\n[main.c:86]" MAIN_COLOR
+    
+    package "Serial Input Processing" <<Rectangle>> HELPER_COLOR {
+        component GetRealtime as "Serial_GetRealtimeCommand()\nCheck for ?,!,~,^X" HELPER_COLOR
+        component HandleCtrl as "GCode_HandleControlChar()\nReal-time commands" API_COLOR
+        component StatusReport as "UGS_SendStatusReport()\nPosition feedback" API_COLOR
+        component GetStepCount as "MultiAxis_GetStepCount()\n× NUM_AXES" API_COLOR
+        component StepsToMM as "MotionMath_StepsToMM()\nConvert to mm" HELPER_COLOR
+        
+        component SerialRead as "Serial_Read()\nRing buffer" HELPER_COLOR
+        component ParseLine as "GCode_ParseLine()\nTokenize & validate" API_COLOR
+        component GetPosition as "GRBLPlanner_GetPosition()\nCurrent mm position" HELPER_COLOR
+        component WorkToMachine as "MotionMath_WorkToMachine()\nG54-G59 offset" HELPER_COLOR
+        component BufferLine as "GRBLPlanner_BufferLine()\nAdd to planner" API_COLOR
+        component MMToSteps as "MotionMath_MMToSteps()\nConvert to steps" HELPER_COLOR
+        component SendOK as "UGS_SendOK()\nFlow control" API_COLOR
+    }
+    
+    package "Segment Execution Control" <<Rectangle>> API_COLOR {
+        component IsBusy as "MultiAxis_IsBusy()\nCheck active flags" API_COLOR
+        component StartSeg as "MultiAxis_StartSegmentExecution()\nLoad & start segment" API_COLOR
+    }
+}
+
+MainLoop --> GetRealtime
+GetRealtime --> HandleCtrl
+HandleCtrl --> StatusReport
+StatusReport --> GetStepCount
+GetStepCount --> StepsToMM
+
+MainLoop --> SerialRead
+SerialRead --> ParseLine
+ParseLine --> GetPosition
+ParseLine --> WorkToMachine
+ParseLine --> BufferLine
+BufferLine --> MMToSteps
+BufferLine --> SendOK
+
+MainLoop --> IsBusy
+MainLoop --> StartSeg
+
+' ═══════════════════════════════════════════════════════════════════════════
+' SEGMENT EXECUTION FLOW
+' ═══════════════════════════════════════════════════════════════════════════
+package "Segment Execution" <<Rectangle>> API_COLOR {
+    component StartSegExec as "MultiAxis_StartSegmentExecution()\n[multiaxis_control.c:2322]" API_COLOR
+    
+    package "Segment Loading" <<Rectangle>> HELPER_COLOR {
+        component GetNextSeg as "GRBLStepper_GetNextSegment()\nDequeue segment" HELPER_COLOR
+        component FindDominant as "Determine Dominant Axis\nMax steps logic" HELPER_COLOR
+        component InitState as "Initialize segment_state[]\nAll axes with motion" HELPER_COLOR
+        component InitBresenham as "bresenham_counter =\nfirst_seg->bresenham_counter[axis]\n✅ Oct 24 fix!" HELPER_COLOR
+    }
+    
+    package "Hardware Configuration" <<Rectangle>> HARDWARE_COLOR {
+        component EnableDriver as "MultiAxis_EnableDriver()\nENABLE pin active-low" API_COLOR
+        component SetDir as "Set Direction GPIO\nDirX_Set/Clear()" HARDWARE_COLOR
+        component ConfigOCR as "Configure OCR Period\nTMR_PeriodSet()" HARDWARE_COLOR
+        component SetCompare as "OCMP_CompareValueSet()\nperiod - 40" HARDWARE_COLOR
+        component SetSecondary as "OCMP_CompareSecondaryValueSet()\n40 (pulse width)" HARDWARE_COLOR
+        component EnableOCR as "OCMP_Enable()\nStart pulse generation" HARDWARE_COLOR
+        component StartTMR as "TMR_Start()\nBegin counting" HARDWARE_COLOR
+    }
+    
+    component SetBitmask as "segment_completed_by_axis =\n(1 << dominant_axis)\n✅ Atomic commit" HELPER_COLOR
+}
+
+StartSeg --> GetNextSeg
+GetNextSeg --> FindDominant
+FindDominant --> InitState
+InitState --> InitBresenham
+InitBresenham --> EnableDriver
+EnableDriver --> SetDir
+SetDir --> ConfigOCR
+ConfigOCR --> SetCompare
+SetCompare --> SetSecondary
+SetSecondary --> EnableOCR
+EnableOCR --> StartTMR
+StartTMR --> SetBitmask
+
+' ═══════════════════════════════════════════════════════════════════════════
+' ISR EXECUTION HIERARCHY
+' ═══════════════════════════════════════════════════════════════════════════
+package "OCR ISR (Fires on Every Pulse)" <<Rectangle>> ISR_COLOR {
+    component OCMP5_ISR as "OCMP5_StepCounter_X()\n[X-axis ISR]" ISR_COLOR
+    component OCMP1_ISR as "OCMP1_StepCounter_Y()\n[Y-axis ISR]" ISR_COLOR
+    component OCMP4_ISR as "OCMP4_StepCounter_Z()\n[Z-axis ISR]" ISR_COLOR
+    component OCMP3_ISR as "OCMP3_StepCounter_A()\n[A-axis ISR]" ISR_COLOR
+    
+    package "Transition Detection" <<Rectangle>> HELPER_COLOR {
+        component IsDominant as "IsDominantAxis(axis)\n✅ Inline bitmask check" HELPER_COLOR
+        component CheckTransition as "Check:\naxis_was_dominant_last_isr[]" HELPER_COLOR
+    }
+    
+    package "Subordinate → Dominant" <<Rectangle>> API_COLOR {
+        component SubToDom_Enable as "MultiAxis_EnableDriver()\nEnable motor" API_COLOR
+        component SubToDom_Dir as "Set Direction GPIO" HARDWARE_COLOR
+        component SubToDom_Period as "TMR_PeriodSet()\nperiod from segment ✅" HARDWARE_COLOR
+        component SubToDom_OCR as "OCMP_CompareValueSet()\nperiod - 40" HARDWARE_COLOR
+        component SubToDom_Start as "OCMP_Enable()\nTMR_Start()" HARDWARE_COLOR
+        component SubToDom_Flag as "axis_was_dominant_last_isr[axis] = true" HELPER_COLOR
+    }
+    
+    package "Continuous Dominant Processing" <<Rectangle>> API_COLOR {
+        component ProcessSeg as "ProcessSegmentStep(axis)\nBresenham coordination" API_COLOR
+        component CacheSeg as "segment = state->current_segment\n✅ Oct 24 fix - cache pointer!" HELPER_COLOR
+        component ExecBresenham as "Execute_Bresenham_Strategy_Internal()\nBit-bang subordinates" API_COLOR
+        component UpdatePeriod as "Update OCR Period\nperiod from segment ✅" HARDWARE_COLOR
+    }
+    
+    package "Dominant → Subordinate" <<Rectangle>> HELPER_COLOR {
+        component DomToSub_Disable as "OCMP_Disable()\nStop continuous pulses" HARDWARE_COLOR
+        component DomToSub_Stop as "TMR_Stop()\nWait for Bresenham" HARDWARE_COLOR
+        component DomToSub_Flag as "axis_was_dominant_last_isr[axis] = false" HELPER_COLOR
+    }
+    
+    package "Subordinate Pulse Auto-Disable" <<Rectangle>> HELPER_COLOR {
+        component Sub_Disable as "OCMP_Disable()\nAuto-disable after pulse" HARDWARE_COLOR
+        component Sub_Stop as "TMR_Stop()\nWait for next trigger" HARDWARE_COLOR
+    }
+}
+
+OCMP5_ISR --> IsDominant
+OCMP5_ISR --> CheckTransition
+CheckTransition --> SubToDom_Enable
+SubToDom_Enable --> SubToDom_Dir
+SubToDom_Dir --> SubToDom_Period
+SubToDom_Period --> SubToDom_OCR
+SubToDom_OCR --> SubToDom_Start
+SubToDom_Start --> SubToDom_Flag
+
+CheckTransition --> ProcessSeg
+ProcessSeg --> CacheSeg
+CacheSeg --> ExecBresenham
+ExecBresenham --> UpdatePeriod
+
+CheckTransition --> DomToSub_Disable
+DomToSub_Disable --> DomToSub_Stop
+DomToSub_Stop --> DomToSub_Flag
+
+CheckTransition --> Sub_Disable
+Sub_Disable --> Sub_Stop
+
+note right of OCMP1_ISR
+  IDENTICAL PATTERN
+  for Y/Z/A axes
+  (only differs in GPIO
+  and timer/OCR indices)
+end note
+
+' ═══════════════════════════════════════════════════════════════════════════
+' BRESENHAM EXECUTION DETAIL
+' ═══════════════════════════════════════════════════════════════════════════
+package "Bresenham Coordination" <<Rectangle>> API_COLOR {
+    component BresenhamEntry as "Execute_Bresenham_Strategy_Internal()\n[multiaxis_control.c:665]" API_COLOR
+    
+    package "Dominant Axis Update" <<Rectangle>> HELPER_COLOR {
+        component UpdateDomPos as "machine_position[dominant_axis]++\n✅ Volatile (Oct 24 fix)" HELPER_COLOR
+        component IncDomStep as "dom_state->step_count++" HELPER_COLOR
+        component IncBlockExec as "dom_state->block_steps_executed++" HELPER_COLOR
+    }
+    
+    package "Subordinate Axis Bit-Bang" <<Rectangle>> ISR_COLOR {
+        component LoopSubAxes as "for each subordinate axis" HELPER_COLOR
+        component BresAccum as "bresenham_counter += steps[sub_axis]" HELPER_COLOR
+        component CheckOverflow as "if (counter >= n_step)" HELPER_COLOR
+        component TriggerPulse as "Trigger Hardware Pulse:\nOCMP_CompareValueSet(5)\nOCMP_CompareSecondaryValueSet(36)\nTMR = 0xFFFF  (force rollover)\nOCMP_Enable()" HARDWARE_COLOR
+        component UpdateSubPos as "machine_position[sub_axis]++\n✅ Volatile" HELPER_COLOR
+        component IncSubStep as "sub_state->step_count++" HELPER_COLOR
+    }
+}
+
+ExecBresenham --> BresenhamEntry
+BresenhamEntry --> UpdateDomPos
+UpdateDomPos --> IncDomStep
+IncDomStep --> IncBlockExec
+
+BresenhamEntry --> LoopSubAxes
+LoopSubAxes --> BresAccum
+BresAccum --> CheckOverflow
+CheckOverflow --> TriggerPulse
+TriggerPulse --> UpdateSubPos
+UpdateSubPos --> IncSubStep
+
+' ═══════════════════════════════════════════════════════════════════════════
+' SEGMENT COMPLETION & TRANSITION
+' ═══════════════════════════════════════════════════════════════════════════
+package "Segment Completion Logic" <<Rectangle>> API_COLOR {
+    component CheckComplete as "Check Segment Complete\nstep_count >= steps[dominant_axis]" HELPER_COLOR
+    component StopHardware as "Stop Dominant Hardware:\nOCMP_Disable()\nTMR_Stop()" HARDWARE_COLOR
+    component ClearActive as "state->active = false\nsegment_completed_by_axis &= ~(1 << axis)" HELPER_COLOR
+    component SegComplete as "GRBLStepper_SegmentComplete()\nAdvance buffer tail" HELPER_COLOR
+    component GetNext as "GRBLStepper_GetNextSegment()\nCheck for more segments" HELPER_COLOR
+    
+    package "Atomic Transition (Oct 24, 2025)" <<Rectangle>> ISR_COLOR {
+        component DisableOCR as "DisableOCRInterrupts_Save()\n✅ Selective masking (IEC0CLR)" ISR_COLOR
+        component FindNewDom as "Determine New Dominant\nMax steps logic" HELPER_COLOR
+        component UpdateStates as "Update All Axis States\nsegment pointers, counters" HELPER_COLOR
+        component ConfigNewHW as "Configure New Dominant Hardware\nDriver, GPIO, OCR, Timer" HARDWARE_COLOR
+        component AtomicCommit as "segment_completed_by_axis =\n(1 << new_dominant)\n✅ Bitmask LAST!" HELPER_COLOR
+        component RestoreOCR as "DisableOCRInterrupts_Restore()\n✅ Restore IEC0" ISR_COLOR
+    }
+}
+
+ProcessSeg --> CheckComplete
+CheckComplete --> StopHardware
+StopHardware --> ClearActive
+ClearActive --> SegComplete
+SegComplete --> GetNext
+
+GetNext --> DisableOCR : "next_seg != NULL"
+DisableOCR --> FindNewDom
+FindNewDom --> UpdateStates
+UpdateStates --> ConfigNewHW
+ConfigNewHW --> AtomicCommit
+AtomicCommit --> RestoreOCR
+
+' ═══════════════════════════════════════════════════════════════════════════
+' TIMING & FREQUENCY ANNOTATIONS
+' ═══════════════════════════════════════════════════════════════════════════
+note bottom of MainLoop
+  **Main Loop Frequency**: ~10kHz
+  **Iteration Time**: ~100µs (idle)
+  **Note**: APP_Tasks() and SYS_Tasks()
+  removed for streamlined execution
+  (may be re-added in future if needed)
+end note
+
+note bottom of OCMP5_ISR
+  **ISR Frequency**: Variable (10Hz - 31kHz)
+  **Duration (Subordinate)**: ~60ns (~12 cycles)
+  **Duration (Dominant)**: ~750ns (~150 cycles)
+end note
+
+note bottom of DisableOCR
+  **Critical Section Duration**: ~50µs
+  **OCR ISRs Blocked**: OCMP1/3/4/5 only
+  **TMR9/UART Continue**: ✅ System responsive
+end note
+
+' ═══════════════════════════════════════════════════════════════════════════
+' LEGEND
+' ═══════════════════════════════════════════════════════════════════════════
+legend right
+  **Color Legend:**
+  |<MAIN_COLOR>  | Main/Application Layer |
+  |<ISR_COLOR>   | ISR Context (Interrupt) |
+  |<API_COLOR>   | Public API Functions |
+  |<HELPER_COLOR>| Internal Helpers |
+  |<HARDWARE_COLOR>| Hardware/PLIB Calls |
+  
+  **Critical Fixes (Oct 24, 2025):**
+  ✅ machine_position[] volatile
+  ✅ Bresenham counter from segment data
+  ✅ Segment pointer caching (race prevention)
+  ✅ Atomic transition with selective masking
+  ✅ Actual segment period (not hardcoded 100)
+end legend
+
+@enduml
