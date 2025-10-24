@@ -30,6 +30,11 @@ endif
 #        make all                        (disabled by default)
 DEBUG_MOTION_BUFFER ?= 0
 
+# Junction look-ahead control: set to 1 to force exact-stop (disable junction blending)
+# Usage: make all DISABLE_JUNCTION_LOOKAHEAD=1
+# Notes: Root controls policy; sub-Makefile consumes and maps to -DDEBUG_DISABLE_JUNCTION_LOOKAHEAD
+DISABLE_JUNCTION_LOOKAHEAD ?= 0
+
 # Library control: set USE_SHARED_LIB=1 to link against pre-built library
 # Usage: make shared_lib             (builds libCS23shared.a from libs/*.c)
 #        make all USE_SHARED_LIB=1    (links executable against library)
@@ -71,7 +76,7 @@ all:
 ifeq ($(USE_SHARED_LIB),1)
 	@echo "######  (Using pre-built shared library)  ########"
 endif
-	cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE) USE_SHARED_LIB=$(USE_SHARED_LIB) BUILD_CONFIG=$(BUILD_CONFIG) DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER) $(EXTRA_MAKE_VARS)
+	cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE) USE_SHARED_LIB=$(USE_SHARED_LIB) BUILD_CONFIG=$(BUILD_CONFIG) DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER) DISABLE_JUNCTION_LOOKAHEAD=$(DISABLE_JUNCTION_LOOKAHEAD) $(EXTRA_MAKE_VARS)
 	@echo "###### BIN TO HEX ########"
 	cd bins/$(BUILD_CONFIG) && "$(COMPILER_LOCATION)/xc32-bin2hex" $(MODULE)
 	@echo "######  BUILD COMPLETE (bins/$(BUILD_CONFIG)/$(MODULE).hex)  ########"
@@ -79,7 +84,7 @@ endif
 # Build shared library from libs/*.c files
 shared_lib:
 	@echo "######  BUILDING SHARED LIBRARY ($(BUILD_CONFIG))  ########"
-	cd srcs && $(BUILD) shared_lib COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) BUILD_CONFIG=$(BUILD_CONFIG) DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER)
+	cd srcs && $(BUILD) shared_lib COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) BUILD_CONFIG=$(BUILD_CONFIG) DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER) DISABLE_JUNCTION_LOOKAHEAD=$(DISABLE_JUNCTION_LOOKAHEAD)
 	@echo "######  SHARED LIBRARY COMPLETE (libs/$(BUILD_CONFIG)/libCS23shared.a)  ########"
 
 # Quiet build - shows only errors, warnings, and completion status

@@ -53,8 +53,6 @@
 // *****************************************************************************
 static uint32_t clock_status = 0;
 
-// Treat a line as meaningful only if it contains at least one GRBL word letter
-// Valid letters: G, M, X, Y, Z, A, B, C, I, J, K, F, S, T, P, L, N, R, D, H, $
 
 
 int main(void)
@@ -72,6 +70,21 @@ int main(void)
     char line[GCODE_MAX_LINE_LENGTH];
     size_t line_pos = 0;
 
+    /* Runtime safety guard: if both planner and stepper queues are empty but
+     * the machine remains in <Run> for an extended period, force a clean stop.
+     * This protects against rare edge cases where execution state doesn't
+     * unwind after the final segment (walkabout after file end).
+     *
+     * Enabled only for debug builds (DEBUG_MOTION_BUFFER).
+     */
+#ifdef DEBUG_MOTION_BUFFER
+    static bool guard_busy_no_queue_active = false;
+    static uint32_t guard_busy_no_queue_start = 0U; // CORETIMER ticks
+
+    static bool guard_plan_empty_stepper_busy_active = false;
+    static uint32_t guard_plan_empty_stepper_busy_start = 0U; // CORETIMER ticks
+#endif
+
     while (true)
     {
         /* Handle any real-time commands (e.g., status report '?') */
@@ -87,6 +100,17 @@ int main(void)
         if (c_int != -1)
         {
             char c = (char)c_int;
+
+            /* Filter out non-ASCII/high-bit bytes and non-printable controls (except CR/LF/TAB/space).
+             * This prevents stray extended bytes (e.g., 0x95, 0x90, 0x99) from polluting the line buffer.
+             */
+            unsigned char uc = (unsigned char)c;
+            if ((uc >= 0x80U) ||
+                ((uc < 0x20U) && (c != '\n') && (c != '\r') && (c != '\t') && (c != ' ')))
+            {
+                /* Ignore this byte and continue */
+                continue;
+            }
 
             if (c == '\n' || c == '\r')
             {
@@ -149,6 +173,21 @@ int main(void)
                                 // For rapids, ignore feed_rate (planner uses rapid_rate)
                             }
 
+                            /* Optional debug: log each planned target (enabled when DEBUG_MOTION_BUFFER=1) */
+#ifdef DEBUG_MOTION_BUFFER
+                            UGS_Printf("PLAN: G%d X%.3f Y%.3f Z%.3f"
+#if (NUM_AXES > 3)
+                                       " A%.3f"
+#endif
+                                       " F%.1f\r\n",
+                                       (int)move.motion_mode,
+                                       target_mm[AXIS_X], target_mm[AXIS_Y], target_mm[AXIS_Z]
+#if (NUM_AXES > 3)
+                                       , target_mm[AXIS_A]
+#endif
+                                       , pl_data.feed_rate);
+#endif
+
                             // Buffer the motion into GRBL planner
                             (void)GRBLPlanner_BufferLine(target_mm, &pl_data);
 
@@ -191,6 +230,76 @@ int main(void)
                 (void)MultiAxis_StartSegmentExecution();
             }
         }
+
+#ifdef DEBUG_MOTION_BUFFER
+        /*
+         * Walkabout guard: If there are no more blocks in the planner and no
+         * prepared segments in the stepper buffer, but the machine still
+         * reports busy for a long time, stop all motion. This should never
+         * happen during normal operation: after the last segment completes,
+         * MultiAxis_IsBusy() should fall to false quickly.
+         *
+         * Threshold: 5 seconds (in CORETIMER ticks @100MHz).
+         * Chosen high to avoid tripping on legitimate long last segments.
+         */
+        {
+            uint8_t plan_cnt = GRBLPlanner_GetBufferCount();
+            uint8_t seg_cnt = GRBLStepper_GetBufferCount();
+            bool stepperBusy = GRBLStepper_IsBusy();
+            bool axisBusy = MultiAxis_IsBusy();
+
+            // Guard A: Absolutely no queues left but axes still busy → stop after 2s
+            if ((plan_cnt == 0U) && (seg_cnt == 0U) && axisBusy)
+            {
+                if (!guard_busy_no_queue_active)
+                {
+                    guard_busy_no_queue_active = true;
+                    guard_busy_no_queue_start = CORETIMER_CounterGet();
+                }
+                else
+                {
+                    uint32_t now = CORETIMER_CounterGet();
+                    const uint32_t GUARD_TICKS = 200000000UL; // 2s @ 100MHz
+                    if ((now - guard_busy_no_queue_start) > GUARD_TICKS)
+                    {
+                        UGS_Printf("GUARD-A: plan=0 seg=0 but still running >2s. Forcing stop.\r\n");
+                        MultiAxis_StopAll();
+                        guard_busy_no_queue_active = false;
+                    }
+                }
+            }
+            else
+            {
+                guard_busy_no_queue_active = false;
+            }
+
+            // Guard B: Planner empty but stepper still busy (draining) for too long → reset stepper (2s window)
+            if ((plan_cnt == 0U) && stepperBusy && axisBusy)
+            {
+                if (!guard_plan_empty_stepper_busy_active)
+                {
+                    guard_plan_empty_stepper_busy_active = true;
+                    guard_plan_empty_stepper_busy_start = CORETIMER_CounterGet();
+                }
+                else
+                {
+                    uint32_t now = CORETIMER_CounterGet();
+                    const uint32_t GUARD2_TICKS = 200000000UL; // 2s @ 100MHz
+                    if ((now - guard_plan_empty_stepper_busy_start) > GUARD2_TICKS)
+                    {
+                        UGS_Printf("GUARD-B: planner empty but stepper busy >2s. Resetting stepper/halting motion.\r\n");
+                        GRBLStepper_Reset();
+                        MultiAxis_StopAll();
+                        guard_plan_empty_stepper_busy_active = false;
+                    }
+                }
+            }
+            else
+            {
+                guard_plan_empty_stepper_busy_active = false;
+            }
+        }
+#endif
 
         /* Maintain system services */
        // SYS_Tasks();

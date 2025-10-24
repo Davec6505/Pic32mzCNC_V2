@@ -1,22 +1,17 @@
 # PIC32MZ CNC Motion Controller V2
 
-**A high-performance 4-axis CNC controller with hardware-accelerated OCR pulse generation achieving 100% accuracy**
+High-performance 4-axis CNC controller using PIC32MZ hardware Output Compare (OCR) for step pulse generation, with GRBL 1.1f-compatible serial protocol.
 
-> � **THE BREAKTHROUGH**: This is the **FIRST open-source CNC controller** that combines:
-> - ✅ **Hardware-accelerated pulse generation** (23-300x less CPU overhead)
-> - ✅ **Junction velocity optimization** (continuous motion through corners)
->
-> Traditional GRBL has smooth cornering (#2) but wastes CPU on step generation (#1).  
-> This system has **BOTH** - proving hardware acceleration doesn't sacrifice motion quality!
-
-> 🔬 **Research Potential**: Phase 3 look-ahead planning now complete! Future work will implement **DMA-driven zero-ISR S-curve motion control** - the first open-source CNC controller to use DMA for jerk-limited trajectory execution. Academic paper in development: *"Zero-ISR S-Curve Motion Control: DMA-Driven Jerk-Limited Trajectory Execution for CNC Systems"*
+Highlights:
+- Hardware-accelerated pulse generation (23–300x less CPU overhead vs 30 kHz step ISR)
+- Role-based ISR logic with a single OCR mode for all axes (OCM=0b101)
+- GRBL 1.1f protocol with real-time commands and live settings
+- Segment-based execution with dominant-axis OCR and subordinate on-demand pulses
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 [![Hardware](https://img.shields.io/badge/hardware-PIC32MZ2048EFH100-orange.svg)]()
-[![Accuracy](https://img.shields.io/badge/accuracy-100.000%25-brightgreen.svg)]()
 [![Innovation](https://img.shields.io/badge/ISR%20Reduction-23--300x-red.svg)]()
-[![Research](https://img.shields.io/badge/Academic%20Paper-In%20Development-purple.svg)]()
 
 ## 🎯 Why This Project Exists
 
@@ -29,7 +24,7 @@ Traditional CNC controllers (including GRBL) rely on high-frequency software int
 - **Latency issues**: Real-time commands delayed by ISR processing
 - **Scalability limits**: Adding axes multiplies interrupt overhead
 
-**Our Revolutionary Approach:**
+Our approach:
 
 This project reimagines CNC control by leveraging the PIC32MZ's **Output Compare (OCR) hardware modules** to generate step pulses **autonomously**. Instead of the CPU repeatedly interrupting itself to toggle pins, the hardware generates precisely-timed pulses while the CPU focuses on motion planning and coordination.
 
@@ -63,9 +58,9 @@ void OCMP4_ISR() {
 // Result: 90% reduction in ISR overhead, CPU free for planning
 ```
 
-### 💡 The Efficiency Breakthrough
+### 💡 Efficiency
 
-**CPU Load Comparison:**
+CPU load comparison:
 
 | Operation Mode | Traditional GRBL | Our OCR Architecture | Improvement |
 |----------------|------------------|----------------------|-------------|
@@ -83,7 +78,7 @@ void OCMP4_ISR() {
 ✅ **Scalability**: Adding more axes doesn't multiply interrupt load  
 ✅ **Temperature**: Reduced CPU load = less heat generation = better reliability  
 
-### 🏗️ Architectural Excellence
+### 🏗️ Architectural summary
 
 1. **OCM=0b101 Dual Compare Continuous Mode** - Hardware-generated step pulses with ISR auto-disable
 2. **Role-Based ISR Logic** - Same OCR mode for both dominant and subordinate axes
@@ -91,34 +86,26 @@ void OCMP4_ISR() {
 4. **100% Motion Accuracy** - Handles GRBL segment prep rounding automatically
 5. **DRV8825 Driver Integration** - Active-low enable pins with automatic driver management
 
-**The Elegant Design:**
+Design outline:
 - **Dominant Axis**: OCR continuously pulses at segment rate, ISR processes each step
 - **Subordinate Axes**: OCR enabled by Bresenham → pulse fires → ISR auto-disables
 - **No Mode Switching**: Single OCM=0b101 configuration for all axes
 - **Hardware-Centric**: OCR modules generate precise pulses autonomously
 - **ISR Fires on Falling Edge**: Perfect timing to auto-disable after pulse completes
 
-### 🤝 Collaboration Welcome!
+### 🤝 Collaboration
 
-This project represents a **fundamental rethinking of CNC control architecture**. We've proven the concept works (100% accuracy achieved!), but there's so much potential to explore:
-
-**Areas for Collaboration:**
-- 🔬 **Motion Planning**: Implement advanced look-ahead algorithms leveraging freed CPU bandwidth
-- 🎨 **Arc Interpolation**: Real-time circular/spline motion with minimal overhead
-- 🧮 **Kinematic Models**: Delta robots, SCARA, 5-axis machines benefit from extra CPU headroom
-- 📊 **Benchmarking**: Compare our approach vs traditional on complex G-code (organic shapes, 3D surfaces)
-- 🔧 **Porting**: Adapt architecture to other MCUs with OCR/PWM hardware (STM32, ESP32, etc.)
-- 📚 **Documentation**: Help others understand and implement hardware-accelerated step generation
+Open to contributions across planning, arcs, kinematics, benchmarking, and documentation.
 
 ---
 
-## 🔥 The Next Frontier: DMA-Driven Zero-ISR S-Curve Motion
+## 🔥 Next Frontier: DMA-driven zero-ISR S-curve motion (future)
 
-**Current Achievement**: 23-300x reduction in ISR overhead (1-2.5% CPU load during motion)
+Current: 23–300x reduction in ISR overhead (typ. 1–2.5% CPU during motion).
 
-**Future Breakthrough**: DMA auto-loading for **true zero-ISR** step generation!
+Future: DMA auto-loading for true zero-ISR step generation. Research track; not implemented yet.
 
-### 🎓 Academic Research Potential
+### 🎓 Research potential
 
 **Klipper** (popular 3D printing firmware) uses DMA on STM32 for **constant-velocity** move segments, achieving "zero-latency" step generation. However, their approach doesn't support **real-time velocity changes** within a segment.
 
@@ -145,7 +132,7 @@ DMA_ChannelTransferAdd(
 // ISR only fires when entire 800-step segment completes!
 ```
 
-### 📊 Performance Projection
+### 📊 Performance projection (estimated)
 
 | Architecture | CPU Load @ 5000 steps/sec | ISR Frequency | Innovation |
 |--------------|---------------------------|---------------|------------|
@@ -175,31 +162,25 @@ DMA_ChannelTransferAdd(
 - ACM/IEEE International Conference on Cyber-Physical Systems (ICCPS)
 - International Symposium on Industrial Electronics (ISIE)
 
-**This architecture could become the reference implementation for next-generation CNC controllers!**
+This could become a reference for next-generation CNC controllers.
 
 ---
 
-### 🤝 Collaboration Welcome!
+Why contribute: cutting-edge embedded design, real-time motion control, open-source impact.
 
-**Why Contribute?**
-- ⚡ Learn innovative embedded systems design
-- 🎯 Work on a production-ready, well-documented codebase
-- 🏆 Advance the state-of-the-art in open-source CNC control
-- 🌍 Impact thousands of makers using CNC machines worldwide
+## ⚡ Current Status (October 23, 2025)
 
-If you're passionate about **embedded systems**, **motion control**, **real-time optimization**, or **open-source hardware**, we'd love to collaborate!
+Branch: `master`
 
-## ⚡ Current Status (October 21, 2025)
+### 🎯 Phase 2B: Hardware OCR pulse generation – COMPLETE ✅
 
-**Branch:** `master` (Production ready with 100% accuracy!)
+Status highlights:
+- Hardware validated: oscilloscope confirms ~20–40µs pulse widths
+- CPU efficiency: hardware pulse generation, minimal ISR overhead
+- Serial robustness: input sanitization added; optional plan logging
+- Runtime safety: debug-only guards stop executor if queues empty but still “busy”
 
-### 🎯 Phase 2B Complete - Hardware OCR Pulse Generation ✅
-
-**Motion Accuracy**: **100.000%** (800/800 steps verified)
-**Hardware Validated**: Oscilloscope confirms 20µs subordinate / 40µs dominant pulse widths
-**CPU Efficiency**: Autonomous hardware pulse generation, minimal ISR overhead
-
-### ✅ Production-Ready Features
+### ✅ Implemented features
 
 #### **Core Motion System**
 - **🏆 OCM=0b101 Architecture**: Dual Compare Continuous mode with ISR auto-disable
@@ -208,35 +189,35 @@ If you're passionate about **embedded systems**, **motion control**, **real-time
 - **🔄 Role-Based ISR Logic**: Single pattern handles both dominant and subordinate axes
 - **🎨 Time-Synchronized Motion**: All axes finish simultaneously with correct distances
 
-#### **GRBL v1.1f Protocol**
+#### GRBL v1.1f protocol
 - **Full UGS Integration**: Connects as "GRBL 1.1f" with complete command set ($I, $G, $$, $#, $N, $)
 - **Real-Time Position Feedback**: Live updates from hardware step counters (? status reports)
 - **Live Settings Management**: Modify all GRBL settings ($100-$133) without recompilation
 - **Real-Time Commands**: Feed hold (!), cycle start (~), soft reset (^X), status report (?)
 - **Character-Counting Protocol**: Non-blocking flow control for continuous motion
 
-#### **Hardware Integration**
+#### Hardware integration
 - **4-Axis Support**: X, Y, Z, A all configured and tested
 - **Hardware Pulse Generation**: OCMP1/3/4/5 modules + TMR2/3/4/5 time bases
 - **DRV8825 Compatible**: 25.6µs pulse width (13.5x safety margin over 1.9µs minimum)
 - **Oscilloscope Verified**: Symmetric S-curve profiles confirmed on all axes
 - **Centralized Configuration**: GT2 belt (80 steps/mm) X/Y/A, leadscrew (1280 steps/mm) Z
 
-#### **Software Architecture**
+#### Software architecture
 - **Bresenham Coordination**: Subordinate axes synchronized via classic line algorithm
 - **Bitmask Guard Pattern**: OCR ISRs use trampoline pattern with immediate return
 - **Active Flag Semantics**: Only dominant axis has active=true (subordinates always false)
 - **MISRA C:2012 Compliant**: Safety-critical coding standards throughout
 - **Comprehensive Documentation**: PlantUML diagrams + detailed copilot-instructions.md
 
-### 🧪 Ready for Testing
+### 🧪 Ready for testing
 - **UGS Connectivity**: Verified connection as "GRBL 1.1f" with full initialization sequence
 - **Serial Communication**: UART2 @ 115200 baud operational
 - **G-code Command Set**: G0/G1 (linear), G90/G91 (absolute/relative), G92 (coordinate offset), G28/G30 (predefined positions)
 - **M-Commands**: M3/M4/M5 (spindle), M7/M8/M9 (coolant), M0/M1/M2/M30 (program control)
 - **Blocking Protocol**: Each move completes before "ok" sent (pauses between moves are CORRECT per GRBL spec!)
 
-### 🚧 Development Roadmap
+### 🚧 Roadmap
 
 **Phase 1: GRBL Protocol Integration ✅ COMPLETE!**
 - [x] Full G-code parser with modal/non-modal commands
@@ -249,7 +230,7 @@ If you're passionate about **embedded systems**, **motion control**, **real-time
 - [x] Build system optimization (make quiet)
 - [x] MISRA C:2012 compliance
 
-**Phase 2: Hardware Testing & Validation (CURRENT PHASE)**
+Phase 2: Hardware testing and validation (current)
 - [ ] Flash firmware and test via UGS
 - [ ] Verify coordinated motion accuracy with oscilloscope
 - [ ] Test blocking protocol behavior (pauses between moves)
@@ -258,7 +239,7 @@ If you're passionate about **embedded systems**, **motion control**, **real-time
 - [ ] Verify settings modification (change steps/mm, test motion)
 - [ ] Multi-line G-code file streaming tests
 
-**Phase 3: Look-Ahead Planning (Future Optimization)**
+Phase 3: Look-ahead planning (in progress/planned)
 - [ ] Implement full junction velocity calculations
 - [ ] Forward/reverse pass velocity optimization
 - [ ] S-curve profile pre-calculation in buffer
@@ -266,7 +247,7 @@ If you're passionate about **embedded systems**, **motion control**, **real-time
 - [ ] Continuous motion through corners (no stops)
 - [ ] Arc support (G2/G3 circular interpolation)
 
-**Phase 4: Advanced Features**
+Phase 4: Advanced features
 - [ ] Coordinate systems ($#, G54-G59 work offsets)
 - [ ] Probing (G38.x commands)
 - [ ] Spindle PWM output (M3/M4 GPIO control)
@@ -278,20 +259,20 @@ If you're passionate about **embedded systems**, **motion control**, **real-time
 
 ## 🏗️ Architecture
 
-### 🎯 OCM=0b101 Hardware Pulse Generation
+### 🎯 OCM=0b101 hardware pulse generation
 
 **The Elegant Solution**: All axes use the same OCR mode (OCM=0b101 Dual Compare Continuous), but behave differently based on their role in each segment.
 
-**OCR Configuration (Set Once by MCC)**:
+OCR configuration (set once by MCC):
 ```c
 // ALL axes use OCM=0b101 (Dual Compare Continuous Pulse mode)
 OCxR = 5                    // Rising edge at count 5
 OCxRS = 50                  // Falling edge at count 50
-Pulse Width = 45 counts × 640ns = 28.8µs (measured: 20-40µs)
-ISR fires on FALLING EDGE   // Perfect timing to auto-disable!
+Pulse width ≈ (OCxRS-OCxR modulo period) → typically ~20–32µs @ 1.5625 MHz
+ISR fires on falling edge   // Ideal timing to auto-disable
 ```
 
-**The Magic - Role-Based ISR Logic**:
+Role-based ISR logic:
 ```c
 // Same ISR pattern for ALL axes (X/Y/Z/A)
 void OCMPx_Callback(uintptr_t context)
@@ -314,9 +295,9 @@ void OCMPx_Callback(uintptr_t context)
 }
 ```
 
-**How It Works**:
+How it works:
 
-**Stage 1: Segment Loaded**
+Stage 1: Segment loaded
 ```c
 // Example: G1 X100 Y50 creates 8 segments
 // Segment 1: X has 113 steps, Y has 113 steps → X chosen as dominant
@@ -332,7 +313,7 @@ OCMP1_CompareSecondaryValueSet(50);
 // Y OCR configured but NOT enabled yet!
 ```
 
-**Stage 2: Dominant Axis Pulses**
+Stage 2: Dominant axis pulses
 ```c
 // X-axis OCR generates pulses automatically at segment rate
 // Every pulse → OCMP4 ISR fires on falling edge
@@ -348,7 +329,7 @@ void OCMP4_Callback()  // X-axis ISR
 }
 ```
 
-**Stage 3: Bresenham Triggers Subordinate**
+Stage 3: Bresenham triggers subordinate
 ```c
 // Inside ProcessSegmentStep(), Bresenham algorithm determines Y needs step
 void ProcessSegmentStep(axis_id_t dominant_axis)
@@ -375,7 +356,7 @@ void ProcessSegmentStep(axis_id_t dominant_axis)
 }
 ```
 
-**Stage 4: Subordinate Auto-Disable**
+Stage 4: Subordinate auto-disable
 ```c
 // Y-axis OCR enabled → generates ONE pulse → ISR fires on falling edge
 void OCMP1_Callback()  // Y-axis ISR
@@ -394,7 +375,7 @@ void OCMP1_Callback()  // Y-axis ISR
 }
 ```
 
-**Why This Architecture is Perfect**:
+Why this architecture works well:
 
 ✅ **No Mode Switching** - OCM=0b101 set once by MCC, never changed  
 ✅ **Hardware Autonomous** - OCR generates precise pulses without CPU intervention  
@@ -405,20 +386,20 @@ void OCMP1_Callback()  // Y-axis ISR
 ✅ **100% Accurate** - Hardware timing, no software delays  
 ✅ **DRV8825 Safe** - 20-40µs pulses exceed 1.9µs minimum by 10x+  
 
-**Measured Results (Oscilloscope)**:
+Measured results (oscilloscope):
 - Subordinate pulse: 20µs width ✅
 - Dominant pulse: 40µs width ✅  
 - Both axes pulsing simultaneously ✅
 - No continuous pulsing after motion stops ✅
 
-### Hardware Platform
+### Hardware platform
 - **MCU**: PIC32MZ2048EFH100 @ 200MHz
 - **Flash**: 2MB
 - **RAM**: 512KB
 - **Stepper Drivers**: DRV8825 (or compatible)
 - **Microstepping**: Configurable (1/32 recommended)
 
-### Traditional Architecture Pattern (For Comparison)
+### Traditional architecture pattern (for comparison)
 
 ```
 TMR1 (1kHz) → Multi-Axis S-Curve State Machine
@@ -433,9 +414,9 @@ TMR1 (1kHz) → Multi-Axis S-Curve State Machine
       └── Dual-Compare PWM Mode (40-count pulse width for DRV8825)
 ```
 
-### Key Design Decisions
+### Key design decisions
 
-**1. OCM=0b101 Hardware Pulse Generation** ⭐ **PRODUCTION PROVEN!**
+1) OCM=0b101 hardware pulse generation – production-proven
 - ALL axes use OCM=0b101 (Dual Compare Continuous mode)
 - Configured once by MCC at initialization - no runtime mode switching
 - Role-based ISR logic: Dominant processes, subordinate auto-disables
@@ -443,7 +424,7 @@ TMR1 (1kHz) → Multi-Axis S-Curve State Machine
 - Oscilloscope verified: 20µs subordinate, 40µs dominant pulse widths
 - Result: Hardware-centric, self-limiting, extremely clean code!
 
-**2. GRBL v1.1f Protocol Implementation**
+2) GRBL v1.1f protocol implementation
 - Full system command support ($I, $G, $$, $#, $N, $)
 - Real-time commands (?, !, ~, ^X) with immediate response
 - Character-counting protocol for non-blocking flow control
@@ -451,24 +432,24 @@ TMR1 (1kHz) → Multi-Axis S-Curve State Machine
 - Real-time position feedback from hardware step counters
 - UGS compatibility verified
 
-**3. Hardware-Accelerated Step Generation**
+3) Hardware-accelerated step generation
 - OCR modules generate pulses autonomously (no software delays)
 - ISR fires on falling edge (perfect timing per datasheet 16.3.2.4)
 - Subordinate auto-disable prevents continuous pulsing
 - CPU free for motion planning and G-code processing
 
-**4. Per-Axis State Management**
+4) Per-axis state management
 - No global motion_running flag
 - Each axis has independent `active` flag
 - Enables true concurrent motion and reliable restart
 
-**5. S-Curve Motion Profiles**
+5) S-curve motion profiles
 - 7-segment jerk-limited profiles
 - Smooth acceleration/deceleration
 - Reduced mechanical stress and vibration
 - Parameters configurable via GRBL settings ($110-$123)
 
-**6. Flow Control Strategy**
+6) Flow control strategy
 - Phase 1 (Current): Simple Send-Response blocking protocol
   - Each move completes before "ok" sent
   - Brief pauses between moves are CORRECT per GRBL spec
@@ -478,13 +459,13 @@ TMR1 (1kHz) → Multi-Axis S-Curve State Machine
   - Enable continuous motion through corners
   - Requires full look-ahead planning implementation
 
-**7. MISRA C Compliance**
+7) MISRA C compliance
 - Static assertions for compile-time validation
 - Runtime parameter validation
 - Defensive programming patterns
 - Safety-critical system design
 
-## 📁 Project Structure
+## 📁 Project structure
 
 ```
 Pic32mzCNC_V2/
@@ -519,7 +500,7 @@ Pic32mzCNC_V2/
 └── README.md                           # This file
 ```
 
-## 🔧 Building the Project
+## 🔧 Building the project
 
 ### Prerequisites
 - **MPLAB X IDE / MCC Standalone** To generate plib files for Harmoney compatable.
@@ -527,7 +508,7 @@ Pic32mzCNC_V2/
 - **Mikroc USB Bootloader** download for mikroelektronita
 - **Universal G-code Sender (UGS)** for testing
 
-### Build Commands
+### Build commands
 
 ```powershell
 # Standard build
@@ -549,13 +530,13 @@ make debug
 make platform
 ```
 
-### Output Files
+### Output files
 - `bins/CS23.elf` - Executable with debug symbols
 - `bins/CS23.hex` - Flash programming file
 - `objs/` - Object files (.o)
   `other/` - Memory.xml and production.map
 
-### Build System Features
+### Build system features
 - Cross-platform Make (Windows/Linux) using gnu make
 - Automatic dependency generation
 - Optimized compilation (-O1 -Werror -Wall)
@@ -575,7 +556,7 @@ make platform
 4. **Click "Connect"**
 5. **Verify connection**: Should see "*** Connected to GRBL 1.1f"
 
-### Basic Operation
+### Basic operation
 
 ```gcode
 # Check system status
@@ -599,7 +580,7 @@ G1 X5 Y5 F500
 ^X
 ```
 
-### Understanding Blocking Protocol
+### Protocol notes
 
 When using the current Simple Send-Response protocol, you will observe:
 - ✅ **Brief pauses between commands** - This is CORRECT behavior!
@@ -619,14 +600,14 @@ When using the current Simple Send-Response protocol, you will observe:
 
 ## 🧪 Testing
 
-### Current Testing Status
+### Current testing status
 
 **UGS Connectivity ✅**
 - Connects as "GRBL 1.1f" at 115200 baud
 - Full initialization sequence verified (?, $I, $$, $G)
 - Ready for motion testing via serial interface
 
-### Supported G-code Commands
+### Supported G-code commands
 
 **System Commands:**
 ```gcode
@@ -671,7 +652,7 @@ M2                   ; Program end
 M30                  ; Program end and reset
 ```
 
-### Testing Workflow
+### Testing workflow
 
 **Phase 1: UGS Connection (Complete ✅)**
 ```powershell
@@ -760,18 +741,22 @@ G1 X100 F500
 .\monitor_debug.ps1 -Port COM4
 ```
 
-## 📊 Hardware Mapping
+## 📊 Hardware mapping
 
-### Axis Assignments (Hardware OCR Pulse Generation)
+### Axis assignments (hardware OCR pulse generation)
 
 **All axes use OCM=0b101 (Dual Compare Continuous) with role-based ISR behavior**
 
-| Axis | OCR Module | Timer | Direction Pin | Step Pin | Drive System | Steps/mm | ISR Behavior           |
-| ---- | ---------- | ----- | ------------- | -------- | ------------ | -------- | ---------------------- |
-| X    | OCMP5      | TMR3  | DirX (GPIO)   | RC3      | GT2 Belt     | 80       | Role-based (see below) |
-| Y    | OCMP1      | TMR4  | DirY (GPIO)   | RD0      | GT2 Belt     | 80       | Role-based (see below) |
-| Z    | OCMP4      | TMR2  | DirZ (GPIO)   | RD4      | 2.5mm Lead   | 1280     | Role-based (see below) |
-| A    | OCMP3      | TMR5  | DirA (GPIO)   | RD2      | GT2 Belt     | 80       | ⏸️ Not wired            |
+| Axis | OCR Module | Timer | Notes |
+| ---- | ---------- | ----- | ----- |
+| X    | OCMP4      | TMR2  | Dominant example in many segments |
+| Y    | OCMP1      | TMR4  | Subordinate pulses on-demand |
+| Z    | OCMP5      | TMR3  | Verified on scope |
+| A    | OCMP3      | TMR5  | Optional 4th axis |
+
+Notes:
+- Timer clock: 1.5625 MHz (e.g., PBCLK3 50 MHz with 1:32 prescaler)
+- Typical pulse widths: ~20 µs (subordinate), ~40 µs (dominant)
 
 **ISR Behavior Per Role**:
 
@@ -796,10 +781,7 @@ if (!(segment_completed_by_axis & (1 << axis)))
 // Waits for Bresenham to re-enable for next pulse
 ```
 
-**Pulse Width (Oscilloscope Measured)**:
-- Subordinate: 20µs (exceeds DRV8825 1.9µs minimum by 10x) ✅
-- Dominant: 40µs (exceeds DRV8825 1.9µs minimum by 21x) ✅
-- Both widths safe for stepper drivers
+Pulse width (measured): subordinate ~20 µs, dominant ~40 µs (DRV8825 min 1.9 µs)
 
 **Why This Matters**:
 - 🎯 **Same OCR mode for all axes** - No runtime mode switching
@@ -808,7 +790,7 @@ if (!(segment_completed_by_axis & (1 << axis)))
 - 🎯 **One-line trigger** - Bresenham just calls `OCMP_Enable()`
 - 🎯 **100% Accurate** - No cumulative error, perfect timing
 
-### Limit Switches (Active Low)
+### Limit switches (active-low)
 
 ```c
 GPIO_PIN_RA7  → X-axis negative limit
@@ -818,7 +800,7 @@ GPIO_PIN_RA14 → Y-axis positive limit
 GPIO_PIN_RA15 → Z-axis negative limit
 ```
 
-## 📚 API Documentation
+## 📚 API overview
 
 ### Multi-Axis Control
 
@@ -853,7 +835,7 @@ typedef enum {
 } axis_id_t;
 ```
 
-## 🔬 S-Curve Profile Details
+## 🔬 S-curve profile details
 
 ### Time-Synchronized Coordinated Motion
 
@@ -899,11 +881,12 @@ Segments:
 7. Jerk-out (deceleration decreases to zero)
 ```
 
-### Hardware Configuration (motion_types.h)
+### Timer configuration
 
 ```c
 // Timer and microstepping
-#define TMR_CLOCK_HZ 12500000UL          // 12.5 MHz (25MHz ÷ 2 prescaler)
+// Timer base for OCR modules (verified in hardware)
+#define TMR_CLOCK_HZ 1562500UL           // 1.5625 MHz (e.g., 50 MHz ÷ 32 prescaler)
 #define STEPPER_STEPS_PER_REV 200.0f     // 1.8° steppers
 #define MICROSTEPPING_MODE 16.0f         // 1/16 microstepping
 
@@ -922,16 +905,24 @@ Acceleration:   100 mm/sec² (X/Y/A), 50 mm/sec² (Z)
 Jerk Limit:     1000 mm/sec³ (all axes)
 ```
 
-## 🐛 Known Issues & Solutions
+## 🐛 Notes and known items
 
-### Resolved Critical Bugs (October 2025)
+### Recent fixes (October 2025)
 
 1. **SEGMENT_COMPLETE Blocking**: Guard condition prevented completion - removed from skip logic
 2. **Global Motion Flag Deadlock**: Removed `motion_running` flag - pure per-axis control
 3. **Deceleration Not Triggering**: Added 60% step count safety check for cruise segment exit
 4. **Direction Pin Control**: Added wrapper functions for GPIO macros (MISRA compliance)
 
-See `.github/copilot-instructions.md` for detailed bug analysis and fixes.
+See `.github/copilot-instructions.md` for detailed architecture and fixes.
+
+### New safeguards and diagnostics (Oct 23, 2025)
+- Input sanitization: main loop drops high-bit and disallowed control bytes before line buffering
+- Optional plan logging: when enabled (DEBUG_MOTION_BUFFER), emits one-line PLAN traces on queue
+- Runtime guards (debug-only): stop/reset if executor reports busy while both planner and segment buffers are empty for too long
+
+### Steps/mm note
+- If using T2.5 belts (20T pulley), set $100/$101/$103 to 64 steps/mm. Defaults may show 80 steps/mm for GT2; adjust to match your mechanics.
 
 ## 🤝 Contributing
 
@@ -967,6 +958,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ---
 
-**Current Development Focus**: OCM=0b101 hardware pulse generation validated with oscilloscope. Ready for full G-code streaming tests.
+Current focus: Validate segment execution and safeguards during streamed tests; align settings with hardware.
 
-**Last Updated**: October 21, 2025
+Last updated: October 23, 2025

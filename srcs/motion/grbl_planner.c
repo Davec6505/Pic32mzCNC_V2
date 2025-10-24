@@ -785,11 +785,30 @@ bool GRBLPlanner_BufferLine(float *target, grbl_plan_line_data_t *pl_data)
             float junction_acceleration = limit_value_by_axis_maximum(junction_accel, junction_unit_vec);
 
             float junction_deviation = MotionMath_GetJunctionDeviation();
+            /* Defensive clamp on junction deviation to avoid pathological values */
+            if (junction_deviation < 1.0e-6f) { junction_deviation = 1.0e-6f; }
+            if (junction_deviation > 1.0f) { junction_deviation = 1.0f; }
             float sin_theta_d2 = sqrtf(0.5f * (1.0f - junction_cos_theta));
 
+#ifdef DEBUG_DISABLE_JUNCTION_LOOKAHEAD
+            /* Debug bypass: force exact-stop behavior to validate look-ahead hypothesis */
+            block->max_junction_speed_sqr = 0.0f;
+#else
             block->max_junction_speed_sqr = maxf(
                 MINIMUM_JUNCTION_SPEED * MINIMUM_JUNCTION_SPEED,
                 (junction_acceleration * junction_deviation * sin_theta_d2) / (1.0f - sin_theta_d2));
+#endif
+
+#ifdef DEBUG_MOTION_BUFFER
+            UGS_Printf("[JUNC] cos=%.6f sin(θ/2)=%.6f acc=%.1f dev=%.5f vj^2=%.1f prog=%.1f mm=%.3f\r\n",
+                       junction_cos_theta,
+                       sin_theta_d2,
+                       junction_acceleration,
+                       junction_deviation,
+                       block->max_junction_speed_sqr,
+                       block->programmed_rate,
+                       block->millimeters);
+#endif
         }
     }
 

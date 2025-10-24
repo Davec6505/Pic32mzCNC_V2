@@ -888,6 +888,16 @@ static bool calculate_scurve_profile(axis_id_t axis, uint32_t distance)
  */
 static void ProcessSegmentStep(axis_id_t dominant_axis)
 {
+#ifdef DEBUG_MOTION_BUFFER
+    static uint32_t isr_call_count = 0;
+    isr_call_count++;
+    if ((isr_call_count % 50) == 0)  // Print every 50 calls to avoid flooding
+    {
+        const char *axis_names[] = {"X", "Y", "Z", "A"};
+        UGS_Printf("[ISR] %s step %lu\r\n", axis_names[dominant_axis], isr_call_count);
+    }
+#endif
+
     // Guard: Only execute if this is actually the dominant axis
     if (!(segment_completed_by_axis & (1 << dominant_axis)))
     {
@@ -911,6 +921,13 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
     if (axis_step_executor[dominant_axis] != NULL)
     {
         axis_step_executor[dominant_axis](dominant_axis, state->current_segment);
+    }
+    else
+    {
+#ifdef DEBUG_MOTION_BUFFER
+        const char *axis_names[] = {"X", "Y", "Z", "A"};
+        UGS_Printf("[ISR] %s executor NULL!\r\n", axis_names[dominant_axis]);
+#endif
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -1083,6 +1100,7 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
         // Update ALL subordinate axes to new segment
         // CRITICAL FIX (Oct 20, 2025): Don't check active flag!
         // Subordinates have active=false but still need segment updates.
+        // CRITICAL FIX (Oct 24, 2025): Stop hardware for subordinates with zero motion!
         for (axis_id_t sub_axis = AXIS_X; sub_axis < NUM_AXES; sub_axis++)
         {
             if (sub_axis == new_dominant_axis)
@@ -1091,9 +1109,19 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
             volatile axis_segment_state_t *sub_state = &segment_state[sub_axis];
             if (next_seg->steps[sub_axis] > 0)
             {
+                // Subordinate has motion in new segment - update state
                 sub_state->current_segment = next_seg;
                 sub_state->step_count = 0;
                 sub_state->bresenham_counter = next_seg->bresenham_counter[sub_axis];
+            }
+            else
+            {
+                // CRITICAL: Subordinate has ZERO motion in new segment
+                // Must stop its hardware to prevent runaway from previous segment!
+                axis_hw[sub_axis].OCMP_Disable();
+                axis_hw[sub_axis].TMR_Stop();
+                sub_state->current_segment = NULL;
+                sub_state->step_count = 0;
             }
         }
 
@@ -1828,6 +1856,19 @@ bool MultiAxis_StartSegmentExecution(void)
     if (max_steps_startup > 0)
     {
         segment_completed_by_axis = (1 << dominant_candidate_startup);
+#ifdef DEBUG_MOTION_BUFFER
+        // Trace dominant axis selection and per-axis step counts
+        const char *axis_names[] = {"X", "Y", "Z", "A"};
+        UGS_Printf("[SEG_START] Dominant=%s bitmask=0x%02X n_step=%lu X=%lu Y=%lu Z=%lu A=%lu period=%lu\r\n",
+                   axis_names[dominant_candidate_startup],
+                   segment_completed_by_axis,
+                   (unsigned long)first_seg->n_step,
+                   (unsigned long)first_seg->steps[AXIS_X],
+                   (unsigned long)first_seg->steps[AXIS_Y],
+                   (unsigned long)first_seg->steps[AXIS_Z],
+                   (unsigned long)first_seg->steps[AXIS_A],
+                   (unsigned long)first_seg->period);
+#endif
     }
     else
     {
@@ -1868,6 +1909,10 @@ bool MultiAxis_StartSegmentExecution(void)
         // Skip if axis is already active (busy with previous segment)
         if (state->active)
         {
+#ifdef DEBUG_MOTION_BUFFER
+            const char *axis_names[] = {"X", "Y", "Z", "A"};
+            UGS_Printf("  [SEG_START] %s already active, skipping\r\n", axis_names[axis]);
+#endif
             continue;
         }
 
@@ -1937,6 +1982,14 @@ bool MultiAxis_StartSegmentExecution(void)
             // Enable driver
             MultiAxis_EnableDriver(axis);
 
+#ifdef DEBUG_MOTION_BUFFER
+            {
+                const char *axis_names[] = {"X", "Y", "Z", "A"};
+                const char *dom_str = is_dominant ? "DOMINANT" : "subordinate";
+                UGS_Printf("  [SEG_START] %s: enabled driver, role=%s\r\n", axis_names[axis], dom_str);
+            }
+#endif
+
             // Configure OCR period (step rate)
             uint32_t period = first_seg->period;
             if (period > 65485)
@@ -1972,23 +2025,41 @@ bool MultiAxis_StartSegmentExecution(void)
                 axis_hw[axis].OCMP_Enable();
                 axis_hw[axis].TMR_Start();
 
+#ifdef DEBUG_MOTION_BUFFER
+                {
+                    const char *axis_names[] = {"X", "Y", "Z", "A"};
+                    UGS_Printf("  [SEG_START] %s: OCR STARTED continuous mode, period=%lu\r\n", 
+                               axis_names[axis], (unsigned long)period);
+                }
+#endif
+
                 any_axis_started = true;
             }
             else
             {
-                // SUBORDINATE AXIS: Use OCR hardware in toggle mode
-                // Bresenham algorithm triggers pulse by setting OCxR compare value
-                // Hardware automatically toggles pin: LOW→HIGH→LOW for complete pulse!
+                // SUBORDINATE AXIS: Single-pulse-on-demand using OCR
+                // Pattern:
+                //   - Keep timer running continuously (TMRx_Start)
+                //   - Keep OCMP DISABLED until a pulse is needed
+                //   - When Bresenham requests a step:
+                //       OCxR=5; OCxRS=36; TMRx=0xFFFF; OCMP_Enable();
+                //   - ISR (falling edge) auto-disables OCMP to stop further pulses
 
-                // Set timer period (must be large enough for pulse width)
-                // Use a fixed period that allows toggle sequence to complete
+                // Ensure subordinate OCMP is disabled at segment start (no stray pulse)
+                axis_hw[axis].OCMP_Disable();
+
+                // Set timer period (must exceed pulse width); run it continuously
+                // so TMRx=0xFFFF forces an immediate rollover when enabling OCMP.
                 axis_hw[axis].TMR_PeriodSet(200); // ~128µs period @ 1.5625MHz
-
-                // CRITICAL: Enable OCR hardware for toggle mode to work!
-                axis_hw[axis].OCMP_Enable();
-
-                // Start timer (needed for OCR pulse generation)
                 axis_hw[axis].TMR_Start();
+
+#ifdef DEBUG_MOTION_BUFFER
+                {
+                    const char *axis_names[] = {"X", "Y", "Z", "A"};
+                    UGS_Printf("  [SEG_START] %s: TMR STARTED for subordinate (OCMP disabled)\r\n", 
+                               axis_names[axis]);
+                }
+#endif
             }
         }
     }

@@ -205,6 +205,12 @@ ifeq ($(DEBUG_MOTION_BUFFER),1)
     $(info *** DEBUG_MOTION_BUFFER enabled ***)
 endif
 
+# Map root policy flag to compile-time define to optionally force exact-stop behavior
+ifeq ($(DISABLE_JUNCTION_LOOKAHEAD),1)
+    CONFIG_DEFINES += -DDEBUG_DISABLE_JUNCTION_LOOKAHEAD
+    $(info *** DEBUG_DISABLE_JUNCTION_LOOKAHEAD (exact-stop) enabled ***)
+endif
+
 FLAGS := -Werror -Wall -MP -MMD $(CONFIG_DEFINES)
 
 else

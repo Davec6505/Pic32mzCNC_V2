@@ -20,6 +20,96 @@
 				"showReuseMessage": false,
 				"clear": false
 			}
+		},
+		{
+			"label": "Build PIC32MZ Project",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"all",
+				"BUILD_CONFIG=Default",
+				"DEBUG_MOTION_BUFFER=1"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Build PIC32MZ Project",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"all",
+				"BUILD_CONFIG=Default",
+				"DEBUG_MOTION_BUFFER=1"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Build with segment trace",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"all",
+				"BUILD_CONFIG=Default",
+				"DEBUG_MOTION_BUFFER=1"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Build with segment trace",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"all",
+				"BUILD_CONFIG=Default",
+				"DEBUG_MOTION_BUFFER=1"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Build with segment trace",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"all",
+				"BUILD_CONFIG=Default",
+				"DEBUG_MOTION_BUFFER=1"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Build with segment trace",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"all",
+				"BUILD_CONFIG=Default",
+				"DEBUG_MOTION_BUFFER=1"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
 		}
 	]
 }

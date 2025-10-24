@@ -698,6 +698,42 @@ static bool line_complete = false;  // Flag for complete line
 
 ---
 
+## ⚠️ INPUT SANITIZATION & PLAN LOGGING (October 23, 2025)
+
+To prevent rare stray extended bytes from influencing parsing, the main loop now sanitizes input bytes before line buffering, and adds optional planning logs to trace enqueued targets.
+
+What changed:
+- Input filter ignores any byte with the high bit set (>= 0x80) and non-printable control bytes below 0x20, except CR/LF/TAB/space.
+- Optional plan logging (DEBUG_MOTION_BUFFER) prints each planned target (G code, X/Y/Z[/A], feed) just before queuing to the GRBL planner.
+
+Code pattern in `main.c` (simplified):
+```c
+// Drop extended/non-printable controls (keep CR/LF/TAB/space)
+unsigned char uc = (unsigned char)c;
+if ((uc >= 0x80U) || ((uc < 0x20U) && (c != '\n') && (c != '\r') && (c != '\t') && (c != ' ')))
+{
+    continue; // ignore this byte
+}
+
+// Optional: emit one-line plan trace per buffered move (when DEBUG_MOTION_BUFFER=1)
+#ifdef DEBUG_MOTION_BUFFER
+UGS_Printf("PLAN: G%d X%.3f Y%.3f Z%.3f F%.1f\r\n",
+           (int)move.motion_mode,
+           target_mm[AXIS_X], target_mm[AXIS_Y], target_mm[AXIS_Z],
+           pl_data.feed_rate);
+#endif
+```
+
+Benefits:
+- Eliminates “walkabout” triggered by random high-bit bytes mid-stream.
+- Plan traces provide clear breadcrumbs if unexpected motion is observed.
+
+Notes:
+- Plan logging is off by default; enable with `make all DEBUG_MOTION_BUFFER=1`.
+- This is a non-invasive change: motion execution is unaffected; only input handling and optional logging changed.
+
+---
+
 ## ⚠️ CRITICAL SERIAL BUFFER FIX (October 18, 2025)
 
 **UART RING BUFFER SIZE INCREASED - RESOLVES SERIAL DATA CORRUPTION** ✅ **COMPLETE!**:
@@ -840,13 +876,15 @@ After rebuild with 512-byte buffers:
 - **Next Steps**: Flash firmware and test with actual G2/G3 commands
 - **Priority**: HIGH - Implementation complete, needs hardware verification
 
-## ⚠️ CURRENT STATUS: Motion Execution Complete! (October 22, 2025)
+## ⚠️ CURRENT STATUS: Motion Execution Complete! (October 23, 2025)
 
 **Latest Progress**: 
 - ✅ Fixed driver enable pins - all axes moving physically! System fully operational.
 - ✅ Multi-configuration build system complete (Default/Debug/Release)
 - ✅ Shared library build system implemented and working
 - ⚠️ Circular interpolation (G2/G3) needs debugging in UGS
+- ✅ Input sanitization guard added (Oct 23): filters extended/non-printable bytes before line buffering
+- ✅ Optional plan logging added (Oct 23): DEBUG_MOTION_BUFFER prints each buffered target (G, XYZ[A], F)
 
 **Current Testing Focus** 🎯:
 - **✅ SERIAL COMMUNICATION** - Robust, no more parsing errors

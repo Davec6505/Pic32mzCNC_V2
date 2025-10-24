@@ -56,7 +56,7 @@
  *   HTD 3mm: 3mm pitch (High Torque Drive)
  *   HTD 5mm: 5mm pitch (High Torque Drive)
  */
-#define BELT_PITCH_MM 2.0f // Belt pitch in mm (2.0 for GT2, 3.0 for GT3, 5.0 for GT5/HTD5)
+#define BELT_PITCH_MM 2.5f // Belt pitch in mm (2.5 for T2.5, 2.0 for GT2, 3.0 for GT3, 5.0 for GT5/HTD5)
 #define PULLEY_TEETH 20.0f // Number of teeth on pulley (16, 20, 24, etc.)
 
 /**
