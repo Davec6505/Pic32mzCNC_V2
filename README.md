@@ -567,37 +567,49 @@ Pic32mzCNC_V2/
 ### Build commands
 
 ```powershell
-# Standard build
-make all
+# Quick start (most common commands)
+make                               # Incremental Release build (fast)
+make all                           # Full rebuild (clean + build from scratch)
+make help                          # Show all available commands (color-coded)
 
-# Quiet build (filtered output - errors/warnings only)
-make quiet
+# Build configurations
+make BUILD_CONFIG=Debug            # Incremental Debug build (-g3 -O0)
+make all BUILD_CONFIG=Debug        # Full Debug rebuild
 
-# Create directory structure (first time only)
-make build_dir
+# Optimization override (Release only)
+make OPT_LEVEL=2                   # Release with -O2 (recommended for production)
+make OPT_LEVEL=3                   # Release with -O3 (maximum speed)
 
-# Clean all outputs
-make clean
+# Clean operations
+make clean                         # Clean current BUILD_CONFIG
+make clean_all                     # Clean both Debug and Release
 
-# Show build configuration
-make debug
+# Directory setup
+make build_dir                     # Create directory structure (bins/Debug, bins/Release)
 
-# Show platform information
-make platform
+# Other commands
+make quiet                         # Build with filtered output (errors/warnings only)
+make platform                      # Show platform information
+make debug                         # Show build configuration details
 ```
 
 ### Output files
-- `bins/CS23.elf` - Executable with debug symbols
-- `bins/CS23.hex` - Flash programming file
-- `objs/` - Object files (.o)
-  `other/` - Memory.xml and production.map
+- `bins/Release/CS23.elf` - Executable with debug symbols (Release build)
+- `bins/Release/CS23.hex` - Flash programming file (Release build)
+- `bins/Debug/CS23.elf` - Debug executable with full symbols
+- `bins/Debug/CS23.hex` - Debug flash programming file
+- `objs/{BUILD_CONFIG}/` - Object files (.o)
+- `libs/{BUILD_CONFIG}/` - Static libraries (.a)
+- `other/{BUILD_CONFIG}/` - Memory.xml and production.map
 
 ### Build system features
-- Cross-platform Make (Windows/Linux) using gnu make
-- Automatic dependency generation
-- Optimized compilation (-O1 -Werror -Wall)
-- MISRA C:2012 compliance checking
-- Quiet build mode for cleaner output
+- **Two configurations**: Debug (-g3 -O0) and Release (-g -O1)
+- **Flexible optimization**: OPT_LEVEL=1/2/3 for Release builds
+- **Incremental builds**: `make` for speed, `make all` for clean rebuild
+- **Cross-platform**: Windows (PowerShell) and Linux (bash) support
+- **Color-coded help**: `make help` shows organized command reference
+- **MISRA C:2012 compliance**: Safety-critical coding standards
+- **Automatic dependencies**: Header changes trigger recompilation
 
 ## 🖥️ Usage
 

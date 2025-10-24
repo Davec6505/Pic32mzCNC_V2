@@ -1161,33 +1161,53 @@ M5                   ; Spindle off
 
 This is a **modular embedded CNC controller** for the PIC32MZ2048EFH100 microcontroller with **hardware-accelerated multi-axis S-curve motion profiles**. The system uses independent OCR (Output Compare) modules for pulse generation, eliminating the need for GRBL's traditional 30kHz step interrupt.
 
-### Build System Architecture (October 22, 2025) ✨**COMPLETE**
+### Build System Architecture (October 24, 2025) ✨**UPDATED**
 
 **Multi-Configuration Support:**
 ```bash
-# Three configurations with separate outputs
-make all                           # Default: -g -O1 (balanced)
-make all BUILD_CONFIG=Debug        # Debug: -g3 -O0 (full symbols)
-make all BUILD_CONFIG=Release      # Release: -O3 (optimized)
+# Two configurations: Debug and Release (Default eliminated Oct 24, 2025)
+make                               # Incremental Release build: -g -O1 (fast, default)
+make all                           # Full Release rebuild: clean + build
+make BUILD_CONFIG=Debug            # Incremental Debug build: -g3 -O0
+make all BUILD_CONFIG=Debug        # Full Debug rebuild: clean + build
+
+# Optimization override (Release only)
+make OPT_LEVEL=2                   # Release with -O2 (recommended for production)
+make OPT_LEVEL=3                   # Release with -O3 (maximum speed)
 
 # Shared library system
 make shared_lib                    # Build libs/*.c into libCS23shared.a
 make all USE_SHARED_LIB=1          # Link against pre-built library
+
+# Clean targets
+make clean                         # Clean current BUILD_CONFIG
+make clean_all                     # Clean both Debug and Release
 ```
 
 **Directory Structure:**
 ```
-bins/{Default,Debug,Release}/      # Executables per configuration
-libs/{Default,Debug,Release}/      # Libraries per configuration
-libs/*.c                            # Source files for library compilation
-objs/{Default,Debug,Release}/      # Object files per configuration
-other/{Default,Debug,Release}/     # Map files per configuration
+bins/{Debug,Release}/              # Executables (both configs kept)
+libs/{BUILD_CONFIG}/               # Libraries (current config only)
+libs/*.c                           # Source files for library compilation
+objs/{BUILD_CONFIG}/               # Object files (current config only)
+other/{BUILD_CONFIG}/              # Map files (current config only)
 ```
 
 **Configuration Flags:**
-- **Default**: `-g -O1` - Balanced development (primary workflow)
-- **Debug**: `-g3 -O0 -DDEBUG -DDEBUG_MOTION_BUFFER` - Full debug symbols
-- **Release**: `-O3 -DNDEBUG` - Maximum optimization for production
+- **Release** (default): `-g -O$(OPT_LEVEL)` where OPT_LEVEL defaults to 1
+  - Balanced for debugging + performance
+  - Can override: `make OPT_LEVEL=2` or `make OPT_LEVEL=3`
+- **Debug**: `-g3 -O0 -DDEBUG -DDEBUG_MOTION_BUFFER`
+  - Maximum debug symbols, no optimization
+  - Full motion buffer logging enabled
+
+**Build Workflow:**
+- `make` → Incremental build (fast, only changed files)
+- `make all` → Full rebuild (clean + build from scratch)
+- `make build_dir` → Create directory structure (no BUILD_CONFIG needed)
+- `make clean` → Clean current configuration
+- `make clean_all` → Clean both Debug and Release
+- `make help` → Show color-coded help (platform-specific)
 
 **Library System Benefits:**
 - **Modular compilation**: Only files in `libs/` become library

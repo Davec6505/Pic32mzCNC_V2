@@ -2,27 +2,26 @@
 # Name of the project binary
 MODULE     := CS23
 
+# Default target when running 'make' with no arguments
+.DEFAULT_GOAL := build
+
 # Device configuration
 # The device is expected to be a PIC32MZ family device.
 DEVICE     := 32MZ2048EFH100
 
-# Build configuration: Default, Debug, or Release
+# Build configuration: Debug or Release
 # Controls output directory structure and optimization level
 # Usage: make all BUILD_CONFIG=Debug    (debug build with -g3 -O0)
-#        make all BUILD_CONFIG=Release  (optimized build with -O3)
-#        make all                       (balanced build with -g -O1)
-BUILD_CONFIG ?= Default
+#        make all BUILD_CONFIG=Release  (balanced build with -g -O1)
+#        make all                       (defaults to Release: -g -O1)
+BUILD_CONFIG ?= Release
 
-# Override optimization flags for Release when using free XC32 (avoids -O3 license warning)
-# Policy: Root Makefile controls configuration; sub-Makefile implements it.
-# We pass OPT_FLAGS on the command line so it takes precedence without editing srcs/Makefile logic.
-ifeq ($(BUILD_CONFIG),Release)
-	# XC32 Free does not support -O3 without PRO license; use -O2 to keep -Werror clean
-	RELEASE_OPT_FLAGS ?= -O1 -DNDEBUG
-	EXTRA_MAKE_VARS := OPT_FLAGS="$(RELEASE_OPT_FLAGS)"
-else
-	EXTRA_MAKE_VARS :=
-endif
+# Optimization level control (optional override for Release builds)
+# Usage: make all OPT_LEVEL=2    (use -O2 instead of default -O1)
+#        make all OPT_LEVEL=3    (use -O3 for maximum optimization)
+#        make all                (uses default -O1)
+# Note: Only affects Release builds; Debug always uses -O0
+OPT_LEVEL ?= 1
 
 # Debug flags control: set DEBUG_MOTION_BUFFER=1 to enable debug output
 # Usage: make all DEBUG_MOTION_BUFFER=1  (enable motion buffer debug messages)
@@ -68,23 +67,27 @@ DFP := $(DFP_LOCATION)/Microchip/PIC32MZ-EF_DFP/1.4.168
 
 # Simple Unix-style build system
 BUILD=make
-CLEAN=make clean DRY_RUN=$(DRY_RUN)
 BUILD_DIR=make build_dir
 
-all:
-	@echo "######  BUILDING EXECUTABLE ($(BUILD_CONFIG))  ########"
+# Default target: incremental build (only rebuilds changed files)
+build:
+	@echo "######  INCREMENTAL BUILD ($(BUILD_CONFIG))  ########"
 ifeq ($(USE_SHARED_LIB),1)
 	@echo "######  (Using pre-built shared library)  ########"
 endif
-	cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE) USE_SHARED_LIB=$(USE_SHARED_LIB) BUILD_CONFIG=$(BUILD_CONFIG) DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER) DISABLE_JUNCTION_LOOKAHEAD=$(DISABLE_JUNCTION_LOOKAHEAD) $(EXTRA_MAKE_VARS)
+	cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE) USE_SHARED_LIB=$(USE_SHARED_LIB) BUILD_CONFIG=$(BUILD_CONFIG) OPT_LEVEL=$(OPT_LEVEL) DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER) DISABLE_JUNCTION_LOOKAHEAD=$(DISABLE_JUNCTION_LOOKAHEAD)
 	@echo "###### BIN TO HEX ########"
 	cd bins/$(BUILD_CONFIG) && "$(COMPILER_LOCATION)/xc32-bin2hex" $(MODULE)
 	@echo "######  BUILD COMPLETE (bins/$(BUILD_CONFIG)/$(MODULE).hex)  ########"
 
+# Clean + full rebuild
+all: clean build
+	@echo "######  FULL REBUILD COMPLETE  ########"
+
 # Build shared library from libs/*.c files
 shared_lib:
 	@echo "######  BUILDING SHARED LIBRARY ($(BUILD_CONFIG))  ########"
-	cd srcs && $(BUILD) shared_lib COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) BUILD_CONFIG=$(BUILD_CONFIG) DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER) DISABLE_JUNCTION_LOOKAHEAD=$(DISABLE_JUNCTION_LOOKAHEAD)
+	cd srcs && $(BUILD) shared_lib COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) BUILD_CONFIG=$(BUILD_CONFIG) OPT_LEVEL=$(OPT_LEVEL) DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER) DISABLE_JUNCTION_LOOKAHEAD=$(DISABLE_JUNCTION_LOOKAHEAD)
 	@echo "######  SHARED LIBRARY COMPLETE (libs/$(BUILD_CONFIG)/libCS23shared.a)  ########"
 
 # Quiet build - shows only errors, warnings, and completion status
@@ -107,7 +110,7 @@ endif
 
 build_dir:
 	@echo "###### BUILDING DIRECTORIES FOR OUTPUT BINARIES #######"
-	cd srcs && $(BUILD_DIR)
+	cd srcs && $(BUILD_DIR) BUILD_CONFIG=$(BUILD_CONFIG)
 	@echo "############ BUILDING DIRECTORIES COMPLETED ###########"
 
 debug:
@@ -116,12 +119,25 @@ debug:
 
 platform:
 	@echo "####### PLATFORM INFO #######"
-	cd srcs && $(BUILD) platform COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE)
+	cd srcs && $$(BUILD) platform COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE)
 
 clean:
 	@echo "####### CLEANING OUTPUTS #######"
-	cd srcs && $(CLEAN)
+ifeq ($(OS),Windows_NT)
+	@powershell -NoProfile -Command "cd srcs; make clean DRY_RUN=$(DRY_RUN) BUILD_CONFIG=$(BUILD_CONFIG)"
+else
+	cd srcs && $(MAKE) clean DRY_RUN=$(DRY_RUN) BUILD_CONFIG=$(BUILD_CONFIG)
+endif
 
+clean_all:
+	@echo "####### CLEANING ALL BUILD CONFIGURATIONS #######"
+ifeq ($(OS),Windows_NT)
+	@powershell -NoProfile -Command "cd srcs; make clean BUILD_CONFIG=Debug DRY_RUN=$(DRY_RUN)"
+	@powershell -NoProfile -Command "cd srcs; make clean BUILD_CONFIG=Release DRY_RUN=$(DRY_RUN)"
+else
+	cd srcs && $(MAKE) clean BUILD_CONFIG=Debug DRY_RUN=$(DRY_RUN)
+	cd srcs && $(MAKE) clean BUILD_CONFIG=Release DRY_RUN=$(DRY_RUN)
+endif
 
 rem_dir:
 	@echo "####### REMOVING BUILD DIRECTORIES #######"
@@ -175,49 +191,95 @@ else
 endif
 
 help: cmdlets
-
-
-HELP_ENTRIES = \
-    make build_dir            | Start by testing build directories output (DRY_RUN=1 default). ; \
-    make build_dir DRY_RUN=0  | Create build directories (set DRY_RUN=1 to simulate). ; \
-    make all                  | Build Default configuration (balanced -g -O1). ; \
-    make all BUILD_CONFIG=Debug | Build Debug configuration (-g3 -O0, full symbols). ; \
-    make all BUILD_CONFIG=Release | Build Release configuration (-O3 optimized). ; \
-    make shared_lib           | Build shared library from libs/*.c files. ; \
-    make all USE_SHARED_LIB=1 | Build executable linked against pre-built library. ; \
-    make quiet                | Build with filtered output (errors/warnings only). ; \
-    make clean                | Clean build outputs. ; \
-    make platform             | Show platform information. ; \
-    make rem_dir DIR_PATH=    | Remove specified directory (DIR_PATH=""). ; \
-    make mk_dir DIR_PATH=     | Create specified directory (DIR_PATH=""). ; \
-    make dfp_dir              | Show the DFP directory. ; \
-    make debug_path DIR_PATH= | Debug specified path (DIR_PATH=""). ; \
-    make help                 | Show this help message.
-
-cmdlets:
 ifeq ($(OS),Windows_NT)
-	@powershell -NoProfile -Command "$$raw = '$(HELP_ENTRIES)'; \
-	$$entries = $$raw -split ';'; \
+	@powershell -NoProfile -Command "\
 	Write-Host '######################################## BUILD COMMANDS ############################################' -ForegroundColor Green; \
-	foreach ($$entry in $$entries) { \
-        if ($$entry.Trim() -ne '') { \
-            $$parts = $$entry -split '\|'; \
-            $$cmd = $$parts[0].Trim(); \
-            $$desc = $$parts[1].Trim(); \
-            $$cmdPadded = $$cmd.PadRight(30); \
-            Write-Host $$cmdPadded -ForegroundColor Yellow -NoNewline; \
-            Write-Host ' - ' $$desc -ForegroundColor White; \
-        } \
-	}; \
+	Write-Host ''; \
+	Write-Host '--- QUICK START ---' -ForegroundColor Cyan; \
+	Write-Host 'make                     ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Incremental build (fast - only changed files, Release config).' -ForegroundColor White; \
+	Write-Host 'make all                 ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Full rebuild (clean + build from scratch, Release config).' -ForegroundColor White; \
+	Write-Host 'make BUILD_CONFIG=Debug  ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Incremental Debug build (-g3 -O0, full symbols).' -ForegroundColor White; \
+	Write-Host 'make all BUILD_CONFIG=Debug' -ForegroundColor Yellow -NoNewline; Write-Host ' - Full Debug rebuild (clean + build).' -ForegroundColor White; \
+	Write-Host ''; \
+	Write-Host '--- BUILD CONFIGURATIONS ---' -ForegroundColor Cyan; \
+	Write-Host 'BUILD_CONFIG=Release     ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Balanced build: -g -O1 (default, suitable for debugging + performance).' -ForegroundColor White; \
+	Write-Host 'BUILD_CONFIG=Debug       ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Debug build: -g3 -O0 (maximum debug symbols, no optimization).' -ForegroundColor White; \
+	Write-Host ''; \
+	Write-Host '--- OPTIMIZATION OVERRIDE (Release only) ---' -ForegroundColor Cyan; \
+	Write-Host 'make OPT_LEVEL=1         ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Release with -O1 optimization (default).' -ForegroundColor White; \
+	Write-Host 'make OPT_LEVEL=2         ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Release with -O2 optimization (recommended for production).' -ForegroundColor White; \
+	Write-Host 'make OPT_LEVEL=3         ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Release with -O3 optimization (maximum speed).' -ForegroundColor White; \
+	Write-Host ''; \
+	Write-Host '--- DIRECTORY MANAGEMENT ---' -ForegroundColor Cyan; \
+	Write-Host 'make build_dir           ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Test directory creation (DRY_RUN=1 default, no action).' -ForegroundColor White; \
+	Write-Host 'make build_dir DRY_RUN=0 ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Create build directories (bins/Debug, bins/Release, objs/, libs/).' -ForegroundColor White; \
+	Write-Host ''; \
+	Write-Host '--- CLEAN TARGETS ---' -ForegroundColor Cyan; \
+	Write-Host 'make clean               ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Clean current BUILD_CONFIG outputs (Debug or Release).' -ForegroundColor White; \
+	Write-Host 'make clean_all           ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Clean both Debug and Release configurations.' -ForegroundColor White; \
+	Write-Host ''; \
+	Write-Host '--- LIBRARY BUILDS ---' -ForegroundColor Cyan; \
+	Write-Host 'make shared_lib          ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Build shared library from libs/*.c files.' -ForegroundColor White; \
+	Write-Host 'make all USE_SHARED_LIB=1' -ForegroundColor Yellow -NoNewline; Write-Host ' - Build executable linked against pre-built library.' -ForegroundColor White; \
+	Write-Host ''; \
+	Write-Host '--- FILTERED OUTPUT ---' -ForegroundColor Cyan; \
+	Write-Host 'make quiet               ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Build with filtered output (errors/warnings only).' -ForegroundColor White; \
+	Write-Host ''; \
+	Write-Host '--- UTILITIES ---' -ForegroundColor Cyan; \
+	Write-Host 'make platform            ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Show platform information (OS, paths, toolchain).' -ForegroundColor White; \
+	Write-Host 'make help                ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Show this help message.' -ForegroundColor White; \
+	Write-Host ''; \
+	Write-Host '--- EXAMPLES ---' -ForegroundColor Cyan; \
+	Write-Host 'make                     ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Quick incremental build (Release, -O1).' -ForegroundColor White; \
+	Write-Host 'make all OPT_LEVEL=3     ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Full rebuild with maximum optimization (Release, -O3).' -ForegroundColor White; \
+	Write-Host 'make BUILD_CONFIG=Debug  ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Incremental build with full debug symbols (Debug, -O0).' -ForegroundColor White; \
+	Write-Host 'make clean_all           ' -ForegroundColor Yellow -NoNewline; Write-Host ' - Clean both Debug and Release before committing.' -ForegroundColor White; \
+	Write-Host ''; \
 	Write-Host '#####################################################################################################' -ForegroundColor Green"
 else
-	@echo -e "$(GREEN)######################################## BUILD COMMANDS ############################################$(NC)"
-	@for entry in $(HELP_ENTRIES); do \
-        cmd=$$(echo $$entry | cut -d'|' -f1 | xargs); \
-        desc=$$(echo $$entry | cut -d'|' -f2- | xargs); \
-        printf "$(Yellow)%-30s$(NC) - %s\n" "$$cmd" "$$desc"; \
-	done
-	@echo -e "$(GREEN)#####################################################################################################$(NC)"
+	@echo -e "\033[0;32m######################################## BUILD COMMANDS ############################################\033[0m"
+	@echo ""
+	@echo -e "\033[0;36m--- QUICK START ---\033[0m"
+	@echo -e "\033[0;33mmake                     \033[0m - Incremental build (fast - only changed files, Release config)."
+	@echo -e "\033[0;33mmake all                 \033[0m - Full rebuild (clean + build from scratch, Release config)."
+	@echo -e "\033[0;33mmake BUILD_CONFIG=Debug  \033[0m - Incremental Debug build (-g3 -O0, full symbols)."
+	@echo -e "\033[0;33mmake all BUILD_CONFIG=Debug\033[0m - Full Debug rebuild (clean + build)."
+	@echo ""
+	@echo -e "\033[0;36m--- BUILD CONFIGURATIONS ---\033[0m"
+	@echo -e "\033[0;33mBUILD_CONFIG=Release     \033[0m - Balanced build: -g -O1 (default, suitable for debugging + performance)."
+	@echo -e "\033[0;33mBUILD_CONFIG=Debug       \033[0m - Debug build: -g3 -O0 (maximum debug symbols, no optimization)."
+	@echo ""
+	@echo -e "\033[0;36m--- OPTIMIZATION OVERRIDE (Release only) ---\033[0m"
+	@echo -e "\033[0;33mmake OPT_LEVEL=1         \033[0m - Release with -O1 optimization (default)."
+	@echo -e "\033[0;33mmake OPT_LEVEL=2         \033[0m - Release with -O2 optimization (recommended for production)."
+	@echo -e "\033[0;33mmake OPT_LEVEL=3         \033[0m - Release with -O3 optimization (maximum speed)."
+	@echo ""
+	@echo -e "\033[0;36m--- DIRECTORY MANAGEMENT ---\033[0m"
+	@echo -e "\033[0;33mmake build_dir           \033[0m - Test directory creation (DRY_RUN=1 default, no action)."
+	@echo -e "\033[0;33mmake build_dir DRY_RUN=0 \033[0m - Create build directories (bins/Debug, bins/Release, objs/, libs/)."
+	@echo ""
+	@echo -e "\033[0;36m--- CLEAN TARGETS ---\033[0m"
+	@echo -e "\033[0;33mmake clean               \033[0m - Clean current BUILD_CONFIG outputs (Debug or Release)."
+	@echo -e "\033[0;33mmake clean_all           \033[0m - Clean both Debug and Release configurations."
+	@echo ""
+	@echo -e "\033[0;36m--- LIBRARY BUILDS ---\033[0m"
+	@echo -e "\033[0;33mmake shared_lib          \033[0m - Build shared library from libs/*.c files."
+	@echo -e "\033[0;33mmake all USE_SHARED_LIB=1\033[0m - Build executable linked against pre-built library."
+	@echo ""
+	@echo -e "\033[0;36m--- FILTERED OUTPUT ---\033[0m"
+	@echo -e "\033[0;33mmake quiet               \033[0m - Build with filtered output (errors/warnings only)."
+	@echo ""
+	@echo -e "\033[0;36m--- UTILITIES ---\033[0m"
+	@echo -e "\033[0;33mmake platform            \033[0m - Show platform information (OS, paths, toolchain)."
+	@echo -e "\033[0;33mmake help                \033[0m - Show this help message."
+	@echo ""
+	@echo -e "\033[0;36m--- EXAMPLES ---\033[0m"
+	@echo -e "\033[0;33mmake                     \033[0m - Quick incremental build (Release, -O1)."
+	@echo -e "\033[0;33mmake all OPT_LEVEL=3     \033[0m - Full rebuild with maximum optimization (Release, -O3)."
+	@echo -e "\033[0;33mmake BUILD_CONFIG=Debug  \033[0m - Incremental build with full debug symbols (Debug, -O0)."
+	@echo -e "\033[0;33mmake clean_all           \033[0m - Clean both Debug and Release before committing."
+	@echo ""
+	@echo -e "\033[0;32m#####################################################################################################\033[0m"
 endif
 
 

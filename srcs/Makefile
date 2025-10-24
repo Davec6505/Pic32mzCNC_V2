@@ -179,24 +179,28 @@ CC := "$(COMPILER_LOCATION)/xc32-gcc"
 MCU := -mprocessor=$(DEVICE)
 STD := c99
 
+# Optimization level (passed from root Makefile, defaults to 1)
+OPT_LEVEL ?= 1
+
 # Configuration-specific compiler flags
-ifeq ($(BUILD_CONFIG),Debug)
-    # Debug: Full debug symbols, no optimization, debug defines
-    OPT_FLAGS := -g3 -O0
-    CONFIG_DEFINES := -DDEBUG -DXPRJ_Debug=Debug
-    # Debug builds enable DEBUG_MOTION_BUFFER by default
-    DEBUG_MOTION_BUFFER := 1
-    $(info *** DEBUG BUILD: -g3 -O0 with debug symbols ***)
-else ifeq ($(BUILD_CONFIG),Release)
-    # Release: Aggressive optimization, no debug symbols
-    OPT_FLAGS := -O3 -DNDEBUG
-    CONFIG_DEFINES := -DXPRJ_Release=Release
-    $(info *** RELEASE BUILD: -O3 optimized ***)
-else
-    # Default: Balanced optimization with basic debug info
-    OPT_FLAGS := -g -O1
-    CONFIG_DEFINES := -DXPRJ_Default=Default
-    $(info *** DEFAULT BUILD: -g -O1 balanced ***)
+# Only validate BUILD_CONFIG when actually building (not for build_dir, clean, etc.)
+ifneq ($(filter-out build_dir clean clean_all rem_dir mk_dir debug debug_path,$(MAKECMDGOALS)),)
+  ifeq ($(BUILD_CONFIG),Debug)
+      # Debug: Full debug symbols, no optimization, debug defines
+      OPT_FLAGS := -g3 -O0
+      CONFIG_DEFINES := -DDEBUG -DXPRJ_Debug=Debug
+      # Debug builds enable DEBUG_MOTION_BUFFER by default
+      DEBUG_MOTION_BUFFER := 1
+      $(info *** DEBUG BUILD: -g3 -O0 with debug symbols ***)
+  else ifeq ($(BUILD_CONFIG),Release)
+      # Release: Uses OPT_LEVEL from root Makefile (default: -O1)
+      OPT_FLAGS := -g -O$(OPT_LEVEL)
+      CONFIG_DEFINES := -DXPRJ_Release=Release
+      $(info *** RELEASE BUILD: -g -O$(OPT_LEVEL) ***)
+  else
+      # Invalid configuration - error out
+      $(error Invalid BUILD_CONFIG: $(BUILD_CONFIG). Use Debug or Release)
+  endif
 endif
 
 # Add DEBUG_MOTION_BUFFER if enabled (either from root Makefile or Debug build)
@@ -320,7 +324,7 @@ SRC_DIRS := $(sort $(dir $(wildcard $(SRC_DIR)/*/)) $(dir $(wildcard $(SRC_DIR)/
 SRC_SUBDIRS := $(sort $(filter-out startup/,$(SRC_DIRS:$(SRC_DIR)/%=%)))
 
 build_dir: 
-ake	@echo "Creating build directories for configuration: $(BUILD_CONFIG) ($(detected_OS))"
+	@echo "Creating build directories ($(detected_OS))"
 	@echo "Creating base directories..."
 	@$(call MKDIR,$(BASE_BIN_DIR))
 	@$(call MKDIR,$(BASE_LIB_DIR))
@@ -328,8 +332,10 @@ ake	@echo "Creating build directories for configuration: $(BUILD_CONFIG) ($(dete
 	@$(call MKDIR,$(BASE_OUT_DIR))
 	@$(call MKDIR,$(SRC_DIR))
 	@$(call MKDIR,$(INC_DIR))
-	@echo "Creating configuration-specific directories..."
-	@$(call MKDIR,$(BIN_DIR))
+	@echo "Creating bins/Debug and bins/Release for final executables..."
+	@$(call MKDIR,$(BASE_BIN_DIR)/Debug)
+	@$(call MKDIR,$(BASE_BIN_DIR)/Release)
+	@echo "Creating configuration-specific working directories for $(BUILD_CONFIG)..."
 	@$(call MKDIR,$(LIB_DIR))
 	@$(call MKDIR,$(OBJ_DIR))
 	@$(call MKDIR,$(OUT_DIR))
@@ -337,17 +343,17 @@ ake	@echo "Creating build directories for configuration: $(BUILD_CONFIG) ($(dete
 	@$(foreach subdir,$(SRC_SUBDIRS),$(call MKDIR,$(OBJ_DIR)/$(subdir)) && $(call MKDIR,$(INC_DIR)/$(subdir)) &&) echo "Created peripheral directories"
 	@echo "Moving header files from src subdirectories to corresponding inc subdirectories"
 	@$(foreach subdir,$(SRC_SUBDIRS),$(foreach header,$(wildcard $(SRC_DIR)/$(subdir)*.h),$(call MOVE,$(header),$(INC_DIR)/$(subdir)) &&)) echo "Headers moved"
-	@echo "Build directories created successfully for $(BUILD_CONFIG)"
+	@echo "Build directories created successfully"
 
 
 
 
 clean:
 	@echo "Cleaning up object files, binaries, and libraries ($(detected_OS)) with DRY_RUN=$(DRY_RUN)"
-	@$(call RM,$(BIN_DIR)/,*)
-	@$(call RM,$(LIB_DIR)/,*.a)
-	@$(call RM,$(OBJ_DIR)/,*.o)
-	@$(call RM,$(OUT_DIR)/,*)
+	@$(call RM,$(BIN_DIR),*)
+	@$(call RM,$(LIB_DIR),*.a)
+	@$(call RM,$(OBJ_DIR),*.o)
+	@$(call RM,$(OUT_DIR),*)
 	@echo "Clean complete."
 
 
