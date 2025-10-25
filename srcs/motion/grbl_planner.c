@@ -556,9 +556,16 @@ static void planner_recalculate(void)
     /* Initialize to last block in buffer */
     uint8_t block_index = plan_prev_block_index(block_buffer_head);
 
-    /* Bail if only one plannable block (nothing to optimize) */
+    /* Bail if only one plannable block (nothing to optimize) 
+     * 
+     * CRITICAL FIX (October 25, 2025 - Late Evening):
+     * During arc generation, we need to mark the single block as "planned"
+     * so GetCurrentBlock() will release it! Otherwise buffer fills but can't drain.
+     */
     if (block_index == block_buffer_planned)
     {
+        /* Mark this block as planned (even though optimization is trivial) */
+        block_buffer_planned = block_buffer_head;
         return;
     }
 

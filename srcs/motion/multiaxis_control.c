@@ -2391,6 +2391,25 @@ void MultiAxis_StopAll(void)
  */
 bool MultiAxis_StartSegmentExecution(void)
 {
+    /* CRITICAL FIX (Oct 25, 2025 - Evening): Prevent re-entry while segment executing!
+     * 
+     * PROBLEM: Main loop calls this function every iteration. If dominant axis is still
+     * executing previous segment, we must NOT try to start next segment yet!
+     * 
+     * Symptom: "[SEG_START] X already active, skipping" repeats → main loop hangs
+     * 
+     * OLD CODE: Got next segment, then checked each axis's active flag
+     * BUG: Same segment retrieved repeatedly, bitmask recalculated, ISR gets confused
+     * 
+     * FIX: Check if ANY dominant axis is busy BEFORE getting next segment
+     */
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        if (segment_state[axis].active)
+        {
+            return false;  // Segment still executing - don't start next one yet!
+        }
+    }
  
     // Try to get first segment for each axis
     const st_segment_t *first_seg = GRBLStepper_GetNextSegment();

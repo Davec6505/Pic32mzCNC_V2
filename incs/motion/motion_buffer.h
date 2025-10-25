@@ -285,4 +285,30 @@ void MotionBuffer_GetStats(uint8_t *head, uint8_t *tail, uint8_t *count);
  */
 void MotionBuffer_DumpBuffer(void);
 
+/**
+ * @brief Check if arc generation completed (call from main loop)
+ *
+ * CRITICAL (Oct 25, 2025): TMR1 ISR can't call UGS_SendOK() directly!
+ * Main loop must call this function to check for arc completion and
+ * send "ok" response in a safe (non-ISR) context.
+ *
+ * @return true if arc just completed (ok sent), false otherwise
+ *
+ * @note Call this every iteration of main loop
+ * @date October 25, 2025
+ */
+bool MotionBuffer_CheckArcComplete(void);
+
+/**
+ * @brief Signal that planner buffer has space for more arc segments
+ *
+ * Flow control for TMR1 arc generator - call from main loop after
+ * draining planner buffer to allow TMR1 ISR to continue generating segments.
+ * Prevents "BUFFER FULL!" errors during arc execution.
+ *
+ * @note Call this every iteration of main loop when arc is active
+ * @date October 25, 2025
+ */
+void MotionBuffer_SignalArcCanContinue(void);
+
 #endif // MOTION_BUFFER_H

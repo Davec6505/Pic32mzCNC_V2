@@ -60,7 +60,7 @@ void Serial_RxCallback(uintptr_t context)
     uint8_t data = uart_rx_byte;
 
     // DEBUG: Toggle LED2 to prove ISR is being called
-    LED2_Toggle();
+    // LED2_Toggle(); // DISABLED Oct 25 - conflicts with arc generator LED2 debug
 
     // GRBL Pattern: Check for real-time commands and SET FLAG (don't execute in ISR!)
     // ISR context cannot safely call UART blocking functions

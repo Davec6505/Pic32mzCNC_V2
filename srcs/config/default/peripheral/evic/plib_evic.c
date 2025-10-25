@@ -56,7 +56,7 @@ void EVIC_Initialize( void )
     INTCONSET = _INTCON_MVEC_MASK;
 
     /* Set up priority and subpriority of enabled interrupts */
-    IPC1SET = 0x8U | 0x0U;  /* TIMER_1:  Priority 2 / Subpriority 0 */
+    IPC1SET = 0x4U | 0x1U;  /* TIMER_1:  Priority 1 / Subpriority 1 (Oct 25: Subpri 1 to avoid SRS conflict with TMR9) */
     IPC1SET = 0xc000000U | 0x0U;  /* OUTPUT_COMPARE_1:  Priority 3 / Subpriority 0 */
     IPC4SET = 0xc00U | 0x0U;  /* OUTPUT_COMPARE_3:  Priority 3 / Subpriority 0 */
     IPC5SET = 0xc0000U | 0x0U;  /* OUTPUT_COMPARE_4:  Priority 3 / Subpriority 0 */

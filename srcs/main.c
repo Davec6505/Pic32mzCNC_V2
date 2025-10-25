@@ -206,15 +206,16 @@ int main(void)
                                 
                                 /* CRITICAL (Oct 25, 2025): For arc commands (G2/G3),
                                  * DO NOT send "ok" immediately! Arc generator runs in
-                                 * TMR1 ISR @ 1ms and will send "ok" when complete.
+                                 * TMR1 ISR @ 1ms. Main loop will check MotionBuffer_CheckArcComplete()
+                                 * and send "ok" when arc finishes.
                                  * 
                                  * For linear moves (G0/G1), send "ok" immediately.
                                  */
                                 if (move.motion_mode == 2 || move.motion_mode == 3)
                                 {
-                                    /* Arc command - "ok" sent by TMR1 ISR when complete */
+                                    /* Arc command - "ok" sent by main loop when MotionBuffer_CheckArcComplete() returns true */
 #ifdef DEBUG_MOTION_BUFFER
-                                    UGS_Printf("[MAIN] Arc G%d queued, TMR1 will send 'ok'\r\n", 
+                                    UGS_Printf("[MAIN] Arc G%d queued, waiting for TMR1 completion\r\n", 
                                                move.motion_mode);
 #endif
                                 }
@@ -262,36 +263,42 @@ int main(void)
             }
         }
 
+        /* CRITICAL (October 25, 2025): Check if arc generation completed
+         * TMR1 ISR can't call UGS_SendOK() (blocking UART causes deadlock!)
+         * Instead, ISR sets flag and main loop sends "ok" here in safe context.
+         */
+        (void)MotionBuffer_CheckArcComplete();
+        
+        /* CRITICAL (October 25, 2025): Flow control for arc generator
+         * 
+         * Signal to TMR1 ISR that planner buffer has space for more segments.
+         * Prevents TMR1 from overflowing the planner buffer during arc execution.
+         * 
+         * This must be called AFTER draining the buffer (MultiAxis_StartSegmentExecution)
+         * so TMR1 can see the available space and continue generating segments.
+         */
+        MotionBuffer_SignalArcCanContinue();
+
         /* Start segment execution when idle and segments are available (Phase 2B)
          * 
-         * CRITICAL FIX (October 25, 2025): Delayed execution start for look-ahead planning
+         * CRITICAL FIX (October 25, 2025 - Evening): Always drain planner buffer!
          * 
-         * Don't start NEW execution until planner buffer reaches threshold (4 blocks).
-         * This ensures proper look-ahead window for junction velocity optimization.
+         * During arc generation, TMR1 ISR continuously adds segments to the planner buffer.
+         * We must ALWAYS call MultiAxis_StartSegmentExecution() to drain planner → stepper,
+         * even when machine is busy, otherwise the planner buffer fills up and arc generation stalls!
          * 
          * Flow:
-         *   1. UGS sends commands → Planner buffers them → Sends "ok" immediately
-         *   2. Buffer fills to threshold (4 blocks)
-         *   3. Planner recalculates all blocks (junction velocities optimized)
-         *   4. THEN start execution
-         *   5. Once started, continue draining even if buffer drops below threshold
+         *   1. UGS/TMR1 sends commands → Planner buffers them
+         *   2. Main loop ALWAYS drains planner → stepper buffer
+         *   3. Stepper buffer → segment execution (only starts when threshold reached)
          */
-        if (!MultiAxis_IsBusy())
+        uint8_t planner_count = GRBLPlanner_GetBufferCount();
+        uint8_t stepper_count = GRBLStepper_GetBufferCount();
+        
+        /* Always try to prepare segments if planner has data */
+        if (planner_count > 0 || stepper_count > 0)
         {
-            uint8_t planner_count = GRBLPlanner_GetBufferCount();
-            uint8_t stepper_count = GRBLStepper_GetBufferCount();
-            
-            /* Start execution when:
-             * 1. NEW execution: Planner buffer >= threshold (4 blocks for look-ahead), OR
-             * 2. CONTINUE draining: Stepper buffer has prepared segments
-             */
-            bool should_start_new = (planner_count >= GRBLPlanner_GetPlanningThreshold());
-            bool should_continue = (stepper_count > 0U);
-            
-            if (should_start_new || should_continue)  // ✅ Either condition starts motion
-            {
-                (void)MultiAxis_StartSegmentExecution();
-            }
+            (void)MultiAxis_StartSegmentExecution();
         }
 
 #ifdef DEBUG_MOTION_BUFFER
@@ -363,6 +370,14 @@ int main(void)
             }
         }
 #endif
+
+        /* CRITICAL (Oct 25, 2025): Check if arc generation completed
+         * 
+         * TMR1 ISR can't call UGS_SendOK() directly (blocking UART write causes deadlock!)
+         * Instead, ISR sets a flag, and we check it here in main loop to send "ok"
+         * in a safe (non-ISR) context.
+         */
+        (void)MotionBuffer_CheckArcComplete();
 
         /* Maintain system services */
        // SYS_Tasks();

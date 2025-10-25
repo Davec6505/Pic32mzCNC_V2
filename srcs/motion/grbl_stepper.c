@@ -208,7 +208,7 @@ static void prep_new_block(void)
     // DEBUG: Count new blocks (LED2 pattern: Clear = new block, Set = discard)
     // ═══════════════════════════════════════════════════════════════════════
     block_fetch_count++;
-    LED2_Clear(); // LED2 OFF = new block fetched (expect: 1 time for G0 Z5)
+    // LED2_Clear(); // DISABLED Oct 25 - conflicts with arc generator LED2 debug
 #if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_STEPPER
     UGS_Printf("[STEPPER] prep_new_block: Got block, mm=%.3f steps=(%lu,%lu,%lu,%lu)\r\n",
                prep.current_block->millimeters,
@@ -420,7 +420,7 @@ static bool prep_segment(void)
         // ═══════════════════════════════════════════════════════════════════
         // DEBUG: Visual block discard (LED2 pattern: Set = block discarded)
         // ═══════════════════════════════════════════════════════════════════
-        LED2_Set(); // LED2 ON = block discarded (expect: 1 time for G0 Z5)
+        // LED2_Set(); // DISABLED Oct 25 - conflicts with arc generator LED2 debug
         // ═══════════════════════════════════════════════════════════════════
 
         // Block complete, discard from planner

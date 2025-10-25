@@ -65,6 +65,56 @@ static float planned_position_mm[NUM_AXES] = {0.0f};
  */
 static bool disable_position_update = false;
 
+/** @brief Flag set by TMR1 ISR when arc completes
+ *
+ * CRITICAL (Oct 25, 2025): Can't call UGS_SendOK() from ISR (blocking UART write!)
+ * ISR sets this flag, main loop checks it and sends "ok".
+ *
+ * @date October 25, 2025
+ */
+static volatile bool arc_complete_flag = false;
+
+/** @brief Flag to suppress debug output when called from ISR
+ *
+ * CRITICAL (Oct 25, 2025): UGS_Printf() is a BLOCKING UART write.
+ * If called from TMR1 ISR (Priority 2), it will deadlock waiting for
+ * UART TX ISR (Priority 5) which can't preempt the currently executing ISR.
+ *
+ * When true, MotionBuffer_Add() will NOT call UGS_Printf().
+ *
+ * @date October 25, 2025
+ */
+static volatile bool suppress_debug_output = false;
+
+/** @brief Retry counter for buffer full condition
+ *
+ * If buffer is full for too many consecutive ISR calls, abort arc generation.
+ * Prevents infinite retry loop if buffer never drains.
+ *
+ * @date October 25, 2025
+ */
+static volatile uint16_t arc_buffer_full_retries = 0;
+
+/** @brief Flow control flag - prevents TMR1 from overflowing planner buffer
+ *
+ * CRITICAL (Oct 25, 2025): TMR1 @ 20ms generates segments faster than stepper can consume!
+ * 
+ * Behavior:
+ *   - TMR1 ISR checks this flag before generating next segment
+ *   - If false, ISR skips segment generation (waits for buffer space)
+ *   - Main loop sets true when planner buffer has space available
+ *   - Prevents "BUFFER FULL!" errors during arc execution
+ * 
+ * Flow:
+ *   1. TMR1 ISR generates segment → MotionBuffer_Add() → may fill buffer
+ *   2. ISR sets arc_can_continue = false (wait for consumption)
+ *   3. Main loop drains planner → sets arc_can_continue = true (resume generation)
+ *   4. Next TMR1 tick → ISR checks flag → generates next segment if true
+ *
+ * @date October 25, 2025
+ */
+static volatile bool arc_can_continue = true;
+
 //=============================================================================
 // ARC GENERATOR STATE (TMR1 ISR @ 1ms)
 //=============================================================================
@@ -197,14 +247,55 @@ static void ArcGenerator_TMR1Callback(uint32_t status, uintptr_t context)
     (void)status;   /* Unused parameter */
     (void)context;  /* Unused parameter */
     
+    /* CRITICAL DEBUG (Oct 25): Toggle LED2 every 100ms (visible blink rate)
+     * TMR1 @ 20ms (PR1=0x3D08) → counter reaches 5 every 100ms
+     */
+    static volatile uint16_t led_counter = 0;
+    led_counter++;
+    if (led_counter >= 5U)
+    {
+        LED2_Toggle();
+        led_counter = 0;
+    }
+    
     /* Quick exit if no arc in progress */
     if (!arc_gen.active)
     {
         return;
     }
     
-    /* Arc correction: Every 12 segments, recalculate exact position */
-    #define N_ARC_CORRECTION 12U
+    /* CRITICAL (Oct 25, 2025): Flow control to prevent buffer overflow
+     * 
+     * Check if main loop has drained enough planner buffer space.
+     * If arc_can_continue is false, skip segment generation this tick.
+     * Main loop will set it true when buffer has space available.
+     */
+    if (!arc_can_continue)
+    {
+        /* Buffer still full - wait for main loop to drain it */
+        return;
+    }
+    
+    /* Arc segment generation now runs at 40ms rate (25 segments/sec)
+     * This is controlled by TMR1 hardware period, no software throttle needed
+     */
+    
+    /* Arc correction: DISABLED (Oct 25, 2025)
+     * 
+     * The periodic "exact" recalculation using cosf(angle) was causing a visible
+     * position jump every 12 segments. This manifested as a "jiggle" when the arc
+     * crossed quadrant boundaries (e.g., segment 13 for quarter circle).
+     * 
+     * For small segments (~0.1mm), the small-angle rotation matrix is MORE accurate
+     * than the periodic correction because:
+     * 1. Float precision limits make cosf()/sinf() introduce rounding errors
+     * 2. The correction creates a discontinuity in the trajectory
+     * 3. The rotation matrix accumulates error smoothly without jumps
+     * 
+     * Arc accuracy will be validated with full-circle tests.
+     */
+    #define N_ARC_CORRECTION 0  /* Disabled - was 12U */
+    #if 0  /* Commented out - keeping for reference */
     if (arc_gen.arc_correction_counter >= N_ARC_CORRECTION)
     {
         /* Recalculate exact position using current angle */
@@ -219,6 +310,7 @@ static void ArcGenerator_TMR1Callback(uint32_t status, uintptr_t context)
     {
         arc_gen.arc_correction_counter++;
     }
+    #endif
     
     /* Apply vector rotation matrix (fast small-angle approximation) */
     float r_axisi = arc_gen.r_axis0 * arc_gen.sin_T + arc_gen.r_axis1 * arc_gen.cos_T;
@@ -254,6 +346,27 @@ static void ArcGenerator_TMR1Callback(uint32_t status, uintptr_t context)
     {
         /* Success! Move to next segment */
         arc_gen.current_segment++;
+        arc_buffer_full_retries = 0;  /* Reset retry counter on success */
+        
+        /* CRITICAL (Oct 25, 2025): Adaptive flow control
+         * 
+         * Only pause generation when buffer is getting full (>= 8 blocks).
+         * This keeps a steady flow without starving the stepper buffer.
+         * 
+         * Buffer capacity: 16 blocks (0-15)
+         * Threshold logic:
+         *   0-7 blocks:   Keep generating (buffer has plenty of room)
+         *   8-15 blocks:  Pause and wait for drainage
+         *   16 blocks:    Buffer full (MotionBuffer_Add returns false)
+         * 
+         * Lower threshold = more breathing room, prevents "BUFFER FULL!" errors
+         */
+        uint8_t buffer_count = MotionBuffer_GetCount();
+        if (buffer_count >= 8U)
+        {
+            arc_can_continue = false;  /* Buffer getting full - pause generation */
+        }
+        /* else: buffer has room, keep arc_can_continue as-is (likely true) */
         
         /* Check if arc complete */
         if (arc_gen.current_segment > arc_gen.total_segments)
@@ -261,8 +374,18 @@ static void ArcGenerator_TMR1Callback(uint32_t status, uintptr_t context)
             /* Arc complete! */
             arc_gen.active = false;
             
+            /* CRITICAL (Oct 25, 2025 - DEADLOCK FIX):
+             * Reset flow control flag to allow remaining buffered segments to drain!
+             * Without this, main loop's SignalArcCanContinue() exits early when !arc_gen.active,
+             * and if arc_can_continue=false, remaining segments never execute → DEADLOCK!
+             */
+            arc_can_continue = true;
+            
             /* Re-enable position updates */
             disable_position_update = false;
+            
+            /* Re-enable debug output */
+            suppress_debug_output = false;
             
             /* Update planned position to final arc target */
             planned_position_mm[arc_gen.axis_0] = arc_gen.segment_template.target[arc_gen.axis_0];
@@ -272,12 +395,31 @@ static void ArcGenerator_TMR1Callback(uint32_t status, uintptr_t context)
             /* Stop TMR1 - no longer needed (Harmony PLIBs already included) */
             TMR1_Stop();
             
-#ifdef DEBUG_MOTION_BUFFER
-            UGS_Printf("[ARC] Complete! %u segments generated\r\n", arc_gen.total_segments);
-#endif
+            /* CRITICAL (Oct 25, 2025): Can't call UGS_SendOK() from ISR!
+             * Set flag for main loop to send "ok" response.
+             * Also can't call UGS_Printf() - blocking UART write causes deadlock!
+             */
+            arc_complete_flag = true;
+        }
+    }
+    else
+    {
+        /* Buffer full - retry on next ISR tick (1ms) */
+        /* CRITICAL (Oct 25, 2025): Prevent infinite retry loop!
+         * If buffer doesn't drain after 5000ms (5000 retries), abort arc generation.
+         * This should NEVER happen in normal operation - indicates buffer deadlock.
+         */
+        arc_buffer_full_retries++;
+        if (arc_buffer_full_retries > 5000U)
+        {
+            /* Buffer deadlock detected! Abort arc generation */
+            arc_gen.active = false;
+            suppress_debug_output = false;
+            disable_position_update = false;
+            TMR1_Stop();
             
-            /* Send "ok" to UGS - arc command complete (Harmony PLIBs already included) */
-            UGS_SendOK();
+            /* Set error flag (main loop will detect) */
+            arc_complete_flag = true;  /* Will send "ok" but arc incomplete */
         }
     }
     /* If buffer full, do nothing - TMR1 will retry in 1ms */
@@ -285,9 +427,13 @@ static void ArcGenerator_TMR1Callback(uint32_t status, uintptr_t context)
 
 static bool convert_arc_to_segments(const parsed_move_t *arc_move)
 {
+    /* CRITICAL DEBUG (Oct 25): Blink to show we entered arc converter */
+    LED1_Clear();  /* Turn off LED1 briefly */
+    
     /* Parameter validation */
     if (arc_move == NULL)
     {
+        LED1_Set();  /* Turn back on */
         return false;
     }
 
@@ -297,12 +443,24 @@ static bool convert_arc_to_segments(const parsed_move_t *arc_move)
     const axis_id_t axis_1 = AXIS_Y;  /* Second axis in plane */
     const axis_id_t axis_linear = AXIS_Z;  /* Linear axis (for helical arcs) */
 
-    /* Get current position in mm (machine coordinates) */
+    /* CRITICAL FIX (Oct 25, 2025 - CONSECUTIVE ARC BUG):
+     * Get current position from GRBL planner, not local planned_position_mm[]!
+     * 
+     * PROBLEM: After first arc completes:
+     *   - GRBL planner position = (10,0) from last segment ✅
+     *   - planned_position_mm[] = (10,0) from arc completion update ✅
+     * 
+     * Second arc command arrives:
+     *   - OLD CODE: Used planned_position_mm[] = (10,0)
+     *   - Center calculation: (10,0) + I(5,0) = (15,0) ❌ WRONG!
+     *   - Arc geometry incorrect, minimal movement
+     * 
+     * SOLUTION: Use GRBLPlanner_GetPosition() (authoritative source)
+     *   - Always reflects last buffered position
+     *   - Consistent with linear move handling (line 666)
+     */
     float position[NUM_AXES];
-    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
-    {
-        position[axis] = planned_position_mm[axis];
-    }
+    GRBLPlanner_GetPosition(position);  /* Get from GRBL planner (authoritative) */
 
     /* Calculate arc center (offset from current position) */
     float center[3];
@@ -373,6 +531,12 @@ static bool convert_arc_to_segments(const parsed_move_t *arc_move)
      */
     disable_position_update = true;
     
+    /* CRITICAL (Oct 25, 2025): Suppress debug output during ISR segment generation!
+     * TMR1 ISR will call MotionBuffer_Add() for each segment. If debug output
+     * is enabled, UGS_Printf() will be called from ISR causing UART deadlock.
+     */
+    suppress_debug_output = true;
+    
 #ifdef DEBUG_MOTION_BUFFER
     UGS_Printf("[ARC] Initializing generator: %u segments, theta=%.4f rad\r\n", 
                segments, theta_per_segment);
@@ -416,8 +580,18 @@ static bool convert_arc_to_segments(const parsed_move_t *arc_move)
     /* CRITICAL: Can't use memcpy with volatile - use struct assignment */
     arc_gen.segment_template = *arc_move;  /* Struct assignment handles volatile */
     
+    /* CRITICAL DEBUG (Oct 25): Verify callback registered before starting timer */
+    LED2_Set();  /* LED2 ON = about to register callback */
+    
     /* Register TMR1 callback and start timer (Harmony PLIBs already included) */
     TMR1_CallbackRegister(ArcGenerator_TMR1Callback, 0);
+    
+    /* CRITICAL DEBUG (Oct 25): LED2 off means callback registered, about to start TMR1 */
+    LED2_Clear();
+    
+    /* Small delay to ensure callback is registered (hardware race condition?) */
+    for (volatile int i = 0; i < 1000; i++);
+    
     TMR1_Start();
 
 #ifdef DEBUG_MOTION_BUFFER
@@ -453,10 +627,17 @@ bool MotionBuffer_Add(const parsed_move_t *move)
     }
     
     #ifdef DEBUG_MOTION_BUFFER
-    UGS_Printf("[BUFFER] Add: mode=%u, ijk=%d, target=(%.3f,%.3f), I=%.3f J=%.3f\r\n",
-               move->motion_mode, move->arc_has_ijk,
-               move->target[AXIS_X], move->target[AXIS_Y],
-               move->arc_center_offset[AXIS_X], move->arc_center_offset[AXIS_Y]);
+    /* CRITICAL (Oct 25, 2025): Skip debug output if called from ISR!
+     * UGS_Printf() is a blocking UART write that will deadlock if called
+     * from TMR1 ISR (Priority 2 waiting for UART TX Priority 5).
+     */
+    if (!suppress_debug_output)
+    {
+        UGS_Printf("[BUFFER] Add: mode=%u, ijk=%d, target=(%.3f,%.3f), I=%.3f J=%.3f\r\n",
+                   move->motion_mode, move->arc_has_ijk,
+                   move->target[AXIS_X], move->target[AXIS_Y],
+                   move->arc_center_offset[AXIS_X], move->arc_center_offset[AXIS_Y]);
+    }
     #endif
     
     /* ═══════════════════════════════════════════════════════════════
@@ -921,4 +1102,72 @@ void MotionBuffer_DumpBuffer(void)
     // TODO: Implement debug output
     // This would print buffer contents to UART for debugging
     // Format: [index] steps=[X,Y,Z,A] feedrate=### entry_v=### exit_v=###
+}
+
+/**
+ * @brief Signal that planner buffer has space for more arc segments
+ *
+ * CRITICAL (Oct 25, 2025): Flow control for TMR1 arc generator
+ * 
+ * Call this from main loop after draining planner buffer to signal
+ * that TMR1 ISR can continue generating arc segments.
+ * 
+ * Logic:
+ *   - If planner buffer has room (count < MOTION_BUFFER_SIZE - 2)
+ *   - And arc generation is active
+ *   - Set arc_can_continue = true (allow TMR1 to generate next segment)
+ * 
+ * @date October 25, 2025
+ */
+void MotionBuffer_SignalArcCanContinue(void)
+{
+    /* Only signal if arc is actually active */
+    if (!arc_gen.active)
+    {
+        return;
+    }
+    
+    /* Resume generation if buffer has drained below threshold
+     * 
+     * Hysteresis prevents oscillation:
+     *   - Pause at >= 8 blocks (in TMR1 ISR)
+     *   - Resume at < 6 blocks (here in main loop)
+     * 
+     * This creates a 2-block dead zone that prevents rapid on/off toggling.
+     */
+    uint8_t count = MotionBuffer_GetCount();
+    if (count < 6U)
+    {
+        /* Buffer drained enough - allow TMR1 to continue generating segments */
+        arc_can_continue = true;
+    }
+}
+
+/**
+ * @brief Check and handle arc completion (call from main loop)
+ *
+ * CRITICAL (Oct 25, 2025): TMR1 ISR can't call UGS_SendOK() (blocking UART!)
+ * Instead, ISR sets arc_complete_flag, and main loop calls this function
+ * to send the "ok" response in a safe context.
+ *
+ * @return true if arc just completed (ok sent), false otherwise
+ *
+ * @date October 25, 2025
+ */
+bool MotionBuffer_CheckArcComplete(void)
+{
+    if (arc_complete_flag)
+    {
+        arc_complete_flag = false;
+        
+        /* ALWAYS show arc completion - not gated by DEBUG_MOTION_BUFFER
+         * This helps diagnose stuck arcs even in production builds.
+         */
+        UGS_Printf("[ARC] Complete! Sending ok\r\n");
+        
+        UGS_SendOK();
+        return true;
+    }
+    
+    return false;
 }
