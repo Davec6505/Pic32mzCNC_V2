@@ -13,6 +13,7 @@
 #include "motion/motion_buffer.h"
 #include "motion/motion_math.h"
 #include "motion/multiaxis_control.h" /* For MultiAxis_GetStepCount() */
+#include "motion/grbl_planner.h"      /* CRITICAL (Oct 25, 2025): For GRBLPlanner_BufferLine() */
 #include "ugs_interface.h"            /* For UGS_Printf() debug output */
 #include <string.h>
 #include <math.h>
@@ -68,7 +69,6 @@ static bool disable_position_update = false;
 //=============================================================================
 
 static uint32_t next_write_index(void);
-static void plan_buffer_line(motion_block_t *block, const parsed_move_t *move);
 static void recalculate_trapezoids(void);
 static bool convert_arc_to_segments(const parsed_move_t *arc_move);
 
@@ -274,12 +274,21 @@ static bool convert_arc_to_segments(const parsed_move_t *arc_move)
         segment_move.arc_has_ijk = false;
         segment_move.arc_has_radius = false;
 
-        /* Add segment to buffer recursively */
-        if (!MotionBuffer_Add(&segment_move))
+        /* Add segment to buffer recursively - BLOCK on full buffer!
+         * CRITICAL (Oct 25, 2025): Must NOT return false on buffer full!
+         * If we return false, main.c will retry the ENTIRE arc command,
+         * causing an infinite loop. Instead, spin-wait for buffer space.
+         * 
+         * Motion execution continues via ISRs (TMR9 prepares segments,
+         * OCR callbacks execute steps), so this spin loop won't block
+         * motion - it just waits for the planner to free space.
+         */
+        while (!MotionBuffer_Add(&segment_move))
         {
-            /* Buffer full - restore flag and return false */
-            disable_position_update = false;
-            return false;
+            /* Spin-wait for buffer space - ISRs continue running */
+            /* TMR9 will prep segments, freeing planner blocks */
+            /* Add small delay to prevent CPU hogging (1000 cycles ≈ 5µs @ 200MHz) */
+            for (volatile uint32_t delay = 0; delay < 1000U; delay++) { }
         }
     }
     
@@ -348,62 +357,63 @@ bool MotionBuffer_Add(const parsed_move_t *move)
         return convert_arc_to_segments(move);
     }
 
-    /* Check if buffer is full */
-    if (MotionBuffer_IsFull())
-    {
-        buffer_state = BUFFER_STATE_FULL;
-        return false;
-    }
-
-    /* Get next write index and current buffer slot
-     * MISRA Rule 10.3: Explicit cast for array index */
-    uint32_t nextWrIdx = next_write_index();
-    motion_block_t *block = &motion_buffer[wrInIndex];
-
-    /* Plan this block (convert mm to steps, calculate velocities) */
-    plan_buffer_line(block, move);
-
     /* ═══════════════════════════════════════════════════════════════
-     * CRITICAL: Filter zero-step blocks (October 19, 2025)
+     * CRITICAL FIX (October 25, 2025): For LINEAR moves, bypass motion_buffer!
      * ═══════════════════════════════════════════════════════════════
-     * G0 X0 Y0 (when already at origin) creates blocks with no motion.
-     * These clog the buffer and prevent real moves from executing.
-     * Discard them here instead of during execution.
+     * motion_buffer was designed for ARC-TO-SEGMENT conversion.
+     * Linear moves (G0/G1) should go DIRECTLY to GRBL planner.
+     * 
+     * Architecture:
+     *   G0/G1 → GRBLPlanner_BufferLine() DIRECTLY (this path)
+     *   G2/G3 → convert_arc_to_segments() → recursive MotionBuffer_Add() → GRBL planner
      * ═══════════════════════════════════════════════════════════════ */
-    bool has_steps = (block->steps[AXIS_X] != 0) || (block->steps[AXIS_Y] != 0) ||
-                     (block->steps[AXIS_Z] != 0) || (block->steps[AXIS_A] != 0);
-
-    if (!has_steps)
+    
+    // Build absolute target in mm for GRBL planner
+    float target_mm[NUM_AXES];
+    GRBLPlanner_GetPosition(target_mm);  // Start with current planned position
+    
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
     {
-#ifdef DEBUG_MOTION_BUFFER
-        UGS_Printf("[PLAN] Zero-step block filtered (not added to buffer)\r\n");
-#endif
-        /* Don't add to buffer, but return success (command was processed) */
-        return true;
+        if (move->axis_words[axis])
+        {
+            if (move->absolute_mode)
+            {
+                // G90 (absolute): target is absolute work coordinate
+                target_mm[axis] = MotionMath_WorkToMachine(move->target[axis], axis);
+            }
+            else
+            {
+                // G91 (relative): add offset to current position
+                target_mm[axis] += move->target[axis];
+            }
+        }
     }
-
-    /* ═══════════════════════════════════════════════════════════════
-     * CRITICAL: Commit to buffer (UART pattern)
-     * ═══════════════════════════════════════════════════════════════
-     * Advance write index AFTER data is written.
-     * This ensures ISR/reader never sees incomplete data.
-     * ═══════════════════════════════════════════════════════════════ */
-    wrInIndex = nextWrIdx;
-
-    /* Update state */
-    if (buffer_state == BUFFER_STATE_IDLE || buffer_state == BUFFER_STATE_FULL)
+    
+    // Build GRBL planner line data
+    grbl_plan_line_data_t pl_data;
+    pl_data.feed_rate = move->feedrate;
+    pl_data.spindle_speed = 0.0f;
+    pl_data.condition = 0U;
+    if (move->motion_mode == 0)  // G0 = rapid
     {
-        buffer_state = BUFFER_STATE_EXECUTING;
+        pl_data.condition |= PL_COND_FLAG_RAPID_MOTION | PL_COND_FLAG_NO_FEED_OVERRIDE;
     }
-
-    /* Trigger look-ahead replanning if threshold reached */
-    uint8_t count = MotionBuffer_GetCount();
-    if (count >= LOOKAHEAD_PLANNING_THRESHOLD)
+    
+    // Call GRBL planner directly (skip motion_buffer for linear moves)
+    plan_status_t plan_result = GRBLPlanner_BufferLine(target_mm, &pl_data);
+    
+    if (plan_result == PLAN_OK)
     {
-        MotionBuffer_RecalculateAll();
+        return true;  // Success!
     }
-
-    return true;
+    else if (plan_result == PLAN_BUFFER_FULL)
+    {
+        return false;  // Buffer full - retry later
+    }
+    else  // PLAN_EMPTY_BLOCK
+    {
+        return true;  // Zero-length move - silently accept
+    }
 }
 
 /**
@@ -705,97 +715,6 @@ static uint32_t next_write_index(void)
 {
     /* MISRA Rule 10.3: Explicit unsigned modulo for wraparound */
     return (wrInIndex + 1U) % MOTION_BUFFER_SIZE;
-}
-
-/**
- * @brief Plan a buffer line (convert parsed move to motion block)
- *
- * This function:
- * 1. Converts mm to steps using motion_math
- * 2. Determines which axes are active
- * 3. Calculates maximum entry velocity
- * 4. Initializes recalculate flag for look-ahead
- */
-static void plan_buffer_line(motion_block_t *block, const parsed_move_t *move)
-{
-    // Clear block
-    memset(block, 0, sizeof(motion_block_t));
-
-    // Convert work coordinates to machine coordinates and calculate delta
-    // CRITICAL: Use planned_position_mm (where we WILL BE) not actual position
-    // This prevents race conditions when queuing multiple moves rapidly
-    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
-    {
-        if (move->axis_words[axis])
-        {
-            float target_mm_machine;
-            
-            // CRITICAL FIX (Oct 21, 2025): Handle G91 (relative mode)
-            if (move->absolute_mode)
-            {
-                // G90 (absolute): target is absolute work coordinate
-                target_mm_machine = MotionMath_WorkToMachine(move->target[axis], axis);
-            }
-            else
-            {
-                // G91 (relative): target is OFFSET from current position
-                // Add the relative offset to current planned position
-                target_mm_machine = planned_position_mm[axis] + move->target[axis];
-            }
-
-            // Calculate delta from planned position (NOT actual machine position!)
-            float delta_mm = target_mm_machine - planned_position_mm[axis];
-
-            // Convert delta to steps
-            block->steps[axis] = MotionMath_MMToSteps(delta_mm, axis);
-            block->axis_active[axis] = true;
-
-#ifdef DEBUG_MOTION_BUFFER
-            // Debug: Show position calculation
-            if (axis < AXIS_Z)
-            { // Only X and Y for brevity
-                UGS_Printf("[PLAN] Axis %d: target=%.3f planned=%.3f delta=%.3f steps=%ld\r\n",
-                           axis, target_mm_machine, planned_position_mm[axis], delta_mm, block->steps[axis]);
-            }
-#endif
-
-            // Update planned position for next move (unless disabled during arc generation)
-            if (!disable_position_update)
-            {
-                planned_position_mm[axis] = target_mm_machine;
-            }
-        }
-        else
-        {
-            block->steps[axis] = 0;
-            block->axis_active[axis] = false;
-            // Planned position unchanged for this axis
-        }
-    }
-
-    // Store feedrate
-    block->feedrate = move->feedrate;
-
-    // Initialize velocities (will be optimized by look-ahead)
-    block->entry_velocity = 0.0f; // Start from rest
-    block->exit_velocity = 0.0f;  // Assume stop at end
-
-    // Calculate maximum entry velocity based on feedrate and acceleration
-    // This is the ceiling - look-ahead will optimize below this
-    float max_velocity = MotionMath_GetMaxVelocityStepsPerSec(AXIS_X) * 60.0f; // Convert to mm/min
-    block->max_entry_velocity = fminf(move->feedrate, max_velocity);
-
-    // Mark for recalculation
-    block->recalculate_flag = true;
-
-    // DEBUG: Print what we're adding to the buffer
-#ifdef DEBUG_MOTION_BUFFER
-    UGS_Printf("[DEBUG] Motion block: X=%ld Y=%ld Z=%ld (active: %d%d%d)\r\n",
-               block->steps[AXIS_X], block->steps[AXIS_Y], block->steps[AXIS_Z],
-               block->axis_active[AXIS_X], block->axis_active[AXIS_Y], block->axis_active[AXIS_Z]);
-    UGS_Printf("[DEBUG] Planned pos: X=%.3f Y=%.3f Z=%.3f\r\n",
-               planned_position_mm[AXIS_X], planned_position_mm[AXIS_Y], planned_position_mm[AXIS_Z]);
-#endif
 }
 
 /**

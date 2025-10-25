@@ -921,5 +921,7 @@ plan_status_t GRBLPlanner_BufferLine(float *target, grbl_plan_line_data_t *pl_da
  */
 uint8_t GRBLPlanner_GetPlanningThreshold(void)
 {
-    return 4;  // GRBL default: 4 blocks for optimal look-ahead
+    // TEMPORARY (Oct 25, 2025): Lowered to 1 for single-command testing
+    // TODO: Restore to 4 after arc testing complete
+    return 1;  // GRBL default: 4 blocks for optimal look-ahead
 }

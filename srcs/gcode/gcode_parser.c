@@ -814,6 +814,30 @@ bool GCode_ParseLine(const char *line, parsed_move_t *move)
                     {
                          move->feedrate = strtof(&tokenized_line.tokens[token_idx][1], NULL);
                     }
+                    else if (next_token_char == 'I')
+                    {
+                        // Arc parameter: I offset (X-axis center offset)
+                        move->arc_center_offset[AXIS_X] = strtof(&tokenized_line.tokens[token_idx][1], NULL);
+                        move->arc_has_ijk = true;
+                    }
+                    else if (next_token_char == 'J')
+                    {
+                        // Arc parameter: J offset (Y-axis center offset)
+                        move->arc_center_offset[AXIS_Y] = strtof(&tokenized_line.tokens[token_idx][1], NULL);
+                        move->arc_has_ijk = true;
+                    }
+                    else if (next_token_char == 'K')
+                    {
+                        // Arc parameter: K offset (Z-axis center offset)
+                        move->arc_center_offset[AXIS_Z] = strtof(&tokenized_line.tokens[token_idx][1], NULL);
+                        move->arc_has_ijk = true;
+                    }
+                    else if (next_token_char == 'R')
+                    {
+                        // Arc parameter: R radius (alternative to IJK)
+                        move->arc_radius = strtof(&tokenized_line.tokens[token_idx][1], NULL);
+                        move->arc_has_radius = true;
+                    }
                     else
                     {
                         // Not an axis word or feedrate, could be start of new command

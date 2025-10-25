@@ -47,6 +47,7 @@
 #include "motion/grbl_stepper.h"
 #include "motion/motion_math.h"
 #include "motion/motion_buffer.h"
+#include "motion/motion_manager.h"  // ✅ CRITICAL: TMR9 segment prep!
 
 // *****************************************************************************
 // Section: Main Entry Point
@@ -62,6 +63,7 @@ int main(void)
     UGS_Initialize();
     // Initialize GRBL planner/stepper pipeline (Phase 2B)
     GRBLPlanner_Initialize();
+    MotionManager_Initialize();  // ✅ CRITICAL: Start TMR9 for segment prep!
     MultiAxis_Initialize();
     GCode_Initialize();
 
@@ -168,9 +170,15 @@ int main(void)
                     parsed_move_t move;
                     if (GCode_ParseLine(line_start, &move))
                     {
-                        bool is_motion = (move.motion_mode <= 3) &&
-                                         (move.axis_words[0] || move.axis_words[1] || 
-                                          move.axis_words[2] || move.axis_words[3]);
+                        // CRITICAL FIX (Oct 25, 2025): G2/G3 arcs don't set axis_words, check arc flags!
+                        // LINEAR: G0/G1 (modes 0-1) with axis words present
+                        // ARC: G2/G3 (modes 2-3) with IJK or R parameters present
+                        bool is_linear_motion = (move.motion_mode <= 1) &&
+                                                (move.axis_words[0] || move.axis_words[1] || 
+                                                 move.axis_words[2] || move.axis_words[3]);
+                        bool is_arc_motion = ((move.motion_mode == 2) || (move.motion_mode == 3)) &&
+                                             (move.arc_has_ijk || move.arc_has_radius);
+                        bool is_motion = is_linear_motion || is_arc_motion;
 
                         #if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_VERBOSE
                         UGS_Printf("[MOTION] mode=%u, X=%d Y=%d Z=%d A=%d, is_motion=%d\r\n",
@@ -182,57 +190,27 @@ int main(void)
 
                         if (is_motion)
                         {
-                            // Build absolute target
-                            float target_mm[NUM_AXES];
-                            GRBLPlanner_GetPosition(target_mm);
-
-                            for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
-                            {
-                                if (move.axis_words[axis])
-                                {
-                                    if (move.absolute_mode)
-                                    {
-                                        target_mm[axis] = MotionMath_WorkToMachine(move.target[axis], axis);
-                                    }
-                                    else
-                                    {
-                                        target_mm[axis] += move.target[axis];
-                                    }
-                                }
-                            }
-
-                            // Planner line data
-                            grbl_plan_line_data_t pl_data;
-                            pl_data.feed_rate = move.feedrate;
-                            pl_data.spindle_speed = 0.0f;
-                            pl_data.condition = 0U;
-                            if (move.motion_mode == 0)
-                            {
-                                pl_data.condition |= PL_COND_FLAG_RAPID_MOTION | PL_COND_FLAG_NO_FEED_OVERRIDE;
-                            }
-
-                            // Buffer the motion into GRBL planner
-                            plan_status_t plan_result = GRBLPlanner_BufferLine(target_mm, &pl_data);
+                            /* ═══════════════════════════════════════════════════════════════
+                             * CRITICAL FIX (Oct 25, 2025): Arc Support via MotionBuffer
+                             * ═══════════════════════════════════════════════════════════════
+                             * BEFORE: Called GRBLPlanner_BufferLine() directly
+                             * PROBLEM: Bypassed arc conversion in MotionBuffer_Add()
+                             * AFTER: Use MotionBuffer_Add() which handles BOTH:
+                             *   - Linear moves (G0/G1): Passes to GRBL planner
+                             *   - Arc moves (G2/G3): Converts to segments, then buffers
+                             * ═══════════════════════════════════════════════════════════════ */
                             
-                            if (plan_result == PLAN_OK)
+                            if (MotionBuffer_Add(&move))
                             {
-                                // ✅ SUCCESS: Buffer accepted - send "ok" and reset
+                                /* ✅ SUCCESS: Buffer accepted move (or arc converted) */
                                 UGS_SendOK();
                                 line_pos = 0;
-                                pending_retry = false;  // Clear retry flag
+                                pending_retry = false;
                             }
-                            else if (plan_result == PLAN_BUFFER_FULL)
+                            else
                             {
-                                // ⏳ TEMPORARY: Buffer full - set retry flag, keep line buffered
+                                /* ⏳ BUFFER FULL: Retry on next loop iteration */
                                 pending_retry = true;
-                            }
-                            else /* plan_result == PLAN_EMPTY_BLOCK */
-                            {
-                                // ❌ PERMANENT: Zero-length move - send "ok" but don't add to buffer
-                                // This is NOT an error - just silently ignore redundant positioning
-                                UGS_SendOK();
-                                line_pos = 0;
-                                pending_retry = false;  // Clear retry flag
                             }
                         }
                         else

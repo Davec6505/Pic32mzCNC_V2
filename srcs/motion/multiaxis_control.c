@@ -743,6 +743,35 @@ static void Execute_Bresenham_Strategy_Internal(axis_id_t dominant_axis, const s
             sub_state->bresenham_counter -= (int32_t)n_step;
 
             // ═════════════════════════════════════════════════════════════════════
+            // CRITICAL FIX (Oct 25, 2025): Set direction GPIO BEFORE pulse trigger!
+            // DRV8825 requires direction stable before step pulse (200ns setup time)
+            // ═════════════════════════════════════════════════════════════════════
+            bool dir_negative = (segment->direction_bits & (1 << sub_axis)) != 0;
+            
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_VERBOSE
+            // DEBUG: Track direction changes for subordinate axes
+            static uint8_t last_dir_bits[NUM_AXES] = {0};
+            uint8_t current_dir_bit = dir_negative ? 1 : 0;
+            if (current_dir_bit != last_dir_bits[sub_axis])
+            {
+                UGS_Printf("[DIR_CHG] Sub axis %u: %s -> %s\r\n",
+                           sub_axis,
+                           last_dir_bits[sub_axis] ? "NEG" : "POS",
+                           current_dir_bit ? "NEG" : "POS");
+                last_dir_bits[sub_axis] = current_dir_bit;
+            }
+#endif
+            
+            if (dir_negative)
+            {
+                dir_clear_funcs[sub_axis]();  // Set GPIO LOW for negative
+            }
+            else
+            {
+                dir_set_funcs[sub_axis]();    // Set GPIO HIGH for positive
+            }
+
+            // ═════════════════════════════════════════════════════════════════════
             // OCR PULSE: Trigger one hardware pulse using MCC PLIB functions!
             // ═════════════════════════════════════════════════════════════════════
             // Pattern (from mikroC verified working code):
@@ -760,25 +789,25 @@ static void Execute_Bresenham_Strategy_Internal(axis_id_t dominant_axis, const s
             case AXIS_X:
                 OCMP5_CompareValueSet(5);          // OCxR: Rising edge
                 OCMP5_CompareSecondaryValueSet(36); // OCxRS: Falling edge (31 count pulse)
-                TMR3 = 0xFFFF;                      // Force immediate rollover (AXIS_X uses TMR3)
+                TMR3 = 0xFFFF;                      // Force immediate rollover (timer already running)
                 OCMP5_Enable();                     // Restart OCR module
                 break;
             case AXIS_Y:
                 OCMP1_CompareValueSet(5);
                 OCMP1_CompareSecondaryValueSet(36);
-                TMR4 = 0xFFFF;
+                TMR4 = 0xFFFF;                      // Force immediate rollover (timer already running)
                 OCMP1_Enable();
                 break;
             case AXIS_Z:
                 OCMP4_CompareValueSet(5);
                 OCMP4_CompareSecondaryValueSet(36);
-                TMR2 = 0xFFFF;                      // AXIS_Z uses TMR2 per hardware table
+                TMR2 = 0xFFFF;                      // Force immediate rollover (timer already running)
                 OCMP4_Enable();
                 break;
             case AXIS_A:
                 OCMP3_CompareValueSet(5);
                 OCMP3_CompareSecondaryValueSet(36);
-                TMR5 = 0xFFFF;
+                TMR5 = 0xFFFF;                      // Force immediate rollover (timer already running)
                 OCMP3_Enable();
                 break;
             default:
@@ -1084,13 +1113,15 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // STEP 3: Stop dominant axis hardware
+    // STEP 3: Stop dominant axis OCR (leave timer running)
     // ═════════════════════════════════════════════════════════════════════════
-    // Dominant reached n_step - safe to stop hardware now!
+    // Dominant reached n_step - safe to disable OCR now!
     // Subordinates are within +/- 1 step (acceptable Bresenham rounding error)
+    // OPTIMIZATION (Oct 25): Keep timer running - only disable OCR to stop pulses
+    // PIC32 datasheet: Starting/stopping timers has synchronization penalty
     // ═════════════════════════════════════════════════════════════════════════
     axis_hw[dominant_axis].OCMP_Disable();
-    axis_hw[dominant_axis].TMR_Stop();
+    // NOTE: Timer keeps running - no TMR_Stop() call (optimization)
 
     // CRITICAL FIX (Oct 20, 2025): Clear dominant's active flag AND bitmask NOW!
     // Don't wait for next_seg==NULL - clear it as soon as hardware stops
@@ -1130,7 +1161,8 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
         /* ✅ CRITICAL FIX (Oct 24): Clear motion guard when segments drain */
         motion_active = false;
         
-        // No more segments - STOP ALL AXES FIRST!
+        // No more segments - DISABLE ALL OCR modules (leave timers running)
+        // OPTIMIZATION (Oct 25): Keep timers running to avoid start/stop penalty
         // SANITY CHECK (Oct 21, 2025): Verify commanded vs executed steps
         for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
         {
@@ -1163,8 +1195,9 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
             ax_state->bresenham_counter = 0;
 
             // Disable OCR hardware (both dominant and subordinate)
+            // OPTIMIZATION (Oct 25): Keep timers running - only disable OCR
             axis_hw[axis].OCMP_Disable();
-            axis_hw[axis].TMR_Stop();
+            // NOTE: No TMR_Stop() - timers keep running for efficiency
         }
 
         // NOW safe to clear bitmask (axes already inactive)
@@ -1292,6 +1325,21 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
         
         // Set direction GPIO for NEW dominant axis
         bool dir_negative = (next_seg->direction_bits & (1 << new_dominant_axis)) != 0;
+        
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_VERBOSE
+        // DEBUG: Track direction changes for dominant axis
+        static uint8_t last_dom_dir_bits[NUM_AXES] = {0};
+        uint8_t current_dir_bit = dir_negative ? 1 : 0;
+        if (current_dir_bit != last_dom_dir_bits[new_dominant_axis])
+        {
+            UGS_Printf("[DIR_CHG] Dom axis %u: %s -> %s\r\n",
+                       new_dominant_axis,
+                       last_dom_dir_bits[new_dominant_axis] ? "NEG" : "POS",
+                       current_dir_bit ? "NEG" : "POS");
+            last_dom_dir_bits[new_dominant_axis] = current_dir_bit;
+        }
+#endif
+        
         switch (new_dominant_axis)
         {
         case AXIS_X:
@@ -1494,8 +1542,8 @@ static void OCMP5_StepCounter_X(uintptr_t context)
         /* A. Disable OCR - stop continuous pulsing */
         OCMP5_Disable();
         
-        /* B. Stop timer - wait for Bresenham trigger */
-        TMR3_Stop();
+        /* B. OPTIMIZATION (Oct 25): Keep timer running - no stop/start penalty */
+        // NOTE: Timer keeps running, OCR disable stops pulses
         
         /* C. Update state for next ISR */
         axis_was_dominant_last_isr[axis] = false;
@@ -1504,7 +1552,7 @@ static void OCMP5_StepCounter_X(uintptr_t context)
     {
         /* ✅ SUBORDINATE: Pulse completed (triggered by Bresenham 0xFFFF), auto-disable */
         OCMP5_Disable();
-        TMR3_Stop();
+        // OPTIMIZATION (Oct 25): Keep timer running - Bresenham will trigger next pulse
     }
 }
 
@@ -1609,8 +1657,8 @@ static void OCMP1_StepCounter_Y(uintptr_t context)
         /* A. Disable OCR - stop continuous pulsing */
         OCMP1_Disable();
         
-        /* B. Stop timer - wait for Bresenham trigger */
-        TMR4_Stop();
+        /* B. OPTIMIZATION (Oct 25): Keep timer running - no stop/start penalty */
+        // NOTE: Timer keeps running, OCR disable stops pulses
         
         /* C. Update state for next ISR */
         axis_was_dominant_last_isr[axis] = false;
@@ -1619,7 +1667,7 @@ static void OCMP1_StepCounter_Y(uintptr_t context)
     {
         /* ✅ SUBORDINATE: Pulse completed (triggered by Bresenham 0xFFFF), auto-disable */
         OCMP1_Disable();
-        TMR4_Stop();
+        // OPTIMIZATION (Oct 25): Keep timer running - Bresenham will trigger next pulse
     }
 }
 
@@ -1724,8 +1772,8 @@ static void OCMP4_StepCounter_Z(uintptr_t context)
         /* A. Disable OCR - stop continuous pulsing */
         OCMP4_Disable();
         
-        /* B. Stop timer - wait for Bresenham trigger */
-        TMR2_Stop();
+        /* B. OPTIMIZATION (Oct 25): Keep timer running - no stop/start penalty */
+        // NOTE: Timer keeps running, OCR disable stops pulses
         
         /* C. Update state for next ISR */
         axis_was_dominant_last_isr[axis] = false;
@@ -1734,7 +1782,7 @@ static void OCMP4_StepCounter_Z(uintptr_t context)
     {
         /* ✅ SUBORDINATE: Pulse completed (triggered by Bresenham 0xFFFF), auto-disable */
         OCMP4_Disable();
-        TMR2_Stop();
+        // OPTIMIZATION (Oct 25): Keep timer running - Bresenham will trigger next pulse
     }
 }
 
@@ -1835,8 +1883,8 @@ static void OCMP3_StepCounter_A(uintptr_t context)
         /* A. Disable OCR - stop continuous pulsing */
         OCMP3_Disable();
         
-        /* B. Stop timer - wait for Bresenham trigger */
-        TMR5_Stop();
+        /* B. OPTIMIZATION (Oct 25): Keep timer running - no stop/start penalty */
+        // NOTE: Timer keeps running, OCR disable stops pulses
         
         /* C. Update state for next ISR */
         axis_was_dominant_last_isr[axis] = false;
@@ -1845,7 +1893,7 @@ static void OCMP3_StepCounter_A(uintptr_t context)
     {
         /* ✅ SUBORDINATE: Pulse completed (triggered by Bresenham 0xFFFF), auto-disable */
         OCMP3_Disable();
-        TMR5_Stop();
+        // OPTIMIZATION (Oct 25): Keep timer running - Bresenham will trigger next pulse
     }
 }
 #endif
@@ -2415,14 +2463,14 @@ bool MultiAxis_StartSegmentExecution(void)
 
         // CRITICAL FIX (Oct 19, 2025): If axis is active but NOT dominant in new segment,
         // it must transition from OCR (dominant) to bit-bang (subordinate)!
-        // Stop its OCR hardware before continuing.
+        // Disable OCR hardware before continuing (leave timer running).
         bool is_dominant = (segment_completed_by_axis & (1 << axis)) != 0;
 
         if (state->active && !is_dominant && first_seg->steps[axis] > 0)
         {
-            // Axis was dominant, now subordinate → STOP OCR hardware
+            // Axis was dominant, now subordinate → DISABLE OCR (timer keeps running)
             axis_hw[axis].OCMP_Disable();
-            axis_hw[axis].TMR_Stop();
+            // OPTIMIZATION (Oct 25): No TMR_Stop() - timer stays running
 
             // CRITICAL FIX (Oct 20, 2025): Set active=false for subordinates!
             // Subordinates are bit-banged, not independently executing
