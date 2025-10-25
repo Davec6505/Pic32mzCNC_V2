@@ -121,6 +121,9 @@ extern "C"
         float g28_position[NUM_AXES]; /* G28 home position */
         float g30_position[NUM_AXES]; /* G30 secondary home position */
 
+        /* Current position (CRITICAL: Exact mm tracking without rounding!) */
+        float position[NUM_AXES]; /* Current position in machine coordinates (mm) */
+
         /* Work coordinate systems (G54-G59) */
         float wcs_offsets[6][NUM_AXES]; /* 6 work coordinate systems */
     } parser_modal_state_t;
@@ -341,6 +344,17 @@ extern "C"
      * @return Pointer to current modal state structure
      */
     const parser_modal_state_t *GCode_GetModalState(void);
+
+    /**
+     * @brief Update modal position after successful motion planning
+     * 
+     * CRITICAL: Call this AFTER GRBLPlanner_BufferLine() succeeds to update
+     * the parser's position tracker. This prevents rounding errors from
+     * step-to-mm conversions in the planner.
+     * 
+     * @param target_mm New position in machine coordinates (mm)
+     */
+    void GCode_UpdatePosition(const float *target_mm);
 
     /**
      * @brief Reset modal state to defaults (G90, G21, G17, G94)

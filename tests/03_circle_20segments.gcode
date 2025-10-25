@@ -16,17 +16,11 @@ G90 ; absolute mode
 G17 ; XY plane
 G94 ; units per minute feed rate
 M3 S1000 ; spindle on
-
 ; Safety: Raise to 5mm
-G0 Z5
-
+G0 Z5   
 ; Move to start position (10mm, 0mm)
-G0 X10 Y0
-
-; Lower to working height
-G0 Z0
-
-; 20-segment circle approximation (radius = 10mm, center at origin)
+G0 X10 Y0 ; Lower to working height
+G0 Z0 ; 20-segment circle approximation (radius = 10mm, center at origin)
 ; Feedrate: 1000 mm/min for junction testing
 G1 X9.511 Y3.090 F1000
 G1 X8.090 Y5.878
@@ -48,13 +42,10 @@ G1 X5.878 Y-8.090
 G1 X8.090 Y-5.878
 G1 X9.511 Y-3.090
 G1 X10.000 Y0.000
-
 ; Retract to safety height
 G0 Z5
-
 ; Return to origin
 G0 X0 Y0
-
 M5 ; spindle off
 
 ; ========================================

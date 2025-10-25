@@ -321,6 +321,7 @@ void GCode_Initialize(void)
     memset(modal_state.g92_offset, 0, sizeof(modal_state.g92_offset));
     memset(modal_state.g28_position, 0, sizeof(modal_state.g28_position));
     memset(modal_state.g30_position, 0, sizeof(modal_state.g30_position));
+    memset(modal_state.position, 0, sizeof(modal_state.position)); /* CRITICAL: Initialize current position */
     memset(modal_state.wcs_offsets, 0, sizeof(modal_state.wcs_offsets));
 
     /* Clear line buffer */
@@ -959,6 +960,36 @@ static axis_id_t GCode_CharToAxis(char c)
 void GCode_ResetModalState(void)
 {
     GCode_Initialize();
+}
+
+/**
+ * @brief Get current modal state (read-only access)
+ * 
+ * @return Pointer to current modal state structure
+ */
+const parser_modal_state_t *GCode_GetModalState(void)
+{
+    return &modal_state;
+}
+
+/**
+ * @brief Update modal position after successful motion planning
+ * 
+ * CRITICAL: This function updates the parser's internal position tracker
+ * with the exact target coordinates that were sent to the planner. This
+ * prevents rounding errors from accumulating when converting between
+ * steps and mm in the planner.
+ * 
+ * Call this AFTER GRBLPlanner_BufferLine() succeeds.
+ * 
+ * @param target_mm New position in machine coordinates (mm)
+ */
+void GCode_UpdatePosition(const float *target_mm)
+{
+    if (target_mm != NULL)
+    {
+        (void)memcpy(modal_state.position, target_mm, sizeof(modal_state.position));
+    }
 }
 
 //=============================================================================

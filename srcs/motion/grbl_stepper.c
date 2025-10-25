@@ -180,6 +180,9 @@ static void prep_new_block(void)
     // DEBUG: Count blocks fetched from planner (REMOVE AFTER DEBUG!)
     // ═══════════════════════════════════════════════════════════════════════
     static uint32_t block_fetch_count = 0;
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_STEPPER
+    static bool last_null_reported = false;
+#endif
     // ═══════════════════════════════════════════════════════════════════════
 
     // Get next block from planner
@@ -187,14 +190,33 @@ static void prep_new_block(void)
     if (prep.current_block == NULL)
     {
         prep.block_active = false;
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_STEPPER
+        if (!last_null_reported) {
+            UGS_Printf("[STEPPER] prep_new_block: NULL from planner (planner empty)\r\n");
+            last_null_reported = true;
+        }
+#endif
         return; // No blocks available
     }
+
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_STEPPER
+    // Reset null flag when we get a block
+    last_null_reported = false;
+#endif
 
     // ═══════════════════════════════════════════════════════════════════════
     // DEBUG: Count new blocks (LED2 pattern: Clear = new block, Set = discard)
     // ═══════════════════════════════════════════════════════════════════════
     block_fetch_count++;
     LED2_Clear(); // LED2 OFF = new block fetched (expect: 1 time for G0 Z5)
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_STEPPER
+    UGS_Printf("[STEPPER] prep_new_block: Got block, mm=%.3f steps=(%lu,%lu,%lu,%lu)\r\n",
+               prep.current_block->millimeters,
+               prep.current_block->steps[AXIS_X],
+               prep.current_block->steps[AXIS_Y],
+               prep.current_block->steps[AXIS_Z],
+               prep.current_block->steps[AXIS_A]);
+#endif
     // ═══════════════════════════════════════════════════════════════════════
 
     // Initialize prep state for new block
@@ -404,6 +426,10 @@ static bool prep_segment(void)
         // Block complete, discard from planner
         GRBLPlanner_DiscardCurrentBlock();
         prep.block_active = false;
+        
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_STEPPER
+        UGS_Printf("[STEPPER] Block complete - block_active set to FALSE\r\n");
+#endif
     }
 
     return true;

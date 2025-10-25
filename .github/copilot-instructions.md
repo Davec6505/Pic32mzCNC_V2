@@ -1,5 +1,107 @@
 # PIC32MZ CNC Motion Controller V2 - AI Coding Guide
 
+## ⚠️ CRITICAL FIXES - OCTOBER 25, 2025 ✅
+
+### 🎉 **MAJOR SUCCESS: Infinite Retry Loop FIXED!**
+
+**Problem Discovered (Oct 25, 2025 Evening):**
+- First circle test completed successfully ✅
+- On **second run**, system hung with infinite retry loop
+- Debug output showed: `[PARSE] 'G0Z5'` repeated forever (100+ times)
+- Root cause: `G0Z5` command tried to move to Z=5 when **already at Z=5**
+- Planner correctly rejected as zero-length block
+- Main loop incorrectly assumed rejection = buffer full → retry forever!
+
+**The Fix - Tri-State Return System:**
+```c
+// NEW: grbl_planner.h
+typedef enum {
+    PLAN_OK = 1,          // Block successfully added to buffer
+    PLAN_BUFFER_FULL = 0, // Buffer full - temporary, RETRY after waiting
+    PLAN_EMPTY_BLOCK = -1 // Zero-length block - permanent, DO NOT RETRY
+} plan_status_t;
+
+// NEW: main.c smart retry logic
+plan_status_t plan_result = GRBLPlanner_BufferLine(target_mm, &pl_data);
+
+if (plan_result == PLAN_OK) {
+    UGS_SendOK();          // ✅ SUCCESS: Send "ok" and continue
+    pending_retry = false;
+}
+else if (plan_result == PLAN_BUFFER_FULL) {
+    pending_retry = true;  // ⏳ TEMPORARY: Retry after waiting
+}
+else /* PLAN_EMPTY_BLOCK */ {
+    UGS_SendOK();          // ❌ PERMANENT: Silently ignore, send "ok"
+    pending_retry = false; // Don't retry zero-length moves!
+}
+```
+
+**Result:**
+- ✅ First circle completes successfully
+- ✅ Second run processes redundant `G0Z5` without hanging
+- ✅ System sends "ok" and continues to next command
+- ✅ No more infinite retry loops!
+- ✅ LED stays blinking, UGS remains connected
+
+**Files Modified:**
+1. `incs/motion/grbl_planner.h` - Added `plan_status_t` enum (lines 110-117)
+2. `srcs/motion/grbl_planner.c` - Updated return values (lines 670, 683, 748, 920)
+3. `srcs/main.c` - Smart retry logic (lines 218-239)
+
+### 🐛 **NEW ISSUE IDENTIFIED: Subordinate Axis Pulses Not Running (Oct 25, 2025)**
+
+**Observation from Hardware Testing:**
+- UGS graphics show correct interpolation (diagonal moves displayed)
+- Planner debug shows correct calculations (`[PLAN]` messages)
+- **BUT**: Subordinate axes not physically moving!
+- Dominant axis pulses working correctly
+- Subordinate OCR pulses not being generated
+
+**Next Steps:**
+1. Add debug to `ProcessSegmentStep()` in `multiaxis_control.c`
+2. Verify Bresenham triggers subordinate pulse setup
+3. Check if `OCMP_CompareValueSet()` being called for subordinates
+4. Oscilloscope verification of subordinate step pins
+
+**Status**: ⏳ Investigation pending (current focus)
+
+---
+
+### 🎛️ **DEBUG SYSTEM EVOLUTION (October 25, 2025)**
+
+**TIERED DEBUG LEVELS - 8-Level Hierarchical System:**
+
+Previous system flooded serial with 100Hz ISR messages. New system provides selective verbosity:
+
+```c
+// motion_types.h - Debug Level Definitions
+#define DEBUG_LEVEL_NONE     0  // Production (no debug output)
+#define DEBUG_LEVEL_CRITICAL 1  // <1 msg/sec  (buffer overflow, fatal errors)
+#define DEBUG_LEVEL_PARSE    2  // ~10 msg/sec (command parsing)
+#define DEBUG_LEVEL_PLANNER  3  // ~10 msg/sec (motion planning) ⭐ RECOMMENDED
+#define DEBUG_LEVEL_STEPPER  4  // ~10 msg/sec (state machine transitions)
+#define DEBUG_LEVEL_SEGMENT  5  // ~50 msg/sec (segment execution)
+#define DEBUG_LEVEL_VERBOSE  6  // ~100 msg/sec (high-frequency events)
+#define DEBUG_LEVEL_ALL      7  // >1000 msg/sec (CAUTION: floods serial!)
+```
+
+**Build Commands:**
+```bash
+make all BUILD_CONFIG=Debug DEBUG_MOTION_BUFFER=3  # Level 3 (RECOMMENDED)
+make all BUILD_CONFIG=Debug DEBUG_MOTION_BUFFER=4  # Add stepper debug
+make all BUILD_CONFIG=Debug DEBUG_MOTION_BUFFER=0  # Production (no debug)
+```
+
+**Current Testing Configuration:**
+- **Active Level**: 3 (PLANNER)
+- **Output**: `[PARSE]`, `[PLAN]`, `[JUNC]`, `[GRBL]` messages
+- **Result**: Clean, informative output without serial flooding
+
+**Documentation**: See `docs/DEBUG_LEVELS_QUICK_REF.md` for complete reference
+
+---
+
 ## ⚠️ CRITICAL MAKEFILE ARCHITECTURE (October 22, 2025)
 
 **NEVER MODIFY BUILD CONFIGURATION LOGIC IN srcs/Makefile DIRECTLY!**
@@ -881,9 +983,133 @@ After rebuild with 512-byte buffers:
 - **Documentation**: See `docs/TIMER_PRESCALER_ANALYSIS.md` for full analysis
 - **Status**: ✅ Ready for rebuild and hardware testing!
 
-## ⚠️ CRITICAL KNOWN ISSUES (October 22, 2025)
+## ⚠️ CRITICAL KNOWN ISSUES (October 25, 2025)
 
-### � Circular Interpolation - Arc-to-Segment Conversion (IMPLEMENTED - TESTING PENDING)
+### � **NEW ISSUE: Subordinate Axis Pulses Not Running (Oct 25, 2025)** ⚡ **CURRENT FOCUS**
+
+**Observation from Hardware Testing:**
+- ✅ UGS graphics show correct interpolation (diagonal moves displayed correctly)
+- ✅ Planner debug shows correct calculations (`[PLAN]` messages with step counts)
+- ✅ Dominant axis pulses working correctly (moves physically)
+- ❌ **Subordinate axes not physically moving!**
+- ❌ Subordinate OCR pulses not being generated
+
+**Evidence:**
+- Infinite retry loop **FIXED** - system no longer hangs ✅
+- Tri-state return system working correctly ✅
+- Debug level 3 produces clean output ✅
+- First and second circle tests complete without hanging ✅
+- BUT: Only dominant axis moves physically
+
+**Next Steps:**
+1. Add debug to `ProcessSegmentStep()` in `multiaxis_control.c`
+2. Verify Bresenham algorithm triggers subordinate pulse setup
+3. Check if `OCMP_CompareValueSet()` being called for subordinate axes
+4. Oscilloscope verification of subordinate step pins (Y/Z/A when X dominant)
+5. Verify subordinate OCR enable/disable sequence
+
+**Hypothesis:**
+- Bresenham calculation may be correct (graphics work)
+- Pulse generation for subordinates may not be triggered
+- OCR setup for subordinate axes may be incomplete
+
+**Status**: ⚡ **Active investigation - hardware testing revealed**
+
+---
+
+### 🎉 **RESOLVED: Infinite Retry Loop (Oct 25, 2025)** ✅ **COMPLETE**
+
+**Problem:**
+- System hung after first successful circle completion
+- Debug showed `[PARSE] 'G0Z5'` repeated infinitely
+- Root cause: Zero-length move (already at Z=5) treated as buffer full
+
+**Solution Implemented:**
+- Added tri-state return: `PLAN_OK`, `PLAN_BUFFER_FULL`, `PLAN_EMPTY_BLOCK`
+- Main loop now distinguishes temporary vs permanent rejections
+- Zero-length moves send "ok" and continue (not retry forever)
+
+**Result:**
+- ✅ First circle completes successfully
+- ✅ Second run processes redundant `G0Z5` without hanging
+- ✅ System continues to next command
+- ✅ LED stays blinking, UGS remains connected
+
+**Files Modified:**
+1. `incs/motion/grbl_planner.h` - Added `plan_status_t` enum
+2. `srcs/motion/grbl_planner.c` - Updated return values
+3. `srcs/main.c` - Smart retry logic
+
+**Status**: ✅ **Fixed and verified with hardware**
+
+---
+
+### 🔴 **DEFERRED: Circular Motion Diagonal Line Issue (October 25, 2025)**
+
+**CRITICAL ISSUE - CURRENTLY DEBUGGING:**
+
+**Symptom**: 
+- 20-segment circle test (03_circle_20segments.gcode) executes as straight diagonal line
+- All 20 G1 commands parsed correctly, showing perfect [PLAN] debug output
+- Junction velocity calculations mathematically correct (cos=-0.95 for 162°)
+- Machine moves to (130mm, -30mm, 5mm) instead of tracing 20mm diameter circle
+- Only **ONE** segment starts: `[SEG_START] Dominant=Z` for initial G0 Z5 move
+- **NO [SEG_START] messages for any of the 20 circle moves!**
+
+**Debug Evidence (October 25, 2025 Test Run):**
+```
+[PLAN] pl.pos=(10.000,0.000) tgt=(9.511,3.090) delta=(-31,198) steps=(31,198)  ✅ Correct
+[PLAN] pl.pos=(9.511,3.090) tgt=(8.090,5.878) delta=(-91,178) steps=(91,178)  ✅ Correct
+... (18 more perfect [PLAN] messages)
+[MAIN] Planner=1 Stepper=0  ❌ ONLY ONE [MAIN] message - buffer stuck!
+[SEG_START] Dominant=Z ...  ✅ Only for Z-axis move
+<NO [SEG_START] FOR CIRCLE MOVES>  ❌ Segments not being prepared!
+<Run|MPos:130.031,-30.016,5.000|WPos:130.031,-30.016,5.000>  ❌ Diagonal path!
+```
+
+**Root Cause Analysis:**
+1. ✅ **Parser working**: All 20 blocks show [TARGET] and [PLAN] debug with exact positions
+2. ✅ **Planner working**: Junction calculations perfect, blocks added to buffer
+3. ✅ **Position tracking**: Dual exact mm tracking (no rounding errors)
+4. ❌ **Segment preparation NOT working**: TMR9 ISR not generating segments for circle
+5. ❌ **Only 1 block in planner**: Buffer count stuck at 1 (should accumulate to 4+)
+6. ❌ **Execution threshold blocking**: Main loop waits for 4 blocks, but buffer stays at 1
+
+**Current Investigation (October 25, 2025 - Evening Session):**
+- **Hypothesis**: TMR9 ISR consuming blocks faster than they accumulate
+- **Test**: Reduced execution threshold from 4 blocks → 1 block (line 280 main.c)
+- **Expected**: Should see [MAIN] messages showing Planner=2, 3, 4... as buffer fills
+- **Expected**: Should see [SEG_START] messages for each circle block
+- **Status**: ⏳ **NEW FIRMWARE BUILT** - bins/Debug/CS23.hex ready for testing
+
+**Code Changes Made:**
+```c
+// srcs/main.c line 280 (TEMPORARY for debugging):
+bool should_start_new = (planner_count >= 1);  // Was: >= 4
+```
+
+**Next Debug Steps:**
+1. Flash new firmware and re-run circle test
+2. Monitor for multiple [MAIN] messages showing buffer accumulation
+3. Check if [SEG_START] messages appear for circle moves
+4. If still diagonal: Add debug to TMR9 ISR (motion_manager.c) to see if it's running
+5. If still diagonal: Add debug to grbl_stepper.c to see segment prep flow
+
+**Files Involved:**
+- `srcs/main.c` - Execution threshold check (line 280)
+- `srcs/motion/motion_manager.c` - TMR9 ISR for segment preparation
+- `srcs/motion/grbl_stepper.c` - Segment buffer and prep logic
+- `srcs/motion/grbl_planner.c` - Block buffer and planning
+- `srcs/motion/multiaxis_control.c` - Segment execution
+
+**Related Documentation:**
+- `docs/DIAGONAL_MOVE_DEBUG_OCT19_NIGHT.md` - Previous similar issue (resolved)
+- `docs/PHASE2B_SEGMENT_EXECUTION.md` - Segment architecture overview
+- `docs/GRBL_PLANNER_PORT_COMPLETE.md` - Planner implementation details
+
+---
+
+### 🔄 Circular Interpolation - Arc-to-Segment Conversion (IMPLEMENTED - TESTING PENDING)
 - **Issue**: G2/G3 arc commands were not executing properly in Universal G-code Sender
 - **Status**: ✅ **IMPLEMENTATION COMPLETE (October 22, 2025)** - ⏳ **HARDWARE TESTING PENDING**
 - **Solution**: Implemented GRBL-style arc-to-segment conversion algorithm
@@ -903,48 +1129,56 @@ After rebuild with 512-byte buffers:
 - **Next Steps**: Flash firmware and test with actual G2/G3 commands
 - **Priority**: HIGH - Implementation complete, needs hardware verification
 
-## ⚠️ CURRENT STATUS: Motion Execution Complete! (October 23, 2025)
+## ⚠️ CURRENT STATUS: Critical Progress! (October 25, 2025)
+
+**🎉 MAJOR BREAKTHROUGH (October 25, 2025 Evening):**
+- ✅ **Infinite Retry Loop FIXED!** - System no longer hangs on second circle run
+- ✅ **Tri-State Return System** - Distinguishes buffer full vs zero-length moves
+- ✅ **Debug System Complete** - 8-level tiered system prevents serial flooding
+- ✅ **Multiple Test Runs** - First and second circles complete without hanging
+- ⚠️ **NEW ISSUE IDENTIFIED**: Subordinate axes not physically moving (graphics show interpolation correctly)
 
 **Latest Progress**: 
-- ✅ Fixed driver enable pins - all axes moving physically! System fully operational.
-- ✅ Multi-configuration build system complete (Default/Debug/Release)
-- ✅ Shared library build system implemented and working
-- ⚠️ Circular interpolation (G2/G3) needs debugging in UGS
-- ✅ Input sanitization guard added (Oct 23): filters extended/non-printable bytes before line buffering
-- ✅ Optional plan logging added (Oct 23): DEBUG_MOTION_BUFFER prints each buffered target (G, XYZ[A], F)
+- ✅ **Infinite retry loop eliminated** - Redundant G0Z5 commands no longer cause infinite parsing
+- ✅ **Tiered debug system** - Level 3 (PLANNER) provides clean output without flooding
+- ✅ **Serial communication robust** - No more parsing errors or buffer overflow
+- ✅ **Zero-length move handling** - System correctly ignores redundant positioning commands
+- ⚠️ **Subordinate axis investigation** - Dominant axis moves, subordinates don't (next focus)
 
 **Current Testing Focus** 🎯:
+- **✅ INFINITE RETRY LOOP** - FIXED with tri-state return (Oct 25, 2025)
+- **✅ DEBUG SYSTEM** - 8 levels implemented, level 3 recommended for testing
 - **✅ SERIAL COMMUNICATION** - Robust, no more parsing errors
-- **✅ COMMAND PROCESSING** - 16x ProcessCommandBuffer() per loop drains buffer efficiently  
-- **✅ ZERO-STEP FILTERING** - G0 X0 Y0 blocks no longer clog motion buffer
-- **✅ SINGLE-AXIS MOTION** - Axes with zero velocity explicitly deactivated
-- **✅ ALL COMMANDS PARSED** - G1 commands reach parser and execute correctly
-- **✅ MOTION EXECUTION** - All axes moving physically, rectangle path completes successfully
-- **✅ DRIVER ENABLE FIX** - Critical fix applied (Oct 21): Enable driver on dominant axis transitions
-- **✅ POSITION TRACKING** - Returns to origin perfectly (0.000, 0.000, 0.000)
-- **⏳ ACCURACY VERIFICATION** - Pending: Update $100=64 for T2.5 belt (currently $100=80 for GT2)
+- **✅ COMMAND PROCESSING** - Multi-command streaming working correctly
+- **✅ DOMINANT AXIS MOTION** - Physical movement verified on hardware
+- **⚠️ SUBORDINATE AXES** - Graphics interpolate, but no physical pulses (ACTIVE INVESTIGATION)
+- **✅ POSITION TRACKING** - UGS graphics show correct interpolation
+- **✅ PLANNER CALCULATIONS** - `[PLAN]` debug shows correct step counts
 
-**Critical Discovery** (October 21, 2025 Evening):
-- **Problem**: Y-axis calculated correctly but didn't move physically during streaming
-- **Debug**: Oscilloscope confirmed step pulses present on ALL axes (X, Y, Z)
-- **Root Cause**: DRV8825 ENABLE pins not being set when dominant axis changed
-- **Solution**: Added `MultiAxis_EnableDriver(new_dominant_axis)` in segment auto-advance (line 1095)
-- **Result**: User confirmed **"BINGO"** - all axes now moving physically!
+**Debug Configuration (October 25, 2025):**
+- **Active Level**: 3 (PLANNER)
+- **Build Command**: `make all BUILD_CONFIG=Debug DEBUG_MOTION_BUFFER=3`
+- **Output**: `[PARSE]`, `[PLAN]`, `[JUNC]`, `[GRBL]` messages
+- **Result**: Clean, informative output without serial flooding
+- **Documentation**: See `docs/DEBUG_LEVELS_QUICK_REF.md`
 
-**Hardware Configuration Discovery** (October 21, 2025):
-- **Belt Type**: T2.5 (2.5mm pitch), NOT GT2 (2.0mm pitch)!
-- **Correct steps/mm**: 64 (not 80)
-- **Calculation**: 3200 steps/rev ÷ (20 teeth × 2.5mm) = 64 steps/mm
-- **Current setting**: $100=80, $101=80, $103=80 (wrong for T2.5)
-- **Required update**: $100=64, $101=64, $103=64
-- **Documentation**: See Datasheet/.text/commands.txt for full reference
+**Hardware Testing Results (October 25, 2025):**
+- ✅ UGS connects successfully as "GRBL 1.1f"
+- ✅ First circle completes successfully
+- ✅ Second circle run doesn't hang (infinite retry loop fixed!)
+- ✅ Graphics show correct interpolation (diagonal moves)
+- ✅ Planner shows correct calculations (`[PLAN]` messages)
+- ⚠️ Dominant axis moves physically
+- ❌ Subordinate axes don't move physically (OCR pulses not generated)
 
-**Sanity Check System** (Added October 21, 2025):
-- **Purpose**: Detect pulse delivery errors during block execution
-- **Mechanism**: Compare `block_steps_commanded` vs `block_steps_executed`
-- **Error Output**: `ERROR: X axis step mismatch! Commanded=8000, Executed=7998, Diff=-2`
-- **Location**: multiaxis_control.c lines 974-998 (block completion code)
-- **Status**: ✅ Implemented, ready for testing
+**Critical Discovery** (October 25, 2025 Evening):
+- **Problem #1 (FIXED)**: System hung after first circle with infinite `[PARSE] 'G0Z5'` messages
+- **Root Cause**: Zero-length move treated as temporary buffer full → retry forever
+- **Solution**: Tri-state return (`PLAN_OK`, `PLAN_BUFFER_FULL`, `PLAN_EMPTY_BLOCK`)
+- **Result**: System sends "ok" for zero-length moves and continues
+- **Problem #2 (ACTIVE)**: Subordinate axes not moving physically
+- **Observation**: Graphics interpolate correctly, planner calculates correctly, but no physical motion
+- **Next Step**: Debug Bresenham pulse generation for subordinate axes
 
 **Current Working System** ✅:
 - **Full GRBL v1.1f protocol**: All system commands ($I, $G, $$, $#, $N, $), real-time commands (?, !, ~, ^X)

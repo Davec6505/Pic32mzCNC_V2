@@ -122,6 +122,7 @@ static uint8_t block_buffer_planned = 0;
 typedef struct
 {
     int32_t position[NUM_AXES];        // Planned position (steps)
+    float position_mm[NUM_AXES];       // Exact planned position (mm) - prevents rounding accumulation
     float previous_unit_vec[NUM_AXES]; // Unit vector of previous move
     float previous_nominal_speed;    // Nominal speed of previous move (mm/min)
 } planner_state_t;
@@ -349,10 +350,52 @@ uint8_t GRBLPlanner_GetBufferCount(void)
  */
 grbl_plan_block_t *GRBLPlanner_GetCurrentBlock(void)
 {
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_VERBOSE
+    static bool last_empty_reported = false;
+#endif
+
+    /* Check if buffer empty */
     if (block_buffer_head == block_buffer_tail)
     {
-        return NULL; /* Buffer empty */
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_VERBOSE
+        if (!last_empty_reported) {
+            UGS_Printf("[PLANNER] GetCurrentBlock: Buffer empty (head==tail)\r\n");
+            last_empty_reported = true;
+        }
+#endif
+        return NULL;
     }
+    
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_VERBOSE
+    last_empty_reported = false;
+#endif
+    
+    /* CRITICAL (October 25, 2025): Single-block handling
+     * 
+     * When there's only ONE block in the buffer, planner_recalculate() exits early
+     * (line 528) without updating block_buffer_planned. This is correct behavior
+     * because a single block has no junction to optimize.
+     * 
+     * However, the block IS ready for execution - it just hasn't been optimized.
+     * So we need to allow execution when:
+     *   1. tail != planned (block has been optimized), OR
+     *   2. Only one block exists (no optimization needed)
+     * 
+     * Check if only one block: NextIndex(tail) == head
+     */
+    uint8_t next_tail = GRBLPlanner_NextBlockIndex(block_buffer_tail);
+    bool only_one_block = (next_tail == block_buffer_head);
+    
+    /* Allow execution if block is planned OR if it's the only block */
+    if ((block_buffer_tail == block_buffer_planned) && !only_one_block)
+    {
+#ifdef DEBUG_MOTION_BUFFER
+        UGS_Printf("[PLANNER] GetCurrentBlock: BLOCKED! tail=%u planned=%u head=%u only_one=%d\r\n",
+                   block_buffer_tail, block_buffer_planned, block_buffer_head, only_one_block);
+#endif
+        return NULL; /* Unplanned block, and more blocks exist - wait for optimization */
+    }
+    
     return &block_buffer[block_buffer_tail];
 }
 
@@ -419,6 +462,8 @@ void GRBLPlanner_SyncPosition(int32_t *sys_position)
     for (uint8_t idx = 0; idx < NUM_AXES; idx++)
     {
         pl.position[idx] = sys_position[idx];
+        /* Also sync exact mm position to prevent rounding accumulation */
+        pl.position_mm[idx] = MotionMath_StepsToMM(sys_position[idx], (axis_id_t)idx);
     }
 }
 
@@ -621,10 +666,23 @@ static void planner_recalculate(void)
  *
  *  \param target[NUM_AXES] Target position in mm (absolute machine coordinates)
  *  \param pl_data Feed rate, spindle speed, condition flags
- *  \return PLAN_OK if added, PLAN_EMPTY_BLOCK if rejected
+ *  \return PLAN_OK if added, PLAN_BUFFER_FULL if full, PLAN_EMPTY_BLOCK if rejected
  */
-bool GRBLPlanner_BufferLine(float *target, grbl_plan_line_data_t *pl_data)
+plan_status_t GRBLPlanner_BufferLine(float *target, grbl_plan_line_data_t *pl_data)
 {
+    /* CRITICAL: Check if buffer is full BEFORE attempting to add block! (Oct 25, 2025)
+     * This prevents buffer overflow when streaming many G-code commands.
+     * If full, caller must NOT send "ok" - UGS will wait and retry.
+     */
+    if (GRBLPlanner_IsBufferFull())
+    {
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_CRITICAL
+        UGS_Printf("[GRBL] BUFFER FULL! Cannot add block (tail=%u next_head=%u)\r\n",
+                   block_buffer_tail, next_buffer_head);
+#endif
+        return PLAN_BUFFER_FULL;  // ✅ Tri-state: buffer full (temporary, retry)
+    }
+
     /* Get pointer to next buffer slot */
     grbl_plan_block_t *block = &block_buffer[block_buffer_head];
 
@@ -666,10 +724,21 @@ bool GRBLPlanner_BufferLine(float *target, grbl_plan_line_data_t *pl_data)
         }
     }
 
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_PLANNER
+    /* DEBUG: Show planner position vs target */
+    UGS_Printf("[PLAN] pl.pos=(%.3f,%.3f) tgt=(%.3f,%.3f) delta=(%ld,%ld) steps=(%lu,%lu)\r\n",
+               pl.position_mm[AXIS_X],
+               pl.position_mm[AXIS_Y],
+               target[AXIS_X], target[AXIS_Y],
+               target_steps[AXIS_X] - pl.position[AXIS_X],
+               target_steps[AXIS_Y] - pl.position[AXIS_Y],
+               block->steps[AXIS_X], block->steps[AXIS_Y]);
+#endif
+
     /* Reject zero-length blocks (no motion) */
     if (block->step_event_count == 0)
     {
-#ifdef DEBUG_MOTION_BUFFER
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_PLANNER
         UGS_Printf("[GRBL] REJECTED zero-length: target=(%.3f,%.3f,%.3f) pl.pos=(%.3f,%.3f,%.3f)\r\n",
                    target[AXIS_X], target[AXIS_Y], target[AXIS_Z],
                    MotionMath_StepsToMM(pl.position[AXIS_X], AXIS_X),
@@ -799,7 +868,7 @@ bool GRBLPlanner_BufferLine(float *target, grbl_plan_line_data_t *pl_data)
                 (junction_acceleration * junction_deviation * sin_theta_d2) / (1.0f - sin_theta_d2));
 #endif
 
-#ifdef DEBUG_MOTION_BUFFER
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_PLANNER
             UGS_Printf("[JUNC] cos=%.6f sin(θ/2)=%.6f acc=%.1f dev=%.5f vj^2=%.1f prog=%.1f mm=%.3f\r\n",
                        junction_cos_theta,
                        sin_theta_d2,
@@ -826,8 +895,11 @@ bool GRBLPlanner_BufferLine(float *target, grbl_plan_line_data_t *pl_data)
         /* Update previous path unit vector for next junction calculation */
         (void)memcpy(pl.previous_unit_vec, unit_vec, sizeof(unit_vec));
 
-        /* Update planner position */
-        (void)memcpy(pl.position, target_steps, sizeof(target_steps));
+        /* Update planner position - store both steps and exact mm to prevent rounding */
+        for (uint8_t idx = 0; idx < NUM_AXES; idx++) {
+            pl.position[idx] = target_steps[idx];
+            pl.position_mm[idx] = target[idx];  // Store exact mm value!
+        }
 
         /* Advance buffer head and next_buffer_head */
         block_buffer_head = next_buffer_head;

@@ -85,6 +85,9 @@ int main(void)
     static uint32_t guard_plan_empty_stepper_busy_start = 0U; // CORETIMER ticks
 #endif
 
+    /* Retry state for when buffer is full */
+    static bool pending_retry = false;
+
     while (true)
     {
         /* Handle any real-time commands (e.g., status report '?') */
@@ -94,10 +97,34 @@ int main(void)
             GCode_HandleControlChar(rt_cmd);
         }
 
-        /* Non-blocking check for a single character from the serial ring buffer */
-        int16_t c_int = Serial_Read();
+        /* RETRY LOGIC: Handle pending retry BEFORE reading new serial data */
+        int16_t c_int;
+        bool skip_serial_processing = false;  /* NEW: Flag to skip serial but still run system tasks */
+        
+        if (pending_retry && line_pos > 0)
+        {
+            /* Buffer was full on previous iteration - check if space available now */
+            if (!GRBLPlanner_IsBufferFull())
+            {
+                /* Space available! Force re-processing by simulating newline */
+                c_int = '\n';
+                pending_retry = false;
+            }
+            else
+            {
+                /* CRITICAL: Buffer STILL full - DO NOT read new serial! */
+                /* Set flag to skip serial processing but CONTINUE to system tasks */
+                c_int = -1;
+                skip_serial_processing = true;  /* ✅ Still run APP_Tasks/SYS_Tasks at bottom of loop */
+            }
+        }
+        else
+        {
+            /* Normal operation: Read from serial */
+            c_int = Serial_Read();
+        }
 
-        if (c_int != -1)
+        if ((c_int != -1) && !skip_serial_processing)
         {
             char c = (char)c_int;
 
@@ -129,16 +156,29 @@ int main(void)
                 {
                     // Empty line or whitespace-only - send "ok" to keep streaming
                     UGS_SendOK();
+                    line_pos = 0;  // Reset for next command
                 }
                 else
                 {
                     // Line has content - parse and execute
+                    #if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_PARSE
+                    UGS_Printf("[PARSE] '%s'\r\n", line_start);
+                    #endif
+                    
                     parsed_move_t move;
                     if (GCode_ParseLine(line_start, &move))
                     {
                         bool is_motion = (move.motion_mode <= 3) &&
                                          (move.axis_words[0] || move.axis_words[1] || 
                                           move.axis_words[2] || move.axis_words[3]);
+
+                        #if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_VERBOSE
+                        UGS_Printf("[MOTION] mode=%u, X=%d Y=%d Z=%d A=%d, is_motion=%d\r\n",
+                                   move.motion_mode,
+                                   move.axis_words[0], move.axis_words[1], 
+                                   move.axis_words[2], move.axis_words[3],
+                                   is_motion);
+                        #endif
 
                         if (is_motion)
                         {
@@ -172,20 +212,44 @@ int main(void)
                             }
 
                             // Buffer the motion into GRBL planner
-                            (void)GRBLPlanner_BufferLine(target_mm, &pl_data);
+                            plan_status_t plan_result = GRBLPlanner_BufferLine(target_mm, &pl_data);
+                            
+                            if (plan_result == PLAN_OK)
+                            {
+                                // ✅ SUCCESS: Buffer accepted - send "ok" and reset
+                                UGS_SendOK();
+                                line_pos = 0;
+                                pending_retry = false;  // Clear retry flag
+                            }
+                            else if (plan_result == PLAN_BUFFER_FULL)
+                            {
+                                // ⏳ TEMPORARY: Buffer full - set retry flag, keep line buffered
+                                pending_retry = true;
+                            }
+                            else /* plan_result == PLAN_EMPTY_BLOCK */
+                            {
+                                // ❌ PERMANENT: Zero-length move - send "ok" but don't add to buffer
+                                // This is NOT an error - just silently ignore redundant positioning
+                                UGS_SendOK();
+                                line_pos = 0;
+                                pending_retry = false;  // Clear retry flag
+                            }
                         }
-                        // ✅ CRITICAL: Send "ok" ONLY ONCE per parsed command!
-                        UGS_SendOK();
+                        else
+                        {
+                            // Non-motion command - send "ok" and reset
+                            UGS_SendOK();
+                            line_pos = 0;
+                            pending_retry = false;  // Clear retry flag for non-motion too
+                        }
                     }
                     else
                     {
                         // Parse error - send error response (NOT "ok")
                         UGS_SendError(1, GCode_GetLastError());
+                        line_pos = 0;  // Reset for next command
                     }
                 }
-                
-                // Reset buffer for the next line
-                line_pos = 0;
             }
             else if (line_pos < (GCODE_MAX_LINE_LENGTH - 1))
             {

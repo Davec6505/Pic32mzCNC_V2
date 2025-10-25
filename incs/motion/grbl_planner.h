@@ -64,6 +64,9 @@
 
 /*! \brief Planner ring buffer size (must be power of 2)
  *  GRBL default: 16 blocks (provides ~40-50ms of motion at typical feedrates)
+ *  Flow control (Oct 25, 2025): Buffer full check prevents overflow
+ *  - main.c only sends "ok" when buffer has space
+ *  - UGS waits if "ok" not received, preventing command loss
  *  Larger buffer = smoother motion but more RAM usage
  *  Smaller buffer = less RAM but may starve during complex curves
  */
@@ -107,8 +110,11 @@
 // Section: Return Codes
 // *****************************************************************************
 
-#define PLAN_OK true           // Block successfully added to buffer
-#define PLAN_EMPTY_BLOCK false // Zero-length block rejected
+typedef enum {
+    PLAN_OK = 1,          // Block successfully added to buffer
+    PLAN_BUFFER_FULL = 0, // Buffer full - temporary, RETRY after waiting
+    PLAN_EMPTY_BLOCK = -1 // Zero-length block - permanent, DO NOT RETRY
+} plan_status_t;
 
 // *****************************************************************************
 // Section: Type Definitions (GRBL-Compatible)
@@ -260,14 +266,15 @@ void GRBLPlanner_Reset(void);
  *  \param pl_data Feed rate, spindle speed, condition flags
  *
  *  \return PLAN_OK if block added successfully
- *  \return PLAN_EMPTY_BLOCK if zero-length move (rejected)
+ *  \return PLAN_BUFFER_FULL if buffer is full (temporary - retry after waiting)
+ *  \return PLAN_EMPTY_BLOCK if zero-length move (permanent - do not retry)
  *
  *  Thread Safety: Main loop only (modifies ring buffer state)
  *  Performance: ~300-500µs typical, up to 2ms for full recalculation
  *
  *  MISRA Rule 17.7: Caller must check return value
  */
-bool GRBLPlanner_BufferLine(float *target, grbl_plan_line_data_t *pl_data);
+plan_status_t GRBLPlanner_BufferLine(float *target, grbl_plan_line_data_t *pl_data);
 
 /*! \brief Get next block for execution
  *

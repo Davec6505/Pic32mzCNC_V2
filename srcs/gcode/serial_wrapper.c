@@ -28,14 +28,18 @@
 // Ring Buffer Configuration
 // *****************************************************************************
 
-#define SERIAL_RX_BUFFER_SIZE 256
-#define SERIAL_TX_BUFFER_SIZE 256
+/* Increased to 1024 bytes - generous buffer for burst commands (Oct 25, 2025)
+ * With 2MB RAM available, no need to restrict ourselves to 256 bytes.
+ * This allows ~10-15 full G-code commands to queue while motion is busy.
+ */
+#define SERIAL_RX_BUFFER_SIZE 1024
+#define SERIAL_TX_BUFFER_SIZE 1024
 
 typedef struct
 {
     volatile uint8_t data[SERIAL_RX_BUFFER_SIZE];
-    volatile uint8_t head;
-    volatile uint8_t tail;
+    volatile uint16_t head;  // Changed to uint16_t for 1024-byte buffer
+    volatile uint16_t tail;  // Changed to uint16_t for 1024-byte buffer
 } ring_buffer_t;
 
 // *****************************************************************************
@@ -71,7 +75,7 @@ void Serial_RxCallback(uintptr_t context)
     else
     {
         // Regular data - add to ring buffer for main loop processing
-        uint8_t next_head = (rx_buffer.head + 1) & (SERIAL_RX_BUFFER_SIZE - 1);
+        uint16_t next_head = (rx_buffer.head + 1) & (SERIAL_RX_BUFFER_SIZE - 1);
         if (next_head != rx_buffer.tail)
         {
             rx_buffer.data[rx_buffer.head] = data;
@@ -144,8 +148,9 @@ void Serial_WriteString(const char *str)
 
 uint8_t Serial_Available(void)
 {
-    uint8_t available = (uint8_t)((rx_buffer.head - rx_buffer.tail) & (SERIAL_RX_BUFFER_SIZE - 1));
-    return available;
+    uint16_t available = (uint16_t)((rx_buffer.head - rx_buffer.tail) & (SERIAL_RX_BUFFER_SIZE - 1));
+    // Return min of available vs 255 (since return type is uint8_t for GRBL compatibility)
+    return (available > 255) ? 255 : (uint8_t)available;
 }
 
 uint8_t Serial_GetRealtimeCommand(void)

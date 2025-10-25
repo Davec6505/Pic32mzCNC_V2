@@ -1020,16 +1020,10 @@ static bool calculate_scurve_profile(axis_id_t axis, uint32_t distance)
  */
 static void ProcessSegmentStep(axis_id_t dominant_axis)
 {
-#ifdef DEBUG_MOTION_BUFFER
-    static uint32_t isr_call_count = 0;
-    isr_call_count++;
-    if ((isr_call_count % 50) == 0)  // Print every 50 calls to avoid flooding
-    {
-        const char *axis_names[] = {"X", "Y", "Z", "A"};
-        UGS_Printf("[ISR] %s step %lu\r\n", axis_names[dominant_axis], isr_call_count);
-    }
-#endif
-
+    // DEBUG_MOTION_BUFFER: ISR debug output disabled (October 25, 2025)
+    // Reason: Floods UART during motion, blocks stream, causes stalls
+    // Keep JUNC debug in planner - that's the valuable data!
+    
     // Guard: Only execute if this is actually the dominant axis
     if (!(segment_completed_by_axis & (1 << dominant_axis)))
     {
@@ -1066,10 +1060,10 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
     }
     else
     {
-#ifdef DEBUG_MOTION_BUFFER
-        const char *axis_names[] = {"X", "Y", "Z", "A"};
-        UGS_Printf("[ISR] %s executor NULL!\r\n", axis_names[dominant_axis]);
-#endif
+        // DEBUG_MOTION_BUFFER: ISR error debug disabled (October 25, 2025)
+        // Reason: Floods UART, blocks stream during motion
+        // If executor is NULL, segment will stall (visible in motion)
+        return; // Can't execute without function pointer
     }
 
     // ═════════════════════════════════════════════════════════════════════════

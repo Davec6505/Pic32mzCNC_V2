@@ -21,6 +21,49 @@
 #include <stdbool.h>
 
 //=============================================================================
+// DEBUG CONFIGURATION (October 25, 2025)
+//=============================================================================
+
+/**
+ * @brief Tiered debug output system
+ *
+ * Set DEBUG_MOTION_BUFFER to desired level (0-7) to control output verbosity:
+ *
+ * Level 0 (NONE):     No debug output (production mode)
+ * Level 1 (CRITICAL): Critical errors only (buffer full, segment overflow, etc.)
+ * Level 2 (PARSE):    G-code parsing events (commands received, motion detection)
+ * Level 3 (PLANNER):  Planner operations (blocks added, junction velocity, etc.)
+ * Level 4 (STEPPER):  Stepper state machine (segment prep, block fetch, etc.)
+ * Level 5 (SEGMENT):  Segment execution (OCR start, Bresenham, etc.)
+ * Level 6 (VERBOSE):  High-frequency events (every segment, every step, etc.)
+ * Level 7 (ALL):      Everything (warning: very high output rate!)
+ *
+ * Usage in code:
+ *   #if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_PARSE
+ *       UGS_Printf("[PARSE] ...");
+ *   #endif
+ */
+#ifdef DEBUG_MOTION_BUFFER
+    // Define debug levels as constants
+    #define DEBUG_LEVEL_NONE     0
+    #define DEBUG_LEVEL_CRITICAL 1
+    #define DEBUG_LEVEL_PARSE    2
+    #define DEBUG_LEVEL_PLANNER  3
+    #define DEBUG_LEVEL_STEPPER  4
+    #define DEBUG_LEVEL_SEGMENT  5
+    #define DEBUG_LEVEL_VERBOSE  6
+    #define DEBUG_LEVEL_ALL      7
+    
+    // Default to PLANNER level if DEBUG_MOTION_BUFFER=1 (backward compatible)
+    #if DEBUG_MOTION_BUFFER == 1
+        #undef DEBUG_MOTION_BUFFER
+        #define DEBUG_MOTION_BUFFER DEBUG_LEVEL_PLANNER
+    #endif
+#else
+    #define DEBUG_MOTION_BUFFER DEBUG_LEVEL_NONE
+#endif
+
+//=============================================================================
 // HARDWARE CONFIGURATION CONSTANTS
 //=============================================================================
 
