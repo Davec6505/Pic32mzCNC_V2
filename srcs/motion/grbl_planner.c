@@ -839,3 +839,15 @@ bool GRBLPlanner_BufferLine(float *target, grbl_plan_line_data_t *pl_data)
 
     return PLAN_OK;
 }
+
+/*! \brief Get planning threshold constant (October 25, 2025)
+ *  
+ *  Returns the minimum number of blocks required in buffer before
+ *  motion execution should start. This ensures proper look-ahead planning.
+ *  
+ *  @return Planning threshold (4 blocks for GRBL)
+ */
+uint8_t GRBLPlanner_GetPlanningThreshold(void)
+{
+    return 4;  // GRBL default: 4 blocks for optimal look-ahead
+}

@@ -101,14 +101,11 @@ int main(void)
         {
             char c = (char)c_int;
 
-            /* Filter out non-ASCII/high-bit bytes and non-printable controls (except CR/LF/TAB/space).
-             * This prevents stray extended bytes (e.g., 0x95, 0x90, 0x99) from polluting the line buffer.
-             */
+            /* Filter out non-ASCII/high-bit bytes */
             unsigned char uc = (unsigned char)c;
             if ((uc >= 0x80U) ||
                 ((uc < 0x20U) && (c != '\n') && (c != '\r') && (c != '\t') && (c != ' ')))
             {
-                /* Ignore this byte and continue */
                 continue;
             }
 
@@ -117,32 +114,36 @@ int main(void)
                 /* Line terminator received, process the buffered line */
                 line[line_pos] = '\0';
 
-                // Trim leading whitespace to correctly identify empty/whitespace-only lines
+                // Trim leading whitespace
                 char *line_start = line;
                 while (*line_start && isspace((unsigned char)*line_start))
                 {
                     line_start++;
                 }
 
+                // ═══════════════════════════════════════════════════════════════
+                // CRITICAL FIX (October 25, 2025): Send ONE "ok" per command!
+                // ═══════════════════════════════════════════════════════════════
+                
                 if (*line_start == '\0' || !LineHasGrblWordLetter(line_start))
                 {
-                    // Line is empty or was only whitespace. Send OK to keep UGS streaming.
+                    // Empty line or whitespace-only - send "ok" to keep streaming
                     UGS_SendOK();
                 }
                 else
                 {
-                    // Line has content, parse and execute
+                    // Line has content - parse and execute
                     parsed_move_t move;
                     if (GCode_ParseLine(line_start, &move))
                     {
                         bool is_motion = (move.motion_mode <= 3) &&
-                                         (move.axis_words[0] || move.axis_words[1] || move.axis_words[2] || move.axis_words[3]);
+                                         (move.axis_words[0] || move.axis_words[1] || 
+                                          move.axis_words[2] || move.axis_words[3]);
 
                         if (is_motion)
                         {
-                            // Build absolute MACHINE-coordinate target in mm for GRBL planner
+                            // Build absolute target
                             float target_mm[NUM_AXES];
-                            // Start from current planner position to preserve unspecified axes
                             GRBLPlanner_GetPosition(target_mm);
 
                             for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
@@ -151,12 +152,10 @@ int main(void)
                                 {
                                     if (move.absolute_mode)
                                     {
-                                        // G90: provided value is work coords; convert to machine coords
                                         target_mm[axis] = MotionMath_WorkToMachine(move.target[axis], axis);
                                     }
                                     else
                                     {
-                                        // G91: relative offset (in work coords == machine offset magnitude)
                                         target_mm[axis] += move.target[axis];
                                     }
                                 }
@@ -164,44 +163,23 @@ int main(void)
 
                             // Planner line data
                             grbl_plan_line_data_t pl_data;
-                            pl_data.feed_rate = move.feedrate; // mm/min
-                            pl_data.spindle_speed = 0.0f;       // not used yet
+                            pl_data.feed_rate = move.feedrate;
+                            pl_data.spindle_speed = 0.0f;
                             pl_data.condition = 0U;
-                            if (move.motion_mode == 0) // G0 rapid
+                            if (move.motion_mode == 0)
                             {
                                 pl_data.condition |= PL_COND_FLAG_RAPID_MOTION | PL_COND_FLAG_NO_FEED_OVERRIDE;
-                                // For rapids, ignore feed_rate (planner uses rapid_rate)
                             }
-
-                            /* Optional debug: log each planned target (enabled when DEBUG_MOTION_BUFFER=1) */
-#ifdef DEBUG_MOTION_BUFFER
-                            UGS_Printf("PLAN: G%d X%.3f Y%.3f Z%.3f"
-#if (NUM_AXES > 3)
-                                       " A%.3f"
-#endif
-                                       " F%.1f\r\n",
-                                       (int)move.motion_mode,
-                                       target_mm[AXIS_X], target_mm[AXIS_Y], target_mm[AXIS_Z]
-#if (NUM_AXES > 3)
-                                       , target_mm[AXIS_A]
-#endif
-                                       , pl_data.feed_rate);
-#endif
 
                             // Buffer the motion into GRBL planner
                             (void)GRBLPlanner_BufferLine(target_mm, &pl_data);
-
-                            // Always acknowledge to keep sender streaming (GRBL character-counting)
-                            UGS_SendOK();
                         }
-                        else
-                        {
-                            // Non-motion commands (modal state changes, status queries, etc.)
-                            UGS_SendOK();
-                        }
+                        // ✅ CRITICAL: Send "ok" ONLY ONCE per parsed command!
+                        UGS_SendOK();
                     }
                     else
                     {
+                        // Parse error - send error response (NOT "ok")
                         UGS_SendError(1, GCode_GetLastError());
                     }
                 }
@@ -216,16 +194,39 @@ int main(void)
             }
             else
             {
-                /* Line buffer overflow */
+                /* Line buffer overflow - send error (NOT "ok") */
                 UGS_SendError(20, "Line buffer overflow");
-                line_pos = 0; // Reset
+                line_pos = 0;
             }
         }
 
-        /* Start segment execution when idle and segments are available (Phase 2B) */
+        /* Start segment execution when idle and segments are available (Phase 2B)
+         * 
+         * CRITICAL FIX (October 25, 2025): Delayed execution start for look-ahead planning
+         * 
+         * Don't start NEW execution until planner buffer reaches threshold (4 blocks).
+         * This ensures proper look-ahead window for junction velocity optimization.
+         * 
+         * Flow:
+         *   1. UGS sends commands → Planner buffers them → Sends "ok" immediately
+         *   2. Buffer fills to threshold (4 blocks)
+         *   3. Planner recalculates all blocks (junction velocities optimized)
+         *   4. THEN start execution
+         *   5. Once started, continue draining even if buffer drops below threshold
+         */
         if (!MultiAxis_IsBusy())
         {
-            if (GRBLStepper_GetBufferCount() > 0U)
+            uint8_t planner_count = GRBLPlanner_GetBufferCount();
+            uint8_t stepper_count = GRBLStepper_GetBufferCount();
+            
+            /* Start execution when:
+             * 1. NEW execution: Planner buffer >= threshold (4 blocks for look-ahead), OR
+             * 2. CONTINUE draining: Stepper buffer has prepared segments
+             */
+            bool should_start_new = (planner_count >= GRBLPlanner_GetPlanningThreshold());
+            bool should_continue = (stepper_count > 0U);
+            
+            if (should_start_new || should_continue)  // ✅ Either condition starts motion
             {
                 (void)MultiAxis_StartSegmentExecution();
             }

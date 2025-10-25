@@ -21,6 +21,10 @@ G1 X20.000 Y10.000  ; Corner 2 (90° junction)
 G1 X0.000 Y10.000   ; Corner 3 (90° junction)
 G1 X0.000 Y0.000    ; Corner 4 (90° junction) - back to start
 
+G1 X20.000 Y10.000 ; Move diagonal
+G1 X0.000   ; Move X back to 0
+G1 Y0.000   ; Move Y back to 0
+
 ; Test complete
 M0 ; Program stop
 

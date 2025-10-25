@@ -489,6 +489,16 @@ typedef struct
 // Per-axis segment execution state (accessed from OCR ISR callbacks)
 static volatile axis_segment_state_t segment_state[NUM_AXES] = {0};
 
+
+// *****************************************************************************
+// Segment Execution State (Per-Axis)
+// *****************************************************************************
+
+// ... existing segment_state and segment_completed_by_axis variables ...
+
+// Motion active flag (checked by all OCR ISRs)
+static volatile bool motion_active = false;
+
 // Segment completion control (Dave's scalable bitmask approach)
 // Bit N set = Axis N is the dominant axis and should call SegmentComplete()
 // This ensures only ONE axis completes each segment, preventing buffer corruption
@@ -637,7 +647,7 @@ static float cbrt_approx(float x)
 
 // *****************************************************************************
 // Step Execution Strategies (for function pointer dispatch)
-// *****************************************************************************
+// ************************************************************************
 
 /*! \brief Bresenham execution strategy for linear interpolation
  *
@@ -1123,6 +1133,9 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
     // ═════════════════════════════════════════════════════════════════════════
     if (next_seg == NULL)
     {
+        /* ✅ CRITICAL FIX (Oct 24): Clear motion guard when segments drain */
+        motion_active = false;
+        
         // No more segments - STOP ALL AXES FIRST!
         // SANITY CHECK (Oct 21, 2025): Verify commanded vs executed steps
         for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
@@ -1419,6 +1432,11 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
  */
 static void OCMP5_StepCounter_X(uintptr_t context)
 {
+    /* ✅ CRITICAL FIX (Oct 24): Guard against ISRs firing after motion completes */
+    if (!motion_active) {
+        return;
+    }
+    
     axis_id_t axis = AXIS_X;
 
     /* TRANSITION DETECTION: Check if role changed since last ISR */
@@ -1529,6 +1547,11 @@ static void OCMP5_StepCounter_X(uintptr_t context)
  */
 static void OCMP1_StepCounter_Y(uintptr_t context)
 {
+    /* ✅ CRITICAL FIX (Oct 24): Guard against ISRs firing after motion completes */
+    if (!motion_active) {
+        return;
+    }
+    
     axis_id_t axis = AXIS_Y;
 
     /* TRANSITION DETECTION: Check if role changed since last ISR */
@@ -1639,6 +1662,11 @@ static void OCMP1_StepCounter_Y(uintptr_t context)
  */
 static void OCMP4_StepCounter_Z(uintptr_t context)
 {
+    /* ✅ CRITICAL FIX (Oct 24): Guard against ISRs firing after motion completes */
+    if (!motion_active) {
+        return;
+    }
+    
     axis_id_t axis = AXIS_Z;
 
     /* TRANSITION DETECTION: Check if role changed since last ISR */
@@ -2321,6 +2349,7 @@ void MultiAxis_StopAll(void)
  */
 bool MultiAxis_StartSegmentExecution(void)
 {
+ 
     // Try to get first segment for each axis
     const st_segment_t *first_seg = GRBLStepper_GetNextSegment();
 
@@ -2328,6 +2357,14 @@ bool MultiAxis_StartSegmentExecution(void)
     {
         return false; // No segments available
     }
+
+    /* ✅ CRITICAL FIX (Oct 25): Only enable motion_active if segments exist!
+     * Previously set motion_active=true BEFORE null check, causing it to stay
+     * true even when no segments available. This let OCR ISRs continue firing
+     * after program completion, causing "walk to Japan" bug.
+     */
+    motion_active = true;  // ✅ CORRECT - only set when segments actually exist!
+
 
     // Determine dominant axis (axis with MOST steps)
     // CRITICAL FIX (Oct 21, 2025): Use SAME logic as ProcessSegmentStep() line 1006

@@ -347,6 +347,25 @@ uint8_t GRBLPlanner_GetBufferAvailable(void);
  */
 uint8_t GRBLPlanner_GetBufferCount(void);
 
+/*! \brief Get planning threshold (minimum blocks for look-ahead)
+ *
+ *  Returns the minimum number of blocks required in buffer before
+ *  motion execution should start. This ensures proper look-ahead planning
+ *  for junction velocity optimization.
+ *
+ *  October 25, 2025: Added for delayed execution start pattern
+ *
+ *  \return Planning threshold (typically 4 blocks for GRBL)
+ *
+ *  Thread Safety: ISR-safe (constant value)
+ *
+ *  Usage:
+ *    if (GRBLPlanner_GetBufferCount() >= GRBLPlanner_GetPlanningThreshold()) {
+ *      // Safe to start execution - buffer has look-ahead window
+ *    }
+ */
+uint8_t GRBLPlanner_GetPlanningThreshold(void);
+
 // *****************************************************************************
 // Section: Public API - Position Tracking (Single Source of Truth)
 // *****************************************************************************
