@@ -65,12 +65,60 @@ static float planned_position_mm[NUM_AXES] = {0.0f};
 static bool disable_position_update = false;
 
 //=============================================================================
+// ARC GENERATOR STATE (TMR1 ISR @ 1ms)
+//=============================================================================
+
+/**
+ * @brief Arc segment generator state machine
+ *
+ * CRITICAL (Oct 25, 2025): Non-blocking arc generation using TMR1 ISR
+ * 
+ * Architecture:
+ * - convert_arc_to_segments() initializes this state and enables TMR1
+ * - TMR1 ISR @ 1ms calls ArcGenerator_TMR1Callback()
+ * - Callback generates ONE segment per millisecond (if buffer has space)
+ * - When arc completes, TMR1 stops and UGS_SendOK() called
+ * 
+ * Benefits:
+ * - Main loop stays responsive (LED continues toggling)
+ * - Automatic retry (TMR1 fires every 1ms)
+ * - Natural flow control (stops when buffer full)
+ */
+typedef struct {
+    bool active;                        /* Arc generation in progress */
+    uint16_t total_segments;            /* Total segments to generate */
+    uint16_t current_segment;           /* Next segment to generate (1-based) */
+    uint16_t arc_correction_counter;    /* Periodic correction counter */
+    
+    /* Arc geometry (fixed for entire arc) */
+    float center[3];                    /* Arc center in mm */
+    float initial_radius[2];            /* Starting radius vector */
+    float theta_per_segment;            /* Angular step per segment */
+    float linear_per_segment;           /* Linear (Z) step per segment */
+    float cos_T;                        /* Rotation matrix cos (small angle approx) */
+    float sin_T;                        /* Rotation matrix sin (small angle approx) */
+    axis_id_t axis_0;                   /* First axis in plane (X or Y) */
+    axis_id_t axis_1;                   /* Second axis in plane (Y or Z) */
+    axis_id_t axis_linear;              /* Linear axis (for helical arcs) */
+    
+    /* Current position on arc (updated each segment) */
+    float r_axis0;                      /* Current radius X component */
+    float r_axis1;                      /* Current radius Y component */
+    
+    /* Segment template (copied from original arc command) */
+    parsed_move_t segment_template;     /* Base segment (feedrate, etc.) */
+} arc_generator_state_t;
+
+static volatile arc_generator_state_t arc_gen = {0};
+
+//=============================================================================
 // FORWARD DECLARATIONS (MISRA Rule 8.4)
 //=============================================================================
 
 static uint32_t next_write_index(void);
 static void recalculate_trapezoids(void);
 static bool convert_arc_to_segments(const parsed_move_t *arc_move);
+static void ArcGenerator_TMR1Callback(uint32_t status, uintptr_t context);
 
 //=============================================================================
 // INITIALIZATION
@@ -126,6 +174,116 @@ void MotionBuffer_Initialize(void)
  *
  * @date October 22, 2025
  */
+
+//=============================================================================
+// ARC GENERATOR TMR1 ISR CALLBACK (October 25, 2025)
+//=============================================================================
+
+/**
+ * @brief TMR1 ISR callback for non-blocking arc segment generation
+ *
+ * Called by TMR1 @ 1ms when arc_gen.active is true.
+ * Generates ONE segment per millisecond (if buffer has space).
+ * 
+ * @param status TMR1 status flags (unused)
+ * @param context User context (unused)
+ * 
+ * @note This runs in ISR context - keep it fast!
+ * @date October 25, 2025
+ */
+static void ArcGenerator_TMR1Callback(uint32_t status, uintptr_t context)
+{
+    (void)status;   /* Unused parameter */
+    (void)context;  /* Unused parameter */
+    
+    /* Quick exit if no arc in progress */
+    if (!arc_gen.active)
+    {
+        return;
+    }
+    
+    /* Arc correction: Every 12 segments, recalculate exact position */
+    #define N_ARC_CORRECTION 12U
+    if (arc_gen.arc_correction_counter >= N_ARC_CORRECTION)
+    {
+        /* Recalculate exact position using current angle */
+        float angle = arc_gen.theta_per_segment * (float)arc_gen.current_segment;
+        float cos_ti = cosf(angle);
+        float sin_ti = sinf(angle);
+        arc_gen.r_axis0 = arc_gen.initial_radius[0] * cos_ti - arc_gen.initial_radius[1] * sin_ti;
+        arc_gen.r_axis1 = arc_gen.initial_radius[0] * sin_ti + arc_gen.initial_radius[1] * cos_ti;
+        arc_gen.arc_correction_counter = 0;
+    }
+    else
+    {
+        arc_gen.arc_correction_counter++;
+    }
+    
+    /* Apply vector rotation matrix (fast small-angle approximation) */
+    float r_axisi = arc_gen.r_axis0 * arc_gen.sin_T + arc_gen.r_axis1 * arc_gen.cos_T;
+    arc_gen.r_axis0 = arc_gen.r_axis0 * arc_gen.cos_T - arc_gen.r_axis1 * arc_gen.sin_T;
+    arc_gen.r_axis1 = r_axisi;
+    
+    /* Calculate segment endpoint */
+    /* CRITICAL: Can't use memcpy with volatile - copy field by field */
+    parsed_move_t segment_move;
+    segment_move = arc_gen.segment_template;  /* Struct assignment handles volatile correctly */
+    
+    segment_move.target[arc_gen.axis_0] = arc_gen.center[arc_gen.axis_0] + arc_gen.r_axis0;
+    segment_move.target[arc_gen.axis_1] = arc_gen.center[arc_gen.axis_1] + arc_gen.r_axis1;
+    segment_move.target[arc_gen.axis_linear] = arc_gen.center[arc_gen.axis_linear] + 
+                                                arc_gen.linear_per_segment * (float)arc_gen.current_segment;
+    
+    /* Mark axes as active */
+    segment_move.axis_words[arc_gen.axis_0] = true;
+    segment_move.axis_words[arc_gen.axis_1] = true;
+    if (arc_gen.linear_per_segment != 0.0f)
+    {
+        segment_move.axis_words[arc_gen.axis_linear] = true;
+    }
+    
+    /* Clear arc parameters (now a linear move) */
+    segment_move.arc_has_ijk = false;
+    segment_move.arc_has_radius = false;
+    segment_move.motion_mode = 1;  /* G1 linear */
+    segment_move.absolute_mode = true;  /* Absolute coordinates */
+    
+    /* Try to add segment to buffer (non-blocking!) */
+    if (MotionBuffer_Add(&segment_move))
+    {
+        /* Success! Move to next segment */
+        arc_gen.current_segment++;
+        
+        /* Check if arc complete */
+        if (arc_gen.current_segment > arc_gen.total_segments)
+        {
+            /* Arc complete! */
+            arc_gen.active = false;
+            
+            /* Re-enable position updates */
+            disable_position_update = false;
+            
+            /* Update planned position to final arc target */
+            planned_position_mm[arc_gen.axis_0] = arc_gen.segment_template.target[arc_gen.axis_0];
+            planned_position_mm[arc_gen.axis_1] = arc_gen.segment_template.target[arc_gen.axis_1];
+            planned_position_mm[arc_gen.axis_linear] = arc_gen.segment_template.target[arc_gen.axis_linear];
+            
+            /* Stop TMR1 - no longer needed */
+            extern void TMR1_Stop(void);
+            TMR1_Stop();
+            
+#ifdef DEBUG_MOTION_BUFFER
+            UGS_Printf("[ARC] Complete! %u segments generated\r\n", arc_gen.total_segments);
+#endif
+            
+            /* Send "ok" to UGS - arc command complete */
+            extern void UGS_SendOK(void);
+            UGS_SendOK();
+        }
+    }
+    /* If buffer full, do nothing - TMR1 will retry in 1ms */
+}
+
 static bool convert_arc_to_segments(const parsed_move_t *arc_move)
 {
     /* Parameter validation */
@@ -210,16 +368,6 @@ static bool convert_arc_to_segments(const parsed_move_t *arc_move)
     float sin_T = theta_per_segment * 0.16666667f * (cos_T + 4.0f);
     cos_T *= 0.5f;
 
-    /* Arc correction frequency (GRBL uses 12 segments between corrections) */
-    #define N_ARC_CORRECTION 12U
-    uint16_t arc_correction_counter = 0;
-
-    /* Generate arc segments */
-    parsed_move_t segment_move;
-    memcpy(&segment_move, arc_move, sizeof(parsed_move_t));
-    segment_move.motion_mode = 1;  /* Convert arc to G1 linear moves */
-    segment_move.absolute_mode = true;  /* Segments use absolute coordinates */
-    
     /* CRITICAL (Oct 22, 2025): Disable position updates during segment generation!
      * Each recursive MotionBuffer_Add() call would update planned_position_mm,
      * corrupting the arc geometry since center/radius depend on starting position.
@@ -227,83 +375,61 @@ static bool convert_arc_to_segments(const parsed_move_t *arc_move)
     disable_position_update = true;
     
 #ifdef DEBUG_MOTION_BUFFER
-    UGS_Printf("[ARC] Disabled position updates, generating %u segments\r\n", segments);
+    UGS_Printf("[ARC] Initializing generator: %u segments, theta=%.4f rad\r\n", 
+               segments, theta_per_segment);
 #endif
 
-    for (uint16_t i = 1U; i <= segments; i++)
-    {
-        /* Periodic arc correction (Oct 22, 2025): Recalculate exact radius vector
-         * every N_ARC_CORRECTION segments to prevent floating-point drift.
-         * This reduces endpoint error from ~1mm to <0.01mm on large arcs.
-         */
-        if (arc_correction_counter >= N_ARC_CORRECTION)
-        {
-            /* Recalculate exact position using current angle */
-            float cos_ti = cosf(theta_per_segment * (float)i);
-            float sin_ti = sinf(theta_per_segment * (float)i);
-            r_axis0 = -arc_move->arc_center_offset[AXIS_X] * cos_ti - 
-                      -arc_move->arc_center_offset[AXIS_Y] * sin_ti;
-            r_axis1 = -arc_move->arc_center_offset[AXIS_X] * sin_ti + 
-                      -arc_move->arc_center_offset[AXIS_Y] * cos_ti;
-            arc_correction_counter = 0;
-        }
-        else
-        {
-            arc_correction_counter++;
-        }
-
-        /* Apply vector rotation matrix (fast approximation between corrections) */
-        float r_axisi = r_axis0 * sin_T + r_axis1 * cos_T;
-        r_axis0 = r_axis0 * cos_T - r_axis1 * sin_T;
-        r_axis1 = r_axisi;
-
-        /* Calculate segment endpoint */
-        segment_move.target[axis_0] = center[axis_0] + r_axis0;
-        segment_move.target[axis_1] = center[axis_1] + r_axis1;
-        segment_move.target[axis_linear] = position[axis_linear] + linear_per_segment * (float)i;
-
-        /* Mark axes as active */
-        segment_move.axis_words[axis_0] = true;
-        segment_move.axis_words[axis_1] = true;
-        if (linear_per_segment != 0.0f)
-        {
-            segment_move.axis_words[axis_linear] = true;
-        }
-
-        /* Clear arc parameters (now a linear move) */
-        segment_move.arc_has_ijk = false;
-        segment_move.arc_has_radius = false;
-
-        /* Add segment to buffer recursively - BLOCK on full buffer!
-         * CRITICAL (Oct 25, 2025): Must NOT return false on buffer full!
-         * If we return false, main.c will retry the ENTIRE arc command,
-         * causing an infinite loop. Instead, spin-wait for buffer space.
-         * 
-         * Motion execution continues via ISRs (TMR9 prepares segments,
-         * OCR callbacks execute steps), so this spin loop won't block
-         * motion - it just waits for the planner to free space.
-         */
-        while (!MotionBuffer_Add(&segment_move))
-        {
-            /* Spin-wait for buffer space - ISRs continue running */
-            /* TMR9 will prep segments, freeing planner blocks */
-            /* Add small delay to prevent CPU hogging (1000 cycles ≈ 5µs @ 200MHz) */
-            for (volatile uint32_t delay = 0; delay < 1000U; delay++) { }
-        }
-    }
+    /* ARCHITECTURE CHANGE (Oct 25, 2025): Non-blocking arc generation!
+     * 
+     * OLD: Blocking for loop that generated all segments immediately
+     * NEW: Initialize state machine, let TMR1 ISR generate segments @ 1ms
+     * 
+     * Benefits:
+     * - Main loop stays responsive (LED continues toggling)
+     * - Automatic retry when buffer full (TMR1 fires every 1ms)
+     * - Natural flow control (stops adding when buffer full)
+     * - UGS "ok" sent only when arc completes
+     */
     
-    /* Re-enable position updates */
-    disable_position_update = false;
+    /* Initialize arc generator state */
+    arc_gen.active = true;
+    arc_gen.total_segments = segments;
+    arc_gen.current_segment = 1;
+    arc_gen.arc_correction_counter = 0;
     
+    /* Store arc geometry (fixed for entire arc) */
+    arc_gen.center[axis_0] = center[axis_0];
+    arc_gen.center[axis_1] = center[axis_1];
+    arc_gen.center[axis_linear] = center[axis_linear];
+    arc_gen.initial_radius[0] = r_axis0;
+    arc_gen.initial_radius[1] = r_axis1;
+    arc_gen.r_axis0 = r_axis0;
+    arc_gen.r_axis1 = r_axis1;
+    arc_gen.theta_per_segment = theta_per_segment;
+    arc_gen.linear_per_segment = linear_per_segment;
+    arc_gen.cos_T = cos_T;
+    arc_gen.sin_T = sin_T;
+    arc_gen.axis_0 = axis_0;
+    arc_gen.axis_1 = axis_1;
+    arc_gen.axis_linear = axis_linear;
+    
+    /* Store segment template (copy target from original arc command) */
+    /* CRITICAL: Can't use memcpy with volatile - use struct assignment */
+    arc_gen.segment_template = *arc_move;  /* Struct assignment handles volatile */
+    
+    /* Register TMR1 callback and start timer */
+    extern void TMR1_CallbackRegister(void (*callback)(uint32_t, uintptr_t), uintptr_t context);
+    extern void TMR1_Start(void);
+    
+    TMR1_CallbackRegister(ArcGenerator_TMR1Callback, 0);
+    TMR1_Start();
+
 #ifdef DEBUG_MOTION_BUFFER
-    UGS_Printf("[ARC] Re-enabled position updates, updating to final target\r\n");
+    UGS_Printf("[ARC] TMR1 started, will generate segments @ 1ms\r\n");
 #endif
-    
-    /* Update planned position ONCE to final arc target */
-    planned_position_mm[axis_0] = arc_move->target[axis_0];
-    planned_position_mm[axis_1] = arc_move->target[axis_1];
-    planned_position_mm[axis_linear] = arc_move->target[axis_linear];
 
+    /* Return true immediately - arc generation happens in background */
+    /* NOTE: UGS_SendOK() will be called by TMR1 ISR when arc completes! */
     return true;
 }
 

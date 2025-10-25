@@ -202,8 +202,28 @@ int main(void)
                             
                             if (MotionBuffer_Add(&move))
                             {
-                                /* ✅ SUCCESS: Buffer accepted move (or arc converted) */
-                                UGS_SendOK();
+                                /* ✅ SUCCESS: Buffer accepted move */
+                                
+                                /* CRITICAL (Oct 25, 2025): For arc commands (G2/G3),
+                                 * DO NOT send "ok" immediately! Arc generator runs in
+                                 * TMR1 ISR @ 1ms and will send "ok" when complete.
+                                 * 
+                                 * For linear moves (G0/G1), send "ok" immediately.
+                                 */
+                                if (move.motion_mode == 2 || move.motion_mode == 3)
+                                {
+                                    /* Arc command - "ok" sent by TMR1 ISR when complete */
+#ifdef DEBUG_MOTION_BUFFER
+                                    UGS_Printf("[MAIN] Arc G%d queued, TMR1 will send 'ok'\r\n", 
+                                               move.motion_mode);
+#endif
+                                }
+                                else
+                                {
+                                    /* Linear move - send "ok" immediately */
+                                    UGS_SendOK();
+                                }
+                                
                                 line_pos = 0;
                                 pending_retry = false;
                             }
