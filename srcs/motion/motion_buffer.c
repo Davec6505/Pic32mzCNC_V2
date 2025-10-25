@@ -15,6 +15,7 @@
 #include "motion/multiaxis_control.h" /* For MultiAxis_GetStepCount() */
 #include "motion/grbl_planner.h"      /* CRITICAL (Oct 25, 2025): For GRBLPlanner_BufferLine() */
 #include "ugs_interface.h"            /* For UGS_Printf() debug output */
+#include "definitions.h"              /* For TMR1_CallbackRegister(), TMR1_Start(), TMR1_Stop() */
 #include <string.h>
 #include <math.h>
 
@@ -268,16 +269,14 @@ static void ArcGenerator_TMR1Callback(uint32_t status, uintptr_t context)
             planned_position_mm[arc_gen.axis_1] = arc_gen.segment_template.target[arc_gen.axis_1];
             planned_position_mm[arc_gen.axis_linear] = arc_gen.segment_template.target[arc_gen.axis_linear];
             
-            /* Stop TMR1 - no longer needed */
-            extern void TMR1_Stop(void);
+            /* Stop TMR1 - no longer needed (Harmony PLIBs already included) */
             TMR1_Stop();
             
 #ifdef DEBUG_MOTION_BUFFER
             UGS_Printf("[ARC] Complete! %u segments generated\r\n", arc_gen.total_segments);
 #endif
             
-            /* Send "ok" to UGS - arc command complete */
-            extern void UGS_SendOK(void);
+            /* Send "ok" to UGS - arc command complete (Harmony PLIBs already included) */
             UGS_SendOK();
         }
     }
@@ -417,10 +416,7 @@ static bool convert_arc_to_segments(const parsed_move_t *arc_move)
     /* CRITICAL: Can't use memcpy with volatile - use struct assignment */
     arc_gen.segment_template = *arc_move;  /* Struct assignment handles volatile */
     
-    /* Register TMR1 callback and start timer */
-    extern void TMR1_CallbackRegister(void (*callback)(uint32_t, uintptr_t), uintptr_t context);
-    extern void TMR1_Start(void);
-    
+    /* Register TMR1 callback and start timer (Harmony PLIBs already included) */
     TMR1_CallbackRegister(ArcGenerator_TMR1Callback, 0);
     TMR1_Start();
 
