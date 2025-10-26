@@ -72,19 +72,8 @@ void TMR1_Initialize(void)
     /* Clear counter */
     TMR1 = 0x0;
 
-    /* ⚠️ CRITICAL: Period modified for arc generation (Oct 25, 2025)
-     * 
-     * MCC Default: PR1 = 780 (0x030C) → 1ms @ 781.25kHz timer clock
-     * MODIFIED:    PR1 = 31248 (0x7A10) → 40ms @ 781.25kHz timer clock
-     * 
-     * Calculation: PBCLK3 / Prescaler / Period = 50MHz / 64 / 31248 = 25 Hz
-     * 
-     * Why 40ms: Prevents planner buffer overflow - stepper execution needs time to drain
-     *           20ms was too fast → "BUFFER FULL!" errors during arc execution
-     * 
-     * ⚠️ IF MCC REGENERATES: Manually restore PR1 = 0x7A10 (see MCC_CRITICAL_SETTINGS.md)
-     */
-    PR1 = 0x7A10U;  /* 31248 decimal - DO NOT LET MCC OVERWRITE! */
+    /*Set period */
+    PR1 = 31248;
 
     /* Setup TMR1 Interrupt */
     TMR1_InterruptEnable();  /* Enable interrupt on the way out */

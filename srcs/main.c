@@ -23,8 +23,8 @@
 *******************************************************************************/
 
 /* DEBUG_MOTION_BUFFER is controlled by Makefile:
- *   make all         → Production build (no debug)
- *   make all DEBUG=1 → Debug build with -DDEBUG_MOTION_BUFFER
+ *   make all                                           → Production build (no debug)
+ *   make all BUILD_CONFIG=Debug DEBUG_MOTION_BUFFER=3  → Debug build with -DDEBUG_MOTION_BUFFER=x
  */
 
 // *****************************************************************************
@@ -69,6 +69,7 @@ int main(void)
 
     UGS_SendBuildInfo();
 
+    /* 256U max length of G-code line */
     char line[GCODE_MAX_LINE_LENGTH];
     size_t line_pos = 0;
 
@@ -379,12 +380,20 @@ int main(void)
          */
         (void)MotionBuffer_CheckArcComplete();
 
-        /* Maintain system services */
-       // SYS_Tasks();
-       if(clock_status++ > 400000){
-        clock_status = 0;
-        LED1_Toggle();
-       }
+        /* CRITICAL FIX (Oct 26, 2025): Timer-based LED heartbeat
+         * 
+         * Previous method counted main loop iterations (clock_status++ > 400000)
+         * which broke during arc generation when loop was very busy processing
+         * segments. Now uses CORETIMER @ 100MHz for consistent 1Hz blink.
+         */
+        static uint32_t last_led_toggle = 0;
+        uint32_t now = CORETIMER_CounterGet();
+        const uint32_t LED_PERIOD_TICKS = 50000000UL;  // 500ms @ 100MHz = 1Hz blink
+        
+        if ((now - last_led_toggle) >= LED_PERIOD_TICKS) {
+            LED1_Toggle();
+            last_led_toggle = now;
+        }
     }
 
     return (EXIT_FAILURE);

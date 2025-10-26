@@ -155,6 +155,87 @@ make all BUILD_CONFIG=Debug DEBUG_MOTION_BUFFER=0  # Production (no debug)
 
 ---
 
+## ⚠️ CRITICAL DOCUMENTATION POLICY (October 26, 2025)
+
+**STOP CREATING NEW DOCUMENTATION FILES!**
+
+The project documentation has been consolidated into **4 comprehensive files**. All future documentation updates MUST go into one of these files:
+
+1. **`docs/GCODE_AND_PARSING.md`** - Serial communication, G-code parser, UGS protocol, command buffering
+2. **`docs/LINEAR_MOTION.md`** - GRBL planner, segment execution, multi-axis control, OCR hardware
+3. **`docs/ARC_MOTION.md`** - Arc generator, TMR1 ISR state machine, flow control, arc correction
+4. **`docs/GENERAL_SYSTEM.md`** - Build system, debug levels, hardware config, coding standards, testing
+
+### When to Update Which File
+
+**G-Code & Parsing**:
+- Serial buffer changes
+- Parser additions (new G/M commands)
+- UGS protocol modifications
+- Command separation logic
+- Input sanitization
+- Coordinate systems
+
+**Linear Motion**:
+- Planner algorithm changes
+- Segment preparation updates
+- Bresenham modifications
+- OCR timing adjustments
+- Dominant axis handoff
+- Position tracking fixes
+
+**Arc Motion**:
+- Arc generator modifications
+- Flow control adjustments
+- Segment calculation changes
+- Arc correction experiments
+- Consecutive arc fixes
+
+**General System**:
+- Build configuration changes
+- Debug level additions
+- Hardware pin assignments
+- Coding standard updates
+- Test procedure changes
+- Timer configuration
+
+### How to Add New Content
+
+**CORRECT**:
+```bash
+# Open existing file and add section
+vim docs/LINEAR_MOTION.md
+# Add new section under appropriate heading
+# Update table of contents if needed
+```
+
+**WRONG**:
+```bash
+# ❌ DON'T create new files for every change!
+vim docs/NEW_FIX_OCT26_2025.md
+vim docs/SESSION_OCT26_MORNING.md
+vim docs/ANOTHER_CRITICAL_FIX.md
+```
+
+### Legacy Documentation
+
+**Old files** (70+ individual documents) are kept for historical reference but should NOT be updated. They will be archived when time permits.
+
+**If you reference old documentation**:
+- Cite the specific file name
+- Mention it's legacy (pre-consolidation)
+- Prefer linking to consolidated docs when possible
+
+### Emergency Exception
+
+**ONLY create new file if**:
+- It's a completely new subsystem (e.g., "Tool Changer System")
+- It requires >1000 lines of documentation
+- User explicitly requests separate file
+- **Otherwise**: Update one of the 4 main files!
+
+---
+
 ## ⚠️ CRITICAL MAKEFILE ARCHITECTURE (October 22, 2025)
 
 **NEVER MODIFY BUILD CONFIGURATION LOGIC IN srcs/Makefile DIRECTLY!**

@@ -64,17 +64,17 @@ void TMR9_Initialize(void)
 
     /*
     SIDL = 0
-    TCKPS =6
+    TCKPS =5
     T32   = 0
     TCS = 0
     */
-    T9CONSET = 0x60;
+    T9CONSET = 0x50;
 
     /* Clear counter */
     TMR9 = 0x0;
 
     /*Set period */
-    PR9 = 7811U;
+    PR9 = 15623U;
 
     /* Enable TMR Interrupt */
     IEC1SET = _IEC1_T9IE_MASK;
@@ -111,7 +111,7 @@ uint16_t TMR9_CounterGet(void)
 
 uint32_t TMR9_FrequencyGet(void)
 {
-    return (781250);
+    return (1562500);
 }
 
 

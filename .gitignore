@@ -7,31 +7,6 @@ bins/
 *.elf
 *.d
 
-# MikroC files (use ported versions in srcs/ instead)
-Config.c
-Config.h
-Config.asm
-Nut_Bolts.c
-Nuts_Bolts.h
-Nut_Bolts.asm
-Pic32mzCNC_V2.c
-Pic32mzCNC_V2.asm
-Pic32mzCNC_V2.bmk
-Pic32mzCNC_V2.brk
-Pic32mzCNC_V2.cfg
-Pins.c
-Pins.h
-Pins.asm
-Serial_Dma.c
-Serial_Dma.h
-Serial_Dma.asm
-Steppers.c
-Steppers.h
-Steppers.asm
-Timers.c
-Timers.h
-Timers.asm
-
 # Linker output
 *.ilk
 *.map
