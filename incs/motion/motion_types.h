@@ -45,14 +45,15 @@
  */
 #ifdef DEBUG_MOTION_BUFFER
     // Define debug levels as constants
-    #define DEBUG_LEVEL_NONE     0
-    #define DEBUG_LEVEL_CRITICAL 1
-    #define DEBUG_LEVEL_PARSE    2
-    #define DEBUG_LEVEL_PLANNER  3
-    #define DEBUG_LEVEL_STEPPER  4
-    #define DEBUG_LEVEL_SEGMENT  5
-    #define DEBUG_LEVEL_VERBOSE  6
-    #define DEBUG_LEVEL_ALL      7
+    #define DEBUG_LEVEL_NONE     0  // Production (no debug output)
+    #define DEBUG_LEVEL_CRITICAL 1  // <1 msg/sec  (buffer overflow, fatal errors)
+    #define DEBUG_LEVEL_PARSE    2  // ~10 msg/sec (command parsing)
+    #define DEBUG_LEVEL_PLANNER  3  // ~10 msg/sec (motion planning)
+    #define DEBUG_LEVEL_STEPPER  4  // ~10 msg/sec (state machine transitions)
+    #define DEBUG_LEVEL_SEGMENT  5  // ~50 msg/sec (segment execution)
+    #define DEBUG_LEVEL_VERBOSE  6  // ~100 msg/sec (high-frequency events)
+    #define DEBUG_LEVEL_ALL      7  // >1000 msg/sec (CAUTION: floods serial!)
+    #define DEBUG_LEVEL_DRIFT    8  // Step count drift investigation (isolated output)
     
     // Default to PLANNER level if DEBUG_MOTION_BUFFER=1 (backward compatible)
     #if DEBUG_MOTION_BUFFER == 1
@@ -87,7 +88,7 @@
  * @brief Stepper motor configuration
  */
 #define STEPPER_STEPS_PER_REV 200.0f // 1.8° stepper = 200 steps/revolution (0.9° = 400)
-#define MICROSTEPPING_MODE 16.0f     // DRV8825 microstepping: 1, 2, 4, 8, 16, 32
+#define MICROSTEPPING_MODE 32.0f     // DRV8825 microstepping: 1, 2, 4, 8, 16, 32
 
 /**
  * @brief Timing belt drive configuration
@@ -99,7 +100,7 @@
  *   HTD 3mm: 3mm pitch (High Torque Drive)
  *   HTD 5mm: 5mm pitch (High Torque Drive)
  */
-#define BELT_PITCH_MM 2.5f // Belt pitch in mm (2.5 for T2.5, 2.0 for GT2, 3.0 for GT3, 5.0 for GT5/HTD5)
+#define BELT_PITCH_MM 2.0f // Belt pitch in mm (2.5 for T2.5, 2.0 for GT2, 3.0 for GT3, 5.0 for GT5/HTD5)
 #define PULLEY_TEETH 20.0f // Number of teeth on pulley (16, 20, 24, etc.)
 
 /**
@@ -375,10 +376,13 @@ typedef struct
     // Custom: Minimum planner speed (mm/min)
     float minimum_planner_speed;
 
-    // Homing settings (future use)
-    bool homing_enabled;
-    float homing_feed_rate;
-    float homing_seek_rate;
+    // Homing settings (GRBL $23-$28) - ADD THESE
+    uint8_t homing_cycle_mask;     /* $23: Axes to home (bitmask) */
+    float homing_seek_rate;        /* $24: Fast search speed (mm/min) */
+    float homing_feed_rate;        /* $25: Slow approach speed (mm/min) */
+    uint8_t homing_debounce;       /* $26: Debounce time (ms) */
+    float homing_pulloff;          /* $27: Pulloff distance (mm) */
+    uint8_t homing_invert_mask;    /* $28: Limit switch inversion (bitmask) ✅ NEW */
 } motion_settings_t;
 
 #endif // MOTION_TYPES_H

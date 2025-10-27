@@ -40,12 +40,17 @@
 #include "motion/grbl_stepper.h"
 #include "motion/motion_math.h"
 #include "serial_wrapper.h"
+#include "motion/homing.h"
+#include "peripheral/coretimer/plib_coretimer.h"  /* For CORETIMER_DelayMs() in G92 */
+
 
 // *****************************************************************************
 // Private Function Prototypes
 // *****************************************************************************
 static bool GCode_ExecuteCommand(const parsed_move_t *move, parser_modal_state_t *modal);
 static axis_id_t GCode_CharToAxis(char c);
+static bool GCode_HandleFractionalCommands(const char *line);
+
 
 // *****************************************************************************
 // STATIC STATE
@@ -222,7 +227,8 @@ void GCode_HandleControlChar(char c)
          */
         
         /* 1. Emergency stop all motion */
-        MultiAxis_StopAll();
+        Homing_Abort();             /* Abort any active homing cycle */
+        MultiAxis_StopAll();        /* Stop all axis motion immediately */
         
         /* 2. Clear all buffers */
         MotionBuffer_Clear();       /* High-level motion buffer (ring buffer) */
@@ -562,8 +568,8 @@ bool GCode_TokenizeLine(const char *line, gcode_line_t *tokenized_line)
             {
                 char c = work_buffer[i];
 
-                // For system commands, allow letters and '$' to form a single token
-                if (first_char == '$' && (isalpha((int)c) || c == '$')) {
+                // For system commands, allow letters, '$', and '=' to form a single token
+                if (first_char == '$' && (isalpha((int)c) || c == '$' || c == '=')) {
                     tokenized_line->tokens[token_count][token_idx++] = (char)toupper((int)c);
                     i++;
                     continue; // Continue collecting for system command
@@ -673,7 +679,19 @@ bool GCode_ParseLine(const char *line, parsed_move_t *move)
         return false;
     }
 
+    /* CRITICAL: Handle fractional G-codes BEFORE tokenization
+     * These commands (G28.1, G30.1, G92.1) have decimal points that
+     * would be interpreted as floating-point numbers by the tokenizer.
+     */
+    if (GCode_HandleFractionalCommands(line))
+    {
+        return true;  /* Fractional command executed - done */
+    }
+
     gcode_line_t tokenized_line;
+    /* Tokenize the line into words CRITICAL: Handle non whitespace separation???.
+     * This matches GRBL v1.1f behavior.
+     */
     if (!GCode_TokenizeLine(line, &tokenized_line))
     {
         return false;
@@ -757,7 +775,24 @@ bool GCode_ParseLine(const char *line, parsed_move_t *move)
                     const char *eq = strchr(full_token, '=');
                     uint8_t setting_id = (uint8_t)strtoul(&full_token[1], NULL, 10);
                     float value = strtof(eq + 1, NULL);
-                    (void)MotionMath_SetSetting(setting_id, value);
+                    
+                    if (MotionMath_SetSetting(setting_id, value))
+                    {
+                        /* Setting updated successfully */
+                        #ifdef DEBUG_MOTION_BUFFER
+                        UGS_Printf("[SET] $%d=%.3f OK\r\n", setting_id, value);
+                        #endif
+                    }
+                    else
+                    {
+                        /* Setting validation failed */
+                        #ifdef DEBUG_MOTION_BUFFER
+                        UGS_Printf("[SET] $%d=%.3f FAIL\r\n", setting_id, value);
+                        #endif
+                        (void)snprintf(last_error, sizeof(last_error), "Invalid setting value");
+                        return false;
+                    }
+                    
                     token_idx++;
                     command_processed = true;
                     break;
@@ -890,6 +925,69 @@ bool GCode_ParseLine(const char *line, parsed_move_t *move)
 }
 
 /**
+ * @brief Handle fractional G-codes that require special pre-tokenization handling
+ * 
+ * Fractional G-codes (G28.1, G30.1, G92.1) are handled here before tokenization
+ * because the standard tokenizer treats "28.1" as a single floating-point number.
+ * 
+ * @param line Input G-code line
+ * @return true if fractional command handled (don't parse further), false otherwise
+ */
+static bool GCode_HandleFractionalCommands(const char *line)
+{
+    if (line == NULL) return false;
+
+    /* G28.1 - Set G28 reference position (store current position) */
+    if (strstr(line, "G28.1") != NULL)
+    {
+        /* Store current machine positions as G28 reference */
+        for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+        {
+            modal_state.g28_position[axis] = MotionMath_GetMachinePosition(axis);
+        }
+        
+        UGS_Printf(">> G28.1 - G28 reference stored at X%.3f Y%.3f Z%.3f A%.3f\r\n",
+                   modal_state.g28_position[AXIS_X],
+                   modal_state.g28_position[AXIS_Y],
+                   modal_state.g28_position[AXIS_Z],
+                   modal_state.g28_position[AXIS_A]);
+        
+        return true;  /* Command handled - don't parse further */
+    }
+
+    /* G30.1 - Set G30 reference position (store current position) */
+    if (strstr(line, "G30.1") != NULL)
+    {
+        /* Store current machine positions as G30 reference */
+        for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+        {
+            modal_state.g30_position[axis] = MotionMath_GetMachinePosition(axis);
+        }
+        
+        UGS_Printf(">> G30.1 - G30 reference stored at X%.3f Y%.3f Z%.3f A%.3f\r\n",
+                   modal_state.g30_position[AXIS_X],
+                   modal_state.g30_position[AXIS_Y],
+                   modal_state.g30_position[AXIS_Z],
+                   modal_state.g30_position[AXIS_A]);
+        
+        return true;  /* Command handled - don't parse further */
+    }
+
+    /* G92.1 - Clear G92 coordinate system offsets (reset to zero) */
+    if (strstr(line, "G92.1") != NULL)
+    {
+        /* Clear all G92 offsets */
+        memset(modal_state.g92_offset, 0, sizeof(modal_state.g92_offset));
+        
+        UGS_Print(">> G92.1 - Coordinate offsets cleared\r\n");
+        
+        return true;  /* Command handled - don't parse further */
+    }
+
+    return false;  /* Not a fractional command - continue normal parsing */
+}
+
+/**
  * @brief Executes a parsed G-code command and updates the modal state.
  * 
  * @param move The parsed move to execute.
@@ -907,19 +1005,244 @@ static bool GCode_ExecuteCommand(const parsed_move_t *move, parser_modal_state_t
         case 4:  // G4 Dwell
             // Implement dwell logic if needed
             break;
-        case 28: // G28 Go to Pre-Defined Position
-        case 30: // G30 Go to Pre-Defined Position
-            // Implement go to predefined position
-            break;
-        case 92: // G92 Set Coordinate System Offset
+            
+        case 28: // G28 - Go to Pre-Defined Position (or Home)
         {
-            snprintf(buffer, sizeof(buffer), ">> G92 (coordinate offset: X%.3f Y%.3f Z%.3f A%.3f)\r\n",
-                     move->target[AXIS_X], move->target[AXIS_Y], move->target[AXIS_Z], move->target[AXIS_A]);
+            /* Check if any axis words specified */
+            bool has_axis_words = false;
+            for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+            {
+                if (move->axis_words[axis])
+                {
+                    has_axis_words = true;
+                    break;
+                }
+            }
+            
+            if (has_axis_words)
+            {
+                /* G28 X Y Z - Multi-step sequence:
+                 * GRBL v1.1f behavior:
+                 * 1. Move specified axes to their G28 stored positions
+                 * 2. If homing required, execute homing cycle first
+                 * 
+                 * For now: Simple implementation - move to stored positions
+                 */
+                int32_t target_steps[NUM_AXES] = {0};
+                
+                /* Build target from stored G28 positions for specified axes */
+                for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+                {
+                    if (move->axis_words[axis])
+                    {
+                        /* Use stored G28 position for this axis */
+                        target_steps[axis] = MotionMath_MMToSteps(modal->g28_position[axis], axis);
+                    }
+                    else
+                    {
+                        /* Keep current position for this axis */
+                        target_steps[axis] = MotionMath_MMToSteps(
+                            MotionMath_GetMachinePosition(axis), axis);
+                    }
+                }
+                
+                /* Execute coordinated move to G28 positions */
+                MultiAxis_ExecuteCoordinatedMove(target_steps);
+                
+                UGS_Print(">> G28 - Moving to stored positions\r\n");
+            }
+            else
+            {
+                /* G28 alone - Home all axes then move to stored G28 position
+                 * GRBL v1.1f behavior:
+                 * 1. Execute homing cycle (find limit switches)
+                 * 2. After homing complete, move to stored G28 positions
+                 */
+                if (!Homing_ExecuteCycle(HOMING_CYCLE_ALL_AXES))
+                {
+                    (void)snprintf(last_error, sizeof(last_error), 
+                                   "Homing cycle failed to start");
+                    return false;
+                }
+                
+                /* TODO: After homing completes, move to stored G28 positions
+                 * This requires checking homing state in main loop and 
+                 * executing a follow-up move. For now, just home.
+                 */
+                UGS_Print(">> G28 - Homing cycle started\r\n");
+            }
+            break;
+        }
+        
+        case 30: // G30 - Go to Pre-Defined Position (G30 reference)
+        {
+            /* G30 is similar to G28 but uses G30 stored positions instead
+             * GRBL v1.1f: G30 does NOT perform homing - only moves to stored positions
+             */
+            bool has_axis_words = false;
+            for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+            {
+                if (move->axis_words[axis])
+                {
+                    has_axis_words = true;
+                    break;
+                }
+            }
+            
+            if (has_axis_words)
+            {
+                /* G30 X Y Z - Move specified axes to stored G30 positions */
+                int32_t target_steps[NUM_AXES] = {0};
+                
+                /* Build target from stored G30 positions for specified axes */
+                for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+                {
+                    if (move->axis_words[axis])
+                    {
+                        /* Use stored G30 position for this axis */
+                        target_steps[axis] = MotionMath_MMToSteps(modal->g30_position[axis], axis);
+                    }
+                    else
+                    {
+                        /* Keep current position for this axis */
+                        target_steps[axis] = MotionMath_MMToSteps(
+                            MotionMath_GetMachinePosition(axis), axis);
+                    }
+                }
+                
+                /* Execute coordinated move to G30 positions */
+                MultiAxis_ExecuteCoordinatedMove(target_steps);
+                
+                UGS_Print(">> G30 - Moving to stored positions\r\n");
+            }
+            else
+            {
+                /* G30 alone - Move all axes to stored G30 positions */
+                int32_t target_steps[NUM_AXES];
+                
+                for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+                {
+                    target_steps[axis] = MotionMath_MMToSteps(modal->g30_position[axis], axis);
+                }
+                
+                /* Execute coordinated move */
+                MultiAxis_ExecuteCoordinatedMove(target_steps);
+                
+                UGS_Print(">> G30 - Moving to stored positions\r\n");
+            }
+            break;
+        }
+        
+        case 92: // G92 - Set Coordinate System Offset
+        {
+            /* G92 X Y Z A - Set coordinate system offsets
+             * GRBL v1.1f: Offsets current position to specified coordinates
+             * 
+             * Example: Machine at (10, 20, 5)
+             *   G92 X0 Y0 Z0  → Work position becomes (0, 0, 0)
+             *   Offset = (10, 20, 5)  [current machine - requested work]
+             * 
+             * Note: G92.1 (clear offsets) handled in GCode_HandleFractionalCommands()
+             */
+            
+            if (!move->axis_words[AXIS_X] && !move->axis_words[AXIS_Y] && 
+                !move->axis_words[AXIS_Z] && !move->axis_words[AXIS_A])
+            {
+                /* G92 with no axis words - error */
+                (void)snprintf(last_error, sizeof(last_error), 
+                               "G92 requires at least one axis");
+                return false;
+            }
+            
+            /* Calculate and apply offsets for specified axes */
+            float offsets[NUM_AXES] = {0.0f, 0.0f, 0.0f, 0.0f};
+            
+            /* Get current G92 offsets (preserve unchanged axes) */
+            for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+            {
+                offsets[axis] = modal->g92_offset[axis];
+            }
+            
+            /* ✅ CRITICAL FIX (Oct 26, 2025): Wait for motion to complete!
+             * G92 is a non-motion command that executes immediately in parser.
+             * If previous G1 is still executing, MultiAxis_GetStepCount() will
+             * return IN-FLIGHT position, causing planner desync.
+             * 
+             * Example: G1 X90 → G92 X0 Y0
+             *   Without wait: G92 reads position while motor still moving to X90
+             *   Result: pl.pos becomes wrong (e.g., -40mm when should be 0mm)!
+             * 
+             * Solution: Ensure motion system is IDLE before reading step counts.
+             */
+            while (MultiAxis_IsBusy())
+            {
+                /* Wait for any in-progress motion to complete */
+                /* This is safe - G92 is not time-critical */
+            }
+            
+            /* CRITICAL (Oct 26, 2025): Add small delay for ISR to complete!
+             * MultiAxis_IsBusy() returns false when segment execution stops,
+             * but the FINAL step count update might still be in the ISR pipeline.
+             * Without this delay, we read step counts 608 steps short (4mm error)!
+             */
+            CORETIMER_DelayMs(10);  /* 10ms delay ensures ISR completes */
+            
+            #ifdef DEBUG_MOTION_BUFFER
+            /* Debug: Show step counts BEFORE calculating offsets */
+            int32_t debug_steps[NUM_AXES];
+            for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+            {
+                debug_steps[axis] = MultiAxis_GetStepCount(axis);
+            }
+            UGS_Printf("[G92] Step counts before offset calc: X=%ld Y=%ld Z=%ld A=%ld\r\n",
+                       debug_steps[AXIS_X], debug_steps[AXIS_Y], 
+                       debug_steps[AXIS_Z], debug_steps[AXIS_A]);
+            #endif
+            
+            for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+            {
+                if (move->axis_words[axis])
+                {
+                    /* Get current machine position (NOW STABLE - motion stopped!) */
+                    float current_machine_pos = MotionMath_GetMachinePosition(axis);
+                    
+                    /* Calculate offset: machine position - desired work position */
+                    offsets[axis] = current_machine_pos - move->target[axis];
+                    modal->g92_offset[axis] = offsets[axis];  /* Store in modal state too */
+                    
+                    #ifdef DEBUG_MOTION_BUFFER
+                    UGS_Printf("[G92] Axis %d: current_pos=%.3f, target=%.3f, offset=%.3f\r\n",
+                               axis, current_machine_pos, move->target[axis], offsets[axis]);
+                    #endif
+                }
+            }
+            
+            /* Apply offsets to motion_math (this is what status reports use!) */
+            MotionMath_SetG92Offset(offsets);
+            
+            /* ✅ CRITICAL FIX (Oct 26, 2025): Sync planner position after G92!
+             * Without this, planner's internal position tracking becomes wrong,
+             * causing massive drift (e.g., G1 X90 from X=0 thinks it's at X=-93).
+             * This was the root cause of 3mm drift per 2 cycles.
+             * 
+             * NOW SAFE: Motion stopped above, step counts stable!
+             */
+            int32_t current_steps[NUM_AXES];
+            for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+            {
+                current_steps[axis] = MultiAxis_GetStepCount(axis);
+            }
+            GRBLPlanner_SyncPosition(current_steps);
+            
+            /* Report new work position */
+            (void)snprintf(buffer, sizeof(buffer), 
+                           ">> G92 - Work position set to X%.3f Y%.3f Z%.3f A%.3f\r\n",
+                           move->axis_words[AXIS_X] ? move->target[AXIS_X] : MotionMath_GetWorkPosition(AXIS_X),
+                           move->axis_words[AXIS_Y] ? move->target[AXIS_Y] : MotionMath_GetWorkPosition(AXIS_Y),
+                           move->axis_words[AXIS_Z] ? move->target[AXIS_Z] : MotionMath_GetWorkPosition(AXIS_Z),
+                           move->axis_words[AXIS_A] ? move->target[AXIS_A] : MotionMath_GetWorkPosition(AXIS_A));
             UGS_Print(buffer);
             
-            // Here you would apply the offset to your machine's coordinate system.
-            // For example, update a global offset variable.
-            // This is a non-modal command that affects state but doesn't change modal groups.
             break;
         }
 

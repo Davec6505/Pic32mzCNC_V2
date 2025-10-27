@@ -128,5 +128,33 @@ After MCC generation:
 
 ---
 
+## $28 - Limit Switch Inversion Mask
+
+**Purpose**: Configure whether limit switches are Normally Open (NO) or Normally Closed (NC)
+
+**Format**: Bitmask where each bit represents one axis
+- Bit 0 (0x01): X-axis
+- Bit 1 (0x02): Y-axis  
+- Bit 2 (0x04): Z-axis
+- Bit 3 (0x08): A-axis
+
+**Logic**:
+- Bit SET (1): Switch is Normally Closed (NC) - invert pin reading
+- Bit CLEAR (0): Switch is Normally Open (NO) - use pin reading as-is
+
+**Examples**:
+```gcode
+$28=0    ; All axes use NO switches (default)
+$28=7    ; X/Y/Z use NC switches (0b0111)
+$28=4    ; Only Z uses NC switch (0b0100)
+$28=15   ; All axes use NC switches (0b1111)
+```
+
+**Hardware**:
+- NO switch: Connect between GPIO and VCC, enable internal pull-down
+- NC switch: Connect between GPIO and GND, enable internal pull-up
+
+---
+
 **Last Updated**: October 25, 2025 (Evening)
 **Critical**: DO NOT delete this file! Pin to project root for visibility.

@@ -1,45 +1,126 @@
+# PIC32MZ CNC V2 — Copilot / AI contributor guide
+
+This file is a short, practical guide for an AI coding agent to be immediately productive in this repository.
+
+Keep it short: focus on the project's structural constraints, critical safety rules, build & test flows, and a few concrete examples.
+
+1) Big picture (what code does and why)
+- Purpose: real-time CNC motion controller for PIC32MZ using hardware OCR modules and a time-based S-curve motion engine (NOT a 30kHz software stepper).
+- Data flow: UART → UGS/serial wrapper → G-code parser (`srcs/gcode_parser.c`) → MotionBuffer (`srcs/motion/motion_buffer.c`) → MultiAxis controller (`srcs/motion/multiaxis_control.c`) → OCR/TMR hardware.
+
+2) Critical repo conventions and constraints (must-follow)
+- Documentation policy: do NOT add new docs. Update only one of the four canonical docs: `docs/GCODE_AND_PARSING.md`, `docs/LINEAR_MOTION.md`, `docs/ARC_MOTION.md`, `docs/GENERAL_SYSTEM.md`.
+- Makefile policy: change build configuration only in the root `Makefile`. Do NOT change compilation policy in `srcs/Makefile`—root passes flags down.
+- ISR safety: never call blocking functions from ISRs. Set flags in ISRs and handle them in the main loop. See `srcs/ugs_interface.c` / `incs/serial_wrapper.h` for the pattern.
+- File-level variables: any variable shared with ISRs must be declared at the top of its C file under the "Local Variables" comment block and marked `volatile` when appropriate. (See `docs/CODING_STANDARDS.md` and examples in `srcs/motion/multiaxis_control.c`.)
+
+3) Motion-specific patterns to preserve
+- Only the dominant axis enables its OCR/TMR hardware for continuous pulses; subordinates are bit-banged by Bresenham in the dominant ISR. See `multiaxis_control.c` and `grbl_stepper.c`.
+- `motion_types.h` is the single source of truth for axis/types—do not duplicate types elsewhere.
+- Use dual-compare OCR pattern: OCxR = period - 40, OCxRS = 40, then start timer. Do not swap those values.
+
+4) Build & debug (concrete commands)
+- Normal build (from repo root, PowerShell):
+  make all
+- Debug builds: enable motion buffer debug levels via root variables:
+  make all BUILD_CONFIG=Debug DEBUG_MOTION_BUFFER=3
+  (set DEBUG_MOTION_BUFFER=1..7 to vary verbosity)
+- VS Code / tasks: there are workspace tasks named "Build PIC32MZ Project" and "Build with segment trace" — use them when present.
+
+5) Test & hardware scripts
+- PowerShell test scripts live in `ps_commands/` (e.g. `test_circle_debug.ps1`, `test_coordinates.ps1`, `test_ocr_direct.ps1`). Use them to run integration/hardware-in-loop tests.
+
+6) What AI agents should change (and what to avoid)
+- OK to: fix algorithmic bugs, add unit-style tests for pure functions (motion math), add small debug traces behind a debug flag, update the four canonical docs.
+- Avoid: changing `srcs/Makefile` build logic, creating new documentation files, calling blocking UART TX from ISRs, altering ISR ordering / priorities without hardware verification.
+
+7) Useful file map & examples (start here)
+- Entry & loop: `srcs/main.c`
+- Parser: `srcs/gcode_parser.c` and header `incs/gcode_parser.h`
+- Motion buffer (look-ahead): `srcs/motion/motion_buffer.c`, `incs/motion/motion_buffer.h`
+- Real-time control: `srcs/motion/multiaxis_control.c`, `incs/motion/multiaxis_control.h`
+- Central types: `incs/motion/motion_types.h`
+- Serial / UGS: `srcs/ugs_interface.c`, `incs/ugs_interface.h`, `incs/serial_wrapper.h`
+
+8) Examples: small, copy-pasteable
+- Build with planner debug:
+  make all BUILD_CONFIG=Debug DEBUG_MOTION_BUFFER=3
+- Add a non-blocking ISR flag pattern (follow `serial_wrapper.c`):
+  // ISR: set volatile flag
+  realtime_cmd = data;
+  // Main loop: read and handle
+  if (Serial_GetRealtimeCommand()) GCode_HandleControlChar(cmd);
+
+9) When uncertain — short checklist
+- Did you check `docs/CODING_STANDARDS.md` and the 4 canonical docs? Yes → proceed.
+- Will the change touch ISRs, timers, or hardware registers? If yes: keep it minimal, test in simulation/hardware, and document in one of the 4 docs.
+- Are you changing build behaviour? Edit the root Makefile only and run `make all` to validate.
+
+If anything here is unclear or you'd like additional examples (small unit tests, common refactors, or a PR template), tell me which area and I will expand this file.
 # PIC32MZ CNC Motion Controller V2 - AI Coding Guide
 
-## ⚠️ CRITICAL FIXES - OCTOBER 25, 2025 ✅
+## ⚠️ CRITICAL ISSUE - OCTOBER 26, 2025 - ACTIVE INVESTIGATION ⏸️
 
-### 🎉 **MAJOR SUCCESS: Infinite Retry Loop FIXED!**
+### 🔴 **PHYSICAL STEP LOSS - Software Perfect, Hardware Losing Steps**
 
-**Problem Discovered (Oct 25, 2025 Evening):**
-- First circle test completed successfully ✅
-- On **second run**, system hung with infinite retry loop
-- Debug output showed: `[PARSE] 'G0Z5'` repeated forever (100+ times)
-- Root cause: `G0Z5` command tried to move to Z=5 when **already at Z=5**
-- Planner correctly rejected as zero-length block
-- Main loop incorrectly assumed rejection = buffer full → retry forever!
+**Status as of Oct 26, 2025:** System paused until Nov 1, 2025 for further investigation.
 
-**The Fix - Tri-State Return System:**
-```c
-// NEW: grbl_planner.h
-typedef enum {
-    PLAN_OK = 1,          // Block successfully added to buffer
-    PLAN_BUFFER_FULL = 0, // Buffer full - temporary, RETRY after waiting
-    PLAN_EMPTY_BLOCK = -1 // Zero-length block - permanent, DO NOT RETRY
-} plan_status_t;
+**What's Working (Software) ✅:**
+- Position tracking: `[STEP_COUNT] X: Cmd=13500, Exec=13500, Diff=0, MPos=0` (PERFECT!)
+- Planner synchronization: G92 working correctly, no software drift
+- Step execution: Software sends exact number of commanded steps
+- All four previous bugs FIXED:
+  1. ✅ Serial echo filter (debug output not re-parsed)
+  2. ✅ G92 planner sync (`GRBLPlanner_SyncPosition()` added)
+  3. ✅ G92 race condition (motion wait + 10ms ISR delay)
+  4. ✅ Sign loss bug (`int32_t` instead of `uint32_t` in `MotionMath_GetMachinePosition()`)
 
-// NEW: main.c smart retry logic
-plan_status_t plan_result = GRBLPlanner_BufferLine(target_mm, &pl_data);
+**What's NOT Working (Hardware) ❌:**
+- Physical position drift: ~5mm loss after 2 complete 0→90→0 cycles
+- Calculation: 5mm × 150 steps/mm = 750 steps lost out of 54,000 total (1.4% loss)
+- Software confirms all steps sent correctly
+- **Conclusion: Motor physically not executing all commanded steps**
 
-if (plan_result == PLAN_OK) {
-    UGS_SendOK();          // ✅ SUCCESS: Send "ok" and continue
-    pending_retry = false;
-}
-else if (plan_result == PLAN_BUFFER_FULL) {
-    pending_retry = true;  // ⏳ TEMPORARY: Retry after waiting
-}
-else /* PLAN_EMPTY_BLOCK */ {
-    UGS_SendOK();          // ❌ PERMANENT: Silently ignore, send "ok"
-    pending_retry = false; // Don't retry zero-length moves!
-}
+**Evidence from Debug Output (Oct 26, 2025):**
+```
+Cycle 1: G1 X90 → MPos=13500 ✅, G1 X0 → MPos=0 ✅
+Cycle 2: G1 X90 → MPos=13500 ✅, G1 X0 → MPos=0 ✅
+Physical measurement: Machine 5mm short of zero ❌
+
+Software says: "I'm at zero" (step counter = 0)
+Hardware reality: Machine is at -5mm position
 ```
 
-**Result:**
-- ✅ First circle completes successfully
-- ✅ Second run processes redundant `G0Z5` without hanging
+**Root Cause Hypothesis:**
+Lost steps during **direction changes** - DRV8825 driver missing steps when direction reverses.
+
+**Attempted Fixes:**
+- Direction setup time increased from 1µs → 100µs (CORETIMER_DelayUs)
+- Delays added at 7 locations in multiaxis_control.c (lines 1360, 1367, 1374, 1381, 1518, 1634, 1750)
+- Status: Needs hardware testing (not completed before pause)
+
+**Next Steps (Resume Nov 1, 2025):**
+1. **Test with 100µs direction delays** - Flash firmware and run 0→90→0 cycles
+2. **If still losing steps:** Increase delay to 500µs or 1ms (very conservative)
+3. **Add oscilloscope verification:**
+   - Monitor DIR pin vs STEP pin timing
+   - Verify DRV8825 sees direction stable BEFORE first step pulse
+   - Measure actual delay between direction change and first pulse
+4. **Check DRV8825 datasheet:** Verify direction setup time requirement (typically 200ns min)
+5. **Alternative investigation paths:**
+   - Reduce max acceleration ($120 setting) to prevent motor stalling
+   - Check belt tension (mechanical slippage)
+   - Verify DRV8825 current limit setting (VREF potentiometer)
+   - Test with slower feedrates (F500 instead of default)
+
+**Critical Files Modified (Oct 26, 2025):**
+- `srcs/motion/motion_math.c` (line 985): Fixed sign loss bug
+- `srcs/gcode/gcode_parser.c` (lines 1169-1184): Added G92 timing fixes
+- `srcs/motion/multiaxis_control.c` (multiple locations): Direction delays 1µs → 100µs
+
+**Test Scripts for Nov 1:**
+- `ps_commands/test_step_count.ps1` - Simple 10mm forward/back verification
+- Manual test: `G92 X0 Y0` → `G1 X90` → `G1 X0` → Measure physical position with calipers
 - ✅ System sends "ok" and continues to next command
 - ✅ No more infinite retry loops!
 - ✅ LED stays blinking, UGS remains connected

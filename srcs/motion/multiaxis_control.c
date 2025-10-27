@@ -1171,16 +1171,28 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
             // Check if this axis had motion in the completed block
             if (ax_state->block_steps_commanded > 0)
             {
+#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_DRIFT
+                // CRITICAL DEBUG (Oct 26, 2025): Step count drift investigation
+                const char *axis_names[] = {"X", "Y", "Z", "A"};
+                int32_t diff = (int32_t)ax_state->block_steps_executed - (int32_t)ax_state->block_steps_commanded;
+                
+                UGS_Printf("[STEP_COUNT] %s: Cmd=%lu, Exec=%lu, Diff=%ld, MPos=%ld\r\n",
+                           axis_names[axis],
+                           ax_state->block_steps_commanded,
+                           ax_state->block_steps_executed,
+                           diff,
+                           (long)machine_position[axis]);
+                
                 // Verify OCR delivered all commanded pulses
-                if (ax_state->block_steps_executed != ax_state->block_steps_commanded)
+                if (diff != 0)
                 {
-                    const char *axis_names[] = {"X", "Y", "Z", "A"};
                     UGS_Printf("ERROR: %s axis step mismatch! Commanded=%lu, Executed=%lu, Diff=%ld\r\n",
                                axis_names[axis],
                                ax_state->block_steps_commanded,
                                ax_state->block_steps_executed,
-                               (int32_t)ax_state->block_steps_executed - (int32_t)ax_state->block_steps_commanded);
+                               diff);
                 }
+#endif
             }
             
             ax_state->current_segment = NULL;
@@ -1347,24 +1359,28 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
                 DirX_Clear();
             else
                 DirX_Set();
+            CORETIMER_DelayUs(1);  /* INCREASED: Testing if direction change needs more settling time */
             break;
         case AXIS_Y:
             if (dir_negative)
                 DirY_Clear();
             else
                 DirY_Set();
+            CORETIMER_DelayUs(1);  /* INCREASED: Testing if direction change needs more settling time */
             break;
         case AXIS_Z:
             if (dir_negative)
                 DirZ_Clear();
             else
                 DirZ_Set();
+            CORETIMER_DelayUs(1);  /* INCREASED: Testing if direction change needs more settling time */
             break;
         case AXIS_A:
             if (dir_negative)
                 DirA_Clear();
             else
                 DirA_Set();
+            CORETIMER_DelayUs(1);  /* INCREASED: Testing if direction change needs more settling time */
             break;
         default:
             break;
@@ -1501,6 +1517,7 @@ static void OCMP5_StepCounter_X(uintptr_t context)
             } else {
                 DirX_Set();    /* Positive direction */
             }
+            CORETIMER_DelayUs(1);  /* INCREASED: Testing if direction change needs more settling time */
             
             /* C. Configure OCR with ACTUAL segment period (not hardcoded 100!) */
             uint32_t period = state->current_segment->period;
@@ -1616,6 +1633,7 @@ static void OCMP1_StepCounter_Y(uintptr_t context)
             } else {
                 DirY_Set();    /* Positive direction */
             }
+            CORETIMER_DelayUs(1);  /* INCREASED: Testing if direction change needs more settling time */
             
             /* C. Configure OCR with ACTUAL segment period (not hardcoded 100!) */
             uint32_t period = state->current_segment->period;
@@ -1731,6 +1749,7 @@ static void OCMP4_StepCounter_Z(uintptr_t context)
             } else {
                 DirZ_Set();    /* Positive direction */
             }
+            CORETIMER_DelayUs(1);  /* INCREASED: Testing if direction change needs more settling time */
             
             /* C. Configure OCR with ACTUAL segment period (not hardcoded 100!) */
             uint32_t period = state->current_segment->period;

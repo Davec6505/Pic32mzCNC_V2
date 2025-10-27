@@ -190,6 +190,15 @@ void MotionMath_LoadDefaultSettings(void)
     // Advanced parameters
     motion_settings.jerk_limit = 1000.0f;          // mm/sec³ - For S-curves (balanced smooth/responsive)
     motion_settings.minimum_planner_speed = 10.0f; // mm/min - Minimum junction speed
+
+    /* Get homing settings from motion_math */
+    /* Homing settings (GRBL $24-$27) */
+    motion_settings.homing_cycle_mask = 0x07;      /* $23: XYZ enabled (0x07 = 0b0111) */
+    motion_settings.homing_seek_rate = 2000.0f;    /* $24: mm/min fast search */
+    motion_settings.homing_feed_rate = 100.0f;     /* $25: mm/min slow approach */
+    motion_settings.homing_debounce = 25;          /* $26: ms debounce */
+    motion_settings.homing_pulloff = 2.0f;         /* $27: mm backoff distance */
+    motion_settings.homing_invert_mask = 0x00;     /* $28: Default = all NO switches */
 }
 
 bool MotionMath_SetSetting(uint8_t setting_id, float value)
@@ -972,10 +981,10 @@ float MotionMath_GetMachinePosition(axis_id_t axis)
     }
 
     /* Get current position in steps from multiaxis_control */
-    uint32_t steps = MultiAxis_GetStepCount(axis);
+    int32_t steps = MultiAxis_GetStepCount(axis);  /* FIXED: was uint32_t (sign loss!) */
 
     /* Convert steps to mm */
-    float machine_pos_mm = MotionMath_StepsToMM((int32_t)steps, axis);
+    float machine_pos_mm = MotionMath_StepsToMM(steps, axis);
 
     return machine_pos_mm;
 }

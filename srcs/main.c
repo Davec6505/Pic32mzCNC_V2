@@ -48,13 +48,21 @@
 #include "motion/motion_math.h"
 #include "motion/motion_buffer.h"
 #include "motion/motion_manager.h"  // ✅ CRITICAL: TMR9 segment prep!
+#include "motion/homing.h"          // ✅ Homing cycle support
+
+
+
+// *****************************************************************************
+// Section: Local Functions prototypes
+// *****************************************************************************
+static bool GetLimitSwitchState(axis_id_t axis, bool positive_direction);
+
+
+
 
 // *****************************************************************************
 // Section: Main Entry Point
 // *****************************************************************************
-static uint32_t clock_status = 0;
-
-
 
 int main(void)
 {
@@ -69,6 +77,8 @@ int main(void)
 
     UGS_SendBuildInfo();
 
+    Homing_Initialize(GetLimitSwitchState);  // ✅ Pass limit switch callback
+ 
     /* 256U max length of G-code line */
     char line[GCODE_MAX_LINE_LENGTH];
     size_t line_pos = 0;
@@ -149,6 +159,23 @@ int main(void)
                 while (*line_start && isspace((unsigned char)*line_start))
                 {
                     line_start++;
+                }
+
+                // ═══════════════════════════════════════════════════════════════
+                // CRITICAL FIX (October 26, 2025): Filter out debug echo feedback!
+                // Serial terminals often echo transmitted data back to receiver
+                // Debug output (starting with '[') was being re-parsed as G-code!
+                // This caused blocks to execute TWICE (double step count).
+                // ═══════════════════════════════════════════════════════════════
+                if (*line_start == '[' || *line_start == '<' || 
+                    strncmp(line_start, "ok", 2) == 0 ||
+                    strncmp(line_start, "error:", 6) == 0 ||
+                    strncmp(line_start, "ERROR:", 6) == 0 ||
+                    strncmp(line_start, ">>", 2) == 0)
+                {
+                    // Debug/status output being echoed back - ignore it!
+                    line_pos = 0;
+                    continue;
                 }
 
                 // ═══════════════════════════════════════════════════════════════
@@ -380,6 +407,12 @@ int main(void)
          */
         (void)MotionBuffer_CheckArcComplete();
 
+
+        /* Homing cycle non-blocking update */
+        if (Homing_IsActive()) {
+            Homing_Update();  // Process one step of homing cycle
+        }
+
         /* CRITICAL FIX (Oct 26, 2025): Timer-based LED heartbeat
          * 
          * Previous method counted main loop iterations (clock_status++ > 400000)
@@ -397,6 +430,49 @@ int main(void)
     }
 
     return (EXIT_FAILURE);
+}
+
+// *****************************************************************************
+// Section: Local Function Implementations
+// *****************************************************************************
+
+/**
+ * @brief Get limit switch state for homing module
+ * 
+ * Callback function passed to Homing_Initialize().
+ * Limit switches use ACTIVE LOW logic (closed = LOW = triggered).
+ * 
+ * @param axis Axis to check (AXIS_X, AXIS_Y, AXIS_Z, AXIS_A)
+ * @param positive_direction true = max limit, false = min limit
+ * @return true if switch is triggered (closed/grounded)
+ */
+static bool GetLimitSwitchState(axis_id_t axis, bool positive_direction)
+{
+    /* Check appropriate limit switch GPIO based on axis and direction
+     * Limit switches are ACTIVE LOW (closed = LOW = triggered)
+     */
+    switch (axis) {
+        case AXIS_X:
+            return positive_direction 
+                ? false     /* X max limit - not implemented */
+                : !LIMIT_X_PIN_Get();  /* X min limit */
+
+        case AXIS_Y:
+            return positive_direction
+                ? false  /* Y max limit - not implemented */
+                : !LIMIT_Y_PIN_Get(); /* Y min limit */
+
+        case AXIS_Z:
+            return positive_direction
+                ? false  /* Z max limit - not implemented */
+                : !LIMIT_Z_PIN_Get(); /* Z min limit */
+
+        case AXIS_A:
+            return false;  /* A-axis limits not implemented */
+        
+        default:
+            return false;
+    }
 }
 
 /*******************************************************************************

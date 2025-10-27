@@ -19,10 +19,10 @@ M3 S1000 ; spindle on
 ; Safety: Raise to 5mm
 G0 Z5   
 ; Move to start position (10mm, 0mm)
-G0 X10 Y0 ; Lower to working height
+G0 X50 Y50 ; Lower to working height
 G0 Z0 ; 20-segment circle approximation (radius = 10mm, center at origin)
 ; Feedrate: 1000 mm/min for junction testing
-G1 X9.511 Y3.090 F1000
+G1 X9.511 Y3.090 F2000
 G1 X8.090 Y5.878
 G1 X5.878 Y8.090
 G1 X3.090 Y9.511
