@@ -1,3 +1,12 @@
+# Daves questions and notes
+
+During trials of interpolation with the PIC32MZ CNC V2 controller, I observed issues with step continuation , I  typed in G1 X150 Y150 F3000 axis moved well, then G1 X0 Y150 axis moved as expected then G1 X0 Y0 axis moved as expected, the G1 X70 Y150 axis moved to position but then X and Y carried on interpolating at a different angle to get X to 150 which it stopped at but Y moved another 20mm, this could be segment buffer not flushing properly.
+Alterations made to line 2580 multiaxis_control.c to fix this issue by adding a flush after each move, findings once initial execution of this it never prints the msg out again, i think axis are not properly resetting or ending.
+
+I don't believe we need to accelerate and decellerate during arc interpolation, this seems to make the move very jerky, I think we should just set the feed rate and move at that speed for the whole arc, this would make the arc smoother. we could use segment method to change into a arc move and then keep constant speed during movement, in arc move the axis swap dominance continously, we can set a max arc speed limit, which doesn't have to be max speed it can be the calculated max spee per mm move and because these moves are very short sections it would never calculate out to max speed anyway. The segment method is not helping us here neither is continouslt calculating acc dec for every move during arc interpolation, just calculate out initial max speed for a arc movement interpolation, as set it at that for the entire arc.
+
+
+
 # PIC32MZ CNC V2 — Copilot / AI contributor guide
 
 This file is a short, practical guide for an AI coding agent to be immediately productive in this repository.

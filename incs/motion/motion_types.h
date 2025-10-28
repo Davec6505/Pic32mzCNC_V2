@@ -54,7 +54,7 @@
     #define DEBUG_LEVEL_VERBOSE  6  // ~100 msg/sec (high-frequency events)
     #define DEBUG_LEVEL_ALL      7  // >1000 msg/sec (CAUTION: floods serial!)
     #define DEBUG_LEVEL_DRIFT    8  // Step count drift investigation (isolated output)
-    
+    #define DEBUG_SEGMENT_FLUSH  9  // Custom debug level (user-defined)
     // Default to PLANNER level if DEBUG_MOTION_BUFFER=1 (backward compatible)
     #if DEBUG_MOTION_BUFFER == 1
         #undef DEBUG_MOTION_BUFFER

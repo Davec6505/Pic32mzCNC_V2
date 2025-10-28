@@ -2412,7 +2412,7 @@ bool MultiAxis_StartSegmentExecution(void)
 {
     /* CRITICAL FIX (Oct 25, 2025 - Evening): Prevent re-entry while segment executing!
      * 
-     * PROBLEM: Main loop calls this function every iteration. If dominant axis is still
+     * PROBLEM: TMR9 ISR calls this function every 10ms. If dominant axis is still
      * executing previous segment, we must NOT try to start next segment yet!
      * 
      * Symptom: "[SEG_START] X already active, skipping" repeats → main loop hangs
@@ -2466,7 +2466,7 @@ bool MultiAxis_StartSegmentExecution(void)
     if (max_steps_startup > 0)
     {
         segment_completed_by_axis = (1 << dominant_candidate_startup);
-#ifdef DEBUG_MOTION_BUFFER
+#if DEBUG_MOTION_BUFFER == DEBUG_LEVEL_SEGMENT
         // Trace dominant axis selection and per-axis step counts
         const char *axis_names[] = {"X", "Y", "Z", "A"};
         UGS_Printf("[SEG_START] Dominant=%s bitmask=0x%02X n_step=%lu X=%lu Y=%lu Z=%lu A=%lu period=%lu\r\n",
@@ -2492,6 +2492,7 @@ bool MultiAxis_StartSegmentExecution(void)
         return false; // No motion in segment!
     }
 
+
     // Start axes that are IDLE and have motion in this segment
     bool any_axis_started = false;
 
@@ -2503,6 +2504,28 @@ bool MultiAxis_StartSegmentExecution(void)
         // it must transition from OCR (dominant) to bit-bang (subordinate)!
         // Disable OCR hardware before continuing (leave timer running).
         bool is_dominant = (segment_completed_by_axis & (1 << axis)) != 0;
+
+        // CRITICAL interpolation, never gets back here to reinitialize segments?
+        // axis movement error that happens irregularly after
+        // interpolation, erratic behaviour, see copilot-instructions Dave section
+        #if DEBUG_MOTION_BUFFER == DEBUG_SEGMENT_FLUSH
+            const char *axis_names[] = {"X", "Y", "Z", "A"};
+            UGS_Printf("[SEG_INIT] Axis=%s steps=%lu active=%d dominant=%d\r\n",
+                    axis_names[axis],
+                    (unsigned long)first_seg->steps[axis],
+                    state->active,
+                    is_dominant);
+        #endif
+        if (first_seg->steps[axis] == 0)
+            {
+                // Axis has no motion in this segment
+                state->current_segment = SEGMENT_IDLE;
+                state->step_count = 0;
+                state->bresenham_counter = 0;
+                state->block_steps_commanded = 0;
+                state->block_steps_executed = 0;
+                state->active = false;
+            }
 
         if (state->active && !is_dominant && first_seg->steps[axis] > 0)
         {
