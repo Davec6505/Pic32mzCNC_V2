@@ -2226,6 +2226,8 @@ bool MultiAxis_StartSegmentExecution(void)
             // CRITICAL: GRBL sets direction_bits=1 for NEGATIVE motion!
             if (first_seg->direction_bits & (1 << axis))
             {
+                en_clear_funcs[axis](); // Inverted: bit=1 → Clear for negative
+                /*
                 // Negative direction (direction_bits=1)
                 switch (axis)
                 {
@@ -2244,10 +2246,12 @@ bool MultiAxis_StartSegmentExecution(void)
                 default:
                     break;
                 }
+                */
             }
             else
             {
-                // Positive direction (direction_bits=0)
+                en_set_funcs[axis]();
+                /*            // Positive direction (direction_bits=0)
                 switch (axis)
                 {
                 case AXIS_X:
@@ -2265,6 +2269,8 @@ bool MultiAxis_StartSegmentExecution(void)
                 default:
                     break;
                 }
+                    */
+                    
             }
 
             // Enable driver
@@ -2426,6 +2432,84 @@ void MultiAxis_UpdatePosition(const int32_t steps[NUM_AXES])
 *******************************************************************************/
 
 // coord_move is now declared at file scope (line ~415) for ISR access
+bool MultiAxis_CalculateCoordinatedMove(int32_t steps[NUM_AXES])
+{
+    assert(steps != NULL);
+
+    if (steps == NULL)
+    {
+        return false;
+    }
+
+    // Step 1: Find dominant axis (longest distance)
+    uint32_t max_steps = 0;
+    axis_id_t dominant = AXIS_X;
+
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        uint32_t abs_steps = (uint32_t)abs(steps[axis]);
+
+        if (abs_steps > max_steps)
+        {
+            max_steps = abs_steps;
+            dominant = axis;
+        }
+    }
+
+    if (max_steps == 0U)
+    {
+        return false; // No motion required
+    }
+
+    coord_move.dominant_axis = dominant;
+
+    // Step 2: Calculate S-curve profile for dominant axis
+    // This determines the total move time and segment times (t1-t7)
+    volatile scurve_state_t *dominant_state = &axis_state[dominant];
+
+    if (!calculate_scurve_profile(dominant, max_steps))
+    {
+        return false;
+    }
+
+    // Calculate total move time from dominant axis S-curve
+    coord_move.total_move_time = dominant_state->t1_jerk_accel +
+                                 dominant_state->t2_const_accel +
+                                 dominant_state->t3_jerk_decel_accel +
+                                 dominant_state->t4_cruise +
+                                 dominant_state->t5_jerk_accel_decel +
+                                 dominant_state->t6_const_decel +
+                                 dominant_state->t7_jerk_decel_decel;
+
+    // Step 3: Calculate velocity scaling for subordinate axes
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        if (axis == dominant)
+        {
+            coord_move.axis_velocity_scale[axis] = 1.0f; // Dominant runs at full profile
+        }
+        else
+        {
+            uint32_t axis_steps = (uint32_t)abs(steps[axis]);
+
+            if (axis_steps == 0U)
+            {
+                coord_move.axis_velocity_scale[axis] = 0.0f; // Axis not moving
+            }
+            else
+            {
+                // Scale velocity so this axis completes in same time as dominant
+                // scale_factor = axis_distance / dominant_distance
+                coord_move.axis_velocity_scale[axis] =
+                    (float)axis_steps / (float)max_steps;
+            }
+        }
+    }
+
+    return true;
+}
+
+
 
 /*! \brief Calculate coordinated multi-axis move with time synchronization
  *
@@ -2459,10 +2543,10 @@ void MultiAxis_ExecuteCoordinatedMove(int32_t steps[NUM_AXES])
     assert(steps != NULL); /* Development-time check */
 
     /* Calculate coordinated move parameters (dominant axis, velocity scales) */
-   // if (!MultiAxis_CalculateCoordinatedMove(steps))
-   // {
-   //     return; /* Defensive: Invalid move parameters (all axes zero or error) */
-   // }
+    if (!MultiAxis_CalculateCoordinatedMove(steps))
+    {
+        return; /* Defensive: Invalid move parameters (all axes zero or error) */
+    }
 
     /* Get dominant axis S-curve profile - this determines timing for all axes
      * MISRA Rule 8.13: Volatile required as axis_state modified by TMR1 ISR */

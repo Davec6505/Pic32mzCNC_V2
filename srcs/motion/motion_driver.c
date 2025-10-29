@@ -59,15 +59,15 @@ const axis_hardware_t axis_hw[NUM_AXES] = {
 // *****************************************************************************/
 // Wrapper functions for direction pin macros (macros can't be used as function pointers)
 // Direction pin wrappers
-void dirx_set_wrapper(void) { DirX_Set(); }
-void dirx_clear_wrapper(void) { DirX_Clear(); }
-void diry_set_wrapper(void) { DirY_Set(); }
-void diry_clear_wrapper(void) { DirY_Clear(); }
-void dirz_set_wrapper(void) { DirZ_Set(); }
-void dirz_clear_wrapper(void) { DirZ_Clear(); }
+static void dirx_set_wrapper(void) { DirX_Set(); }
+static void dirx_clear_wrapper(void) { DirX_Clear(); }
+static void diry_set_wrapper(void) { DirY_Set(); }
+static void diry_clear_wrapper(void) { DirY_Clear(); }
+static void dirz_set_wrapper(void) { DirZ_Set(); }
+static void dirz_clear_wrapper(void) { DirZ_Clear(); }
 #ifdef ENABLE_AXIS_A
-void dira_set_wrapper(void) { DirA_Set(); }
-void dira_clear_wrapper(void) { DirA_Clear(); }
+static void dira_set_wrapper(void) { DirA_Set(); }
+static void dira_clear_wrapper(void) { DirA_Clear(); }
 #endif
 
 // Direction set function pointer array
@@ -89,19 +89,24 @@ void (*const dir_clear_funcs[NUM_AXES])(void) = {
     dira_clear_wrapper, // AXIS_A
 #endif
 };
-void enx_set_wrapper(void) { EnX_Set(); }
-void enx_clear_wrapper(void) { EnX_Clear(); }
-bool enx_get_wrapper(void) { return EnX_Get(); }
-void eny_set_wrapper(void) { EnY_Set(); }
-void eny_clear_wrapper(void) { EnY_Clear(); }
-bool eny_get_wrapper(void) { return EnY_Get(); }
-void enz_set_wrapper(void) { EnZ_Set(); }
-void enz_clear_wrapper(void) { EnZ_Clear(); }
-bool enz_get_wrapper(void) { return EnZ_Get(); }
+
+
+/*
+ * Drive Enable Pin Wrappers and Function Pointer Arrays
+*/
+static void enx_set_wrapper(void) { EnX_Set(); }
+static void enx_clear_wrapper(void) { EnX_Clear(); }
+static bool enx_get_wrapper(void) { return EnX_Get(); }
+static void eny_set_wrapper(void) { EnY_Set(); }
+static void eny_clear_wrapper(void) { EnY_Clear(); }
+static bool eny_get_wrapper(void) { return EnY_Get(); }
+static void enz_set_wrapper(void) { EnZ_Set(); }
+static void enz_clear_wrapper(void) { EnZ_Clear(); }
+static bool enz_get_wrapper(void) { return EnZ_Get(); }
 #ifdef ENABLE_AXIS_A
-void ena_set_wrapper(void) { EnA_Set(); }
-void ena_clear_wrapper(void) { EnA_Clear(); }
-bool ena_get_wrapper(void) { return EnA_Get(); }
+static void ena_set_wrapper(void) { EnA_Set(); }
+static void ena_clear_wrapper(void) { EnA_Clear(); }
+static bool ena_get_wrapper(void) { return EnA_Get(); }
 #endif
 
 void (*const en_set_funcs[NUM_AXES])(void) = {
