@@ -357,7 +357,7 @@ grbl_plan_block_t *GRBLPlanner_GetCurrentBlock(void)
     /* Check if buffer empty */
     if (block_buffer_head == block_buffer_tail)
     {
-#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_VERBOSE
+#if DEBUG_MOTION_BUFFER == DEBUG_LEVEL_VERBOSE
         if (!last_empty_reported) {
             UGS_Printf("[PLANNER] GetCurrentBlock: Buffer empty (head==tail)\r\n");
             last_empty_reported = true;
@@ -389,7 +389,7 @@ grbl_plan_block_t *GRBLPlanner_GetCurrentBlock(void)
     /* Allow execution if block is planned OR if it's the only block */
     if ((block_buffer_tail == block_buffer_planned) && !only_one_block)
     {
-#ifdef DEBUG_MOTION_BUFFER
+#if DEBUG_MOTION_BUFFER == DEBUG_LEVEL_VERBOSE
         UGS_Printf("[PLANNER] GetCurrentBlock: BLOCKED! tail=%u planned=%u head=%u only_one=%d\r\n",
                    block_buffer_tail, block_buffer_planned, block_buffer_head, only_one_block);
 #endif

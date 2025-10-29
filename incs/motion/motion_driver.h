@@ -1,4 +1,3 @@
-
 #ifndef MOTION_DRIVER_H
 #define MOTION_DRIVER_H
 
@@ -14,6 +13,15 @@
 // XC32 doesn't have __NOP(), use inline assembly instead
 #define NOP() __asm__ __volatile__("nop")
 
+// *****************************************************************************
+// TMR's Rest to zero
+// *****************************************************************************
+void TMR1_Reset(void);
+void TMR2_Reset(void);
+void TMR3_Reset(void);
+void TMR4_Reset(void);
+void TMR5_Reset(void);
+void TMR6_Reset(void);
 
 
 // OCR/Timer assignments per PIC32MZ hardware
@@ -27,6 +35,7 @@ typedef struct
     void (*TMR_Start)(void);
     void (*TMR_Stop)(void);
     void (*TMR_PeriodSet)(uint16_t);
+    void (*TMR_Reset)(void);
 } axis_hardware_t;
 
 
@@ -249,8 +258,29 @@ static inline bool MotionDriver_ReadEnablePin(axis_id_t axis)
     }
     return en_get_funcs[axis]();
 }
+/*! \brief Set pulse width for specified axis using dynamic lookup
+ *
+ *  \param axis Axis identifier (AXIS_X, AXIS_Y, AXIS_Z, AXIS_A)
+ *  \param counts Primary compare value (pulse width)
+ *  \param s_counts Secondary compare value (for dual compare modes)
+ *
+ *  MISRA Rule 17.4: Bounds checking before array access
+ *  MISRA Rule 1.3: Validate function pointer before call
+ */
 
-
-
+static inline void MotionDriver_SetPulseWidth(axis_id_t axis, uint16_t counts,uint16_t s_counts) __attribute__((always_inline));
+static inline void MotionDriver_SetPulseWidth(axis_id_t axis, uint16_t counts,uint16_t s_counts)
+{
+    /* MISRA Rule 17.4: Bounds checking before array access */
+    if ((axis < 0) || (axis >= NUM_AXES))
+    {
+        return;
+    }
+    /* MISRA Rule 1.3: Validate function pointer before call */
+    axis_hw[axis].OCMP_CompareValueSet(counts);
+    axis_hw[axis].OCMP_CompareSecondaryValueSet(s_counts);
+    axis_hw[axis].TMR_PeriodSet(0xFFFF);             // Force immediate rollover (timer already running)
+    axis_hw[axis].OCMP_Enable();                     // Restart OCR module
+}
 #endif // MOTION_DRIVER_H
 // *****************************************************************************

@@ -1,5 +1,3 @@
-
-
 #include <assert.h>
 #include "motion/motion_driver.h"
 #include "motion/motion_math.h"
@@ -18,7 +16,8 @@ const axis_hardware_t axis_hw[NUM_AXES] = {
         .OCMP_CallbackRegister = OCMP5_CallbackRegister,
         .TMR_Start = TMR3_Start,
         .TMR_Stop = TMR3_Stop,
-        .TMR_PeriodSet = TMR3_PeriodSet},
+        .TMR_PeriodSet = TMR3_PeriodSet,
+        .TMR_Reset = TMR3_Reset},
     // AXIS_Y: OCMP1 + TMR4 (CORRECT - per hardware wiring)
     {
         .OCMP_Enable = OCMP1_Enable,
@@ -28,7 +27,8 @@ const axis_hardware_t axis_hw[NUM_AXES] = {
         .OCMP_CallbackRegister = OCMP1_CallbackRegister,
         .TMR_Start = TMR4_Start,
         .TMR_Stop = TMR4_Stop,
-        .TMR_PeriodSet = TMR4_PeriodSet},
+        .TMR_PeriodSet = TMR4_PeriodSet,
+        .TMR_Reset = TMR4_Reset},
     // AXIS_Z: OCMP4 + TMR2 (CORRECTED - per hardware wiring)
     {
         .OCMP_Enable = OCMP4_Enable,
@@ -38,7 +38,8 @@ const axis_hardware_t axis_hw[NUM_AXES] = {
         .OCMP_CallbackRegister = OCMP4_CallbackRegister,
         .TMR_Start = TMR2_Start,
         .TMR_Stop = TMR2_Stop,
-        .TMR_PeriodSet = TMR2_PeriodSet},
+        .TMR_PeriodSet = TMR2_PeriodSet,
+        .TMR_Reset = TMR2_Reset},
     // AXIS_A: OCMP3 + TMR5 (CORRECT - per hardware wiring)
     {
         .OCMP_Enable = OCMP3_Enable,
@@ -48,7 +49,8 @@ const axis_hardware_t axis_hw[NUM_AXES] = {
         .OCMP_CallbackRegister = OCMP3_CallbackRegister,
         .TMR_Start = TMR5_Start,
         .TMR_Stop = TMR5_Stop,
-        .TMR_PeriodSet = TMR5_PeriodSet}};
+        .TMR_PeriodSet = TMR5_PeriodSet,
+        .TMR_Reset = TMR5_Reset},};
 
 
 volatile bool driver_enabled[NUM_AXES] = {false, false, false, false};
@@ -302,5 +304,12 @@ void MultiAxis_ClearDirection(axis_id_t axis)
         dir_clear_funcs[axis]();
     }
 }
+
+// Actual implementations
+void TMR1_Reset(void) { TMR1 = 0; }
+void TMR2_Reset(void) { TMR2 = 0; }
+void TMR3_Reset(void) { TMR3 = 0; }
+void TMR4_Reset(void) { TMR4 = 0; }
+void TMR5_Reset(void) { TMR5 = 0; }
 
 

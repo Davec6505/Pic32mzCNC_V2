@@ -845,7 +845,7 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
             // Check if this axis had motion in the completed block
             if (ax_state->block_steps_commanded > 0)
             {
-#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_DRIFT
+#if DEBUG_MOTION_BUFFER == DEBUG_LEVEL_DRIFT
                 // CRITICAL DEBUG (Oct 26, 2025): Step count drift investigation
                 const char *axis_names[] = {"X", "Y", "Z", "A"};
                 int32_t diff = (int32_t)ax_state->block_steps_executed - (int32_t)ax_state->block_steps_commanded;
@@ -1089,7 +1089,7 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
         
         // Step 3: Clear timer counter to prevent rollover glitch
         //prefer this as it is cleaner.
-        axis_hw[new_dominant_axis].TMR_CounterClear(); 
+        axis_hw[new_dominant_axis].TMR_Reset(); 
         // CRITICAL: Direct register write - no PLIB function exists for this!
         /*switch (new_dominant_axis)
         {
@@ -1720,12 +1720,12 @@ void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward)
     if (forward)
     {
         //MultiAxis_SetDirection(axis);
-        MotionDriver_SetDirection(axis); // Use motion driver abstraction
+        MotionDriver_SetDirection(axis, true); // Use motion driver abstraction
     }
     else
     {
         //MultiAxis_ClearDirection(axis);
-        MotionDriver_ClearDirection(axis); // Use motion driver abstraction
+        MotionDriver_SetDirection(axis, false); // Use motion driver abstraction
     }
 
     // Start OCR - set initial period for first segment

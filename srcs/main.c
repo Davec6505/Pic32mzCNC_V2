@@ -191,7 +191,7 @@ int main(void)
                 else
                 {
                     // Line has content - parse and execute
-                    #if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_PARSE
+                    #if DEBUG_MOTION_BUFFER == DEBUG_LEVEL_PARSE
                     UGS_Printf("[PARSE] '%s'\r\n", line_start);
                     #endif
                     
@@ -208,7 +208,7 @@ int main(void)
                                              (move.arc_has_ijk || move.arc_has_radius);
                         bool is_motion = is_linear_motion || is_arc_motion;
 
-                        #if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_VERBOSE
+                        #if DEBUG_MOTION_BUFFER == DEBUG_LEVEL_VERBOSE
                         UGS_Printf("[MOTION] mode=%u, X=%d Y=%d Z=%d A=%d, is_motion=%d\r\n",
                                    move.motion_mode,
                                    move.axis_words[0], move.axis_words[1], 

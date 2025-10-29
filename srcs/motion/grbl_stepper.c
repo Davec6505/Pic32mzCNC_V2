@@ -190,7 +190,7 @@ static void prep_new_block(void)
     if (prep.current_block == NULL)
     {
         prep.block_active = false;
-#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_STEPPER
+#if DEBUG_MOTION_BUFFER == DEBUG_LEVEL_STEPPER
         if (!last_null_reported) {
             UGS_Printf("[STEPPER] prep_new_block: NULL from planner (planner empty)\r\n");
             last_null_reported = true;
@@ -209,7 +209,7 @@ static void prep_new_block(void)
     // ═══════════════════════════════════════════════════════════════════════
     block_fetch_count++;
     // LED2_Clear(); // DISABLED Oct 25 - conflicts with arc generator LED2 debug
-#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_STEPPER
+#if DEBUG_MOTION_BUFFER == DEBUG_LEVEL_STEPPER
     UGS_Printf("[STEPPER] prep_new_block: Got block, mm=%.3f steps=(%lu,%lu,%lu,%lu)\r\n",
                prep.current_block->millimeters,
                prep.current_block->steps[AXIS_X],
@@ -427,7 +427,7 @@ static bool prep_segment(void)
         GRBLPlanner_DiscardCurrentBlock();
         prep.block_active = false;
         
-#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_STEPPER
+#if DEBUG_MOTION_BUFFER == DEBUG_LEVEL_STEPPER
         UGS_Printf("[STEPPER] Block complete - block_active set to FALSE\r\n");
 #endif
     }

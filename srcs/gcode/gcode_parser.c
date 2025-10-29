@@ -1187,7 +1187,7 @@ static bool GCode_ExecuteCommand(const parsed_move_t *move, parser_modal_state_t
              */
             CORETIMER_DelayMs(10);  /* 10ms delay ensures ISR completes */
             
-            #ifdef DEBUG_MOTION_BUFFER
+            #if DEBUG_MOTION_BUFFER == DEBUG_LEVEL_PARSE
             /* Debug: Show step counts BEFORE calculating offsets */
             int32_t debug_steps[NUM_AXES];
             for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
@@ -1210,7 +1210,7 @@ static bool GCode_ExecuteCommand(const parsed_move_t *move, parser_modal_state_t
                     offsets[axis] = current_machine_pos - move->target[axis];
                     modal->g92_offset[axis] = offsets[axis];  /* Store in modal state too */
                     
-                    #ifdef DEBUG_MOTION_BUFFER
+                    #if DEBUG_MOTION_BUFFER == DEBUG_LEVEL_PARSE
                     UGS_Printf("[G92] Axis %d: current_pos=%.3f, target=%.3f, offset=%.3f\r\n",
                                axis, current_machine_pos, move->target[axis], offsets[axis]);
                     #endif
