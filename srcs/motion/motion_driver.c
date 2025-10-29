@@ -2,7 +2,10 @@
 
 #include <assert.h>
 #include "motion/motion_driver.h"
+#include "motion/motion_math.h"
+#include "definitions.h"
 
+#include <math.h>
 
 // Hardware configuration table
 const axis_hardware_t axis_hw[NUM_AXES] = {
@@ -46,13 +49,10 @@ const axis_hardware_t axis_hw[NUM_AXES] = {
         .TMR_Start = TMR5_Start,
         .TMR_Stop = TMR5_Stop,
         .TMR_PeriodSet = TMR5_PeriodSet}};
-#include "motion/motion_driver.h"
-#include "motion/motion_math.h"
-#include "definitions.h"
-
-#include <math.h>
 
 
+volatile bool driver_enabled[NUM_AXES] = {false, false, false, false};
+volatile bool axis_was_dominant_last_isr[NUM_AXES] = {false, false, false, false};
 
 // ******************************************************************************
 // Drive Control Pin Macros (Dynamic Function Pointer Lookup)
@@ -136,8 +136,7 @@ bool (*const en_get_funcs[NUM_AXES])(void) = {
 #endif
 };
 
-volatile bool driver_enabled[NUM_AXES] = {false, false, false, false};
-volatile bool axis_was_dominant_last_isr[NUM_AXES] = {false, false, false, false};
+
 
 // *****************************************************************************
 // Dominant Axis Transition State Tracking (ISR-Safe)

@@ -456,7 +456,8 @@ static void Execute_Bresenham_Strategy_Internal(axis_id_t dominant_axis, const s
             // Timer clock: 1.5625 MHz (640ns per count)
             // Pulse width: 31 counts = 19.84µs ≈ 20µs (meets DRV8825 1.9µs minimum)
             // ═════════════════════════════════════════════════════════════════════
-
+            MotionDriver_SetPulseWidth(sub_axis,5, 31);
+/*
             switch (sub_axis)
             {
             case AXIS_X:
@@ -486,7 +487,7 @@ static void Execute_Bresenham_Strategy_Internal(axis_id_t dominant_axis, const s
             default:
                 break;
             }
-
+*/
             // Update machine position for subordinate axis
             if (segment->direction_bits & (1 << sub_axis))
             {
@@ -1024,7 +1025,16 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
             last_dom_dir_bits[new_dominant_axis] = current_dir_bit;
         }
 #endif
+
+      //29 OCT 2025: prefer this to switch statement, cleaner code.
+       MotionDriver_SetDirection(new_dominant_axis, dir_negative);
         
+        // CRITICAL FIX (Oct 23, 2025): Add small delay after direction change!
+        // PIC32MZ GPIO changes may need settling time before timer/OCR start
+        // to prevent mis-stepping due to timing skew.
+        // Experimentally determined 1µs delay is sufficient.
+        CORETIMER_DelayUs(1);
+       /* 
         switch (new_dominant_axis)
         {
         case AXIS_X:
@@ -1032,32 +1042,33 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
                 DirX_Clear();
             else
                 DirX_Set();
-            CORETIMER_DelayUs(1);  /* INCREASED: Testing if direction change needs more settling time */
+            CORETIMER_DelayUs(1);  // INCREASED: Testing if direction change needs more settling time 
             break;
         case AXIS_Y:
             if (dir_negative)
                 DirY_Clear();
             else
                 DirY_Set();
-            CORETIMER_DelayUs(1);  /* INCREASED: Testing if direction change needs more settling time */
+            CORETIMER_DelayUs(1);  // INCREASED: Testing if direction change needs more settling time 
             break;
         case AXIS_Z:
             if (dir_negative)
                 DirZ_Clear();
             else
                 DirZ_Set();
-            CORETIMER_DelayUs(1);  /* INCREASED: Testing if direction change needs more settling time */
+            CORETIMER_DelayUs(1);  // INCREASED: Testing if direction change needs more settling time 
             break;
         case AXIS_A:
             if (dir_negative)
                 DirA_Clear();
             else
                 DirA_Set();
-            CORETIMER_DelayUs(1);  /* INCREASED: Testing if direction change needs more settling time */
+            CORETIMER_DelayUs(1);  // INCREASED: Testing if direction change needs more settling time 
             break;
         default:
             break;
         }
+        */
 
         // Configure OCR period for new segment (NEW dominant axis)
         uint32_t period = next_seg->period;
@@ -1077,8 +1088,10 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
         axis_hw[new_dominant_axis].TMR_Stop();
         
         // Step 3: Clear timer counter to prevent rollover glitch
+        //prefer this as it is cleaner.
+        axis_hw[new_dominant_axis].TMR_CounterClear(); 
         // CRITICAL: Direct register write - no PLIB function exists for this!
-        switch (new_dominant_axis)
+        /*switch (new_dominant_axis)
         {
         case AXIS_X:
             TMR2 = 0;  // Reset counter
@@ -1095,7 +1108,8 @@ static void ProcessSegmentStep(axis_id_t dominant_axis)
         default:
             break;
         }
-        
+        */
+
         // Step 4: Reconfigure registers while hardware is fully stopped
         axis_hw[new_dominant_axis].TMR_PeriodSet((uint16_t)period);
         axis_hw[new_dominant_axis].OCMP_CompareValueSet((uint16_t)(period - OCMP_PULSE_WIDTH));
@@ -1176,7 +1190,8 @@ static void OCMP5_StepCounter_X(uintptr_t context)
         /* ✅ TRANSITION: Subordinate → Dominant (ONE-TIME SETUP) */
         
         /* A. Enable driver (Oct 21 fix - ONLY on transition) */
-        MultiAxis_EnableDriver(axis);
+        //MultiAxis_EnableDriver(axis);
+        MotionDriver_EnableDriver(axis); /* Use MotionDriver abstraction */
         
         /* B. Get segment pointer and validate */
         volatile axis_segment_state_t *state = &segment_state[axis];
@@ -1292,7 +1307,8 @@ static void OCMP1_StepCounter_Y(uintptr_t context)
         /* ✅ TRANSITION: Subordinate → Dominant (ONE-TIME SETUP) */
         
         /* A. Enable driver (Oct 21 fix - ONLY on transition) */
-        MultiAxis_EnableDriver(axis);
+        //MultiAxis_EnableDriver(axis);
+        MotionDriver_EnableDriver(axis);  /* Using MotionDriver variant for Y axis */
         
         /* B. Get segment pointer and validate */
         volatile axis_segment_state_t *state = &segment_state[axis];
@@ -1408,7 +1424,8 @@ static void OCMP4_StepCounter_Z(uintptr_t context)
         /* ✅ TRANSITION: Subordinate → Dominant (ONE-TIME SETUP) */
         
         /* A. Enable driver (Oct 21 fix - ONLY on transition) */
-        MultiAxis_EnableDriver(axis);
+        //MultiAxis_EnableDriver(axis);
+        MotionDriver_EnableDriver(axis); //Use MotionDriver abstraction.
         
         /* B. Get segment pointer and validate */
         volatile axis_segment_state_t *state = &segment_state[axis];
@@ -1590,290 +1607,7 @@ static void OCMP3_StepCounter_A(uintptr_t context)
 }
 #endif
 
-// *****************************************************************************
-// TMR1 @ 1kHz - Multi-Axis S-CURVE STATE MACHINE (Phase 1 - DISABLED)
-// *****************************************************************************/
 
-#if 0 // PHASE 2B: TMR1 S-curve disabled, using GRBL segment-based execution
-      // Preserved for reference during Phase 2 development
-      // TODO: Remove entirely once Phase 2C validated
-
-static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
-{
-    // DEBUG: Heartbeat to show TMR1 is running
-    static uint16_t heartbeat = 0;
-    if (++heartbeat > 1000)
-    {
-        LED1_Toggle(); // Blink every second to show TMR1 alive
-        heartbeat = 0;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // STEP 1: Update DOMINANT AXIS (Master) - Full S-Curve Profile
-    // ═══════════════════════════════════════════════════════════════════════
-    // The dominant axis (longest distance) controls timing for ALL axes.
-    // It calculates velocity from S-curve equations and generates OCR period.
-    // Subordinate axes will scale this OCR period to maintain synchronization.
-
-    axis_id_t dominant_axis = coord_move.dominant_axis;
-    volatile scurve_state_t *s = &axis_state[dominant_axis];
-    uint32_t dominant_ocr_period = 65000; // Default slow period
-
-    if (s->active && s->current_segment != SEGMENT_IDLE)
-    {
-        // Get per-axis motion limits (cached for efficiency in interrupt context)
-        float max_velocity = MotionMath_GetMaxVelocityStepsPerSec(dominant_axis);
-        float max_accel = MotionMath_GetAccelStepsPerSec2(dominant_axis);
-        float max_jerk = MotionMath_GetJerkStepsPerSec3(dominant_axis);
-
-        s->elapsed_time += UPDATE_PERIOD_SEC;
-        s->total_elapsed += UPDATE_PERIOD_SEC;
-
-        float new_velocity = 0.0f;
-        float new_accel = 0.0f;
-
-        switch (s->current_segment)
-        {
-        case SEGMENT_JERK_ACCEL:
-            new_accel = max_jerk * s->elapsed_time;
-            new_velocity = 0.5f * max_jerk * s->elapsed_time * s->elapsed_time;
-
-            if (s->elapsed_time >= s->t1_jerk_accel)
-            {
-                s->current_segment = SEGMENT_CONST_ACCEL;
-                s->elapsed_time = 0.0f;
-                s->current_velocity = s->v_end_segment1;
-            }
-            break;
-
-        case SEGMENT_CONST_ACCEL:
-            new_accel = max_accel;
-            new_velocity = s->v_end_segment1 + (max_accel * s->elapsed_time);
-
-            if (s->elapsed_time >= s->t2_const_accel)
-            {
-                s->current_segment = SEGMENT_JERK_DECEL_ACCEL;
-                s->elapsed_time = 0.0f;
-                s->current_velocity = s->v_end_segment2;
-            }
-            break;
-
-        case SEGMENT_JERK_DECEL_ACCEL:
-            new_accel = max_accel - (max_jerk * s->elapsed_time);
-            new_velocity = s->v_end_segment2 +
-                           (max_accel * s->elapsed_time) -
-                           (0.5f * max_jerk * s->elapsed_time * s->elapsed_time);
-
-            if (s->elapsed_time >= s->t3_jerk_decel_accel)
-            {
-                s->current_segment = SEGMENT_CRUISE;
-                s->elapsed_time = 0.0f;
-                s->current_velocity = s->cruise_velocity;
-            }
-            break;
-
-        case SEGMENT_CRUISE:
-            new_accel = 0.0f;
-            new_velocity = s->cruise_velocity;
-
-            // Transition based on TIME only (S-curve is time-based, not step-based)
-            if (s->elapsed_time >= s->t4_cruise)
-            {
-                s->current_segment = SEGMENT_JERK_ACCEL_DECEL;
-                s->elapsed_time = 0.0f;
-            }
-            break;
-
-        case SEGMENT_JERK_ACCEL_DECEL:
-            new_accel = -(max_jerk * s->elapsed_time);
-            new_velocity = s->cruise_velocity -
-                           (0.5f * max_jerk * s->elapsed_time * s->elapsed_time);
-
-            if (s->elapsed_time >= s->t5_jerk_accel_decel)
-            {
-                s->current_segment = SEGMENT_CONST_DECEL;
-                s->elapsed_time = 0.0f;
-                s->current_velocity = s->v_end_segment5;
-            }
-            break;
-
-        case SEGMENT_CONST_DECEL:
-            new_accel = -max_accel;
-            new_velocity = s->v_end_segment5 - (max_accel * s->elapsed_time);
-
-            if (s->elapsed_time >= s->t6_const_decel)
-            {
-                s->current_segment = SEGMENT_JERK_DECEL_DECEL;
-                s->elapsed_time = 0.0f;
-                s->current_velocity = s->v_end_segment6;
-            }
-            break;
-
-        case SEGMENT_JERK_DECEL_DECEL:
-            new_accel = -(max_accel - max_jerk * s->elapsed_time);
-            new_velocity = s->v_end_segment6 -
-                           (max_accel * s->elapsed_time) +
-                           (0.5f * max_jerk * s->elapsed_time * s->elapsed_time);
-
-            // Transition based on TIME or velocity reaching zero
-            // Step count check removed - S-curve is time-based!
-            if (s->elapsed_time >= s->t7_jerk_decel_decel || new_velocity <= 0.1f)
-            {
-                s->current_segment = SEGMENT_COMPLETE;
-                new_velocity = 0.0f;
-            }
-            break;
-
-        case SEGMENT_COMPLETE:
-            // CRITICAL: Stop timer then disable OCR
-            axis_hw[dominant_axis].TMR_Stop();
-            axis_hw[dominant_axis].OCMP_Disable();
-
-#ifdef DEBUG_MOTION_BUFFER
-            // Debug: Report final motion state
-            UGS_Debug("[COMPLETE] axis=%d steps=%lu/%lu (%.1f%%) time=%.3fs\r\n",
-                      dominant_axis, s->step_count, s->total_steps,
-                      (float)s->step_count * 100.0f / (float)s->total_steps,
-                      s->total_elapsed);
-#endif
-
-            // Clear state
-            s->active = false;
-            s->current_velocity = 0.0f;
-            s->current_accel = 0.0f;
-            s->current_segment = SEGMENT_IDLE;
-            break; // Exit switch - per-axis control, no global flag needed
-
-        default:
-            break;
-        }
-
-        s->current_velocity = new_velocity;
-        s->current_accel = new_accel;
-
-        if (s->current_velocity < 0.0f)
-            s->current_velocity = 0.0f;
-        if (s->current_velocity > max_velocity)
-            s->current_velocity = max_velocity;
-
-        // CRITICAL SAFETY: Check if dominant axis reached target steps
-        if (s->step_count >= s->total_steps)
-        {
-            // Stop immediately - target reached
-            axis_hw[dominant_axis].TMR_Stop();
-            axis_hw[dominant_axis].OCMP_Disable();
-            s->active = false;
-            s->current_velocity = 0.0f;
-            s->current_accel = 0.0f;
-            s->current_segment = SEGMENT_IDLE;
-        }
-        else if (s->active && s->current_velocity > 1.0f)
-        {
-            // Calculate OCR period from dominant axis velocity
-            // This period will be scaled for subordinate axes
-            dominant_ocr_period = (uint32_t)((float)TMR_CLOCK_HZ / s->current_velocity);
-
-            if (dominant_ocr_period > 65485)
-                dominant_ocr_period = 65485;
-            if (dominant_ocr_period <= OCMP_PULSE_WIDTH)
-                dominant_ocr_period = OCMP_PULSE_WIDTH + 10;
-
-            // Update dominant axis OCR hardware
-            axis_hw[dominant_axis].TMR_PeriodSet(dominant_ocr_period);
-            axis_hw[dominant_axis].OCMP_CompareValueSet(dominant_ocr_period - OCMP_PULSE_WIDTH);
-            axis_hw[dominant_axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // STEP 2: Update SUBORDINATE AXES (Slaves) - OCR Period Scaling
-    // ═══════════════════════════════════════════════════════════════════════
-    // Subordinate axes DO NOT calculate velocity from S-curve equations.
-    // Instead, they scale the dominant axis OCR period by their step ratio.
-    // This guarantees synchronized completion with exact step counts!
-    //
-    // Formula: subordinate_OCR_period = dominant_OCR_period × step_ratio
-    // Where:   step_ratio = dominant_steps / subordinate_steps
-    //
-    // Example: Dominant Y=800 steps, Subordinate X=400 steps
-    //          step_ratio = 800/400 = 2.0
-    //          If dominant_period = 3906, then subordinate_period = 7812
-    //          Result: X runs at half frequency, generates exactly 400 steps ✅
-
-    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
-    {
-        // Skip dominant axis (already handled above)
-        if (axis == dominant_axis)
-            continue;
-
-        volatile scurve_state_t *sub = &axis_state[axis];
-
-        // Skip inactive axes
-        if (!sub->active || sub->current_segment == SEGMENT_IDLE)
-            continue;
-
-        // Check if axis velocity scale is zero (axis not moving in this coordinated move)
-        if (coord_move.axis_velocity_scale[axis] == 0.0f)
-            continue;
-
-        // Check if dominant axis completed motion (subordinate must also stop!)
-        // NOTE: Check this BEFORE copying segment state, because dominant may have
-        // already transitioned from SEGMENT_COMPLETE to SEGMENT_IDLE!
-        if (!axis_state[dominant_axis].active)
-        {
-            // Stop subordinate axis - dominant has completed
-            axis_hw[axis].TMR_Stop();
-            axis_hw[axis].OCMP_Disable();
-            sub->active = false;
-            sub->current_velocity = 0.0f;
-            sub->current_accel = 0.0f;
-            sub->current_segment = SEGMENT_IDLE;
-            continue;
-        }
-
-        // Update segment timing from dominant axis (time synchronization)
-        sub->current_segment = axis_state[dominant_axis].current_segment;
-        sub->elapsed_time = axis_state[dominant_axis].elapsed_time;
-        sub->total_elapsed = axis_state[dominant_axis].total_elapsed;
-
-        // CRITICAL SAFETY: Check if subordinate axis reached target steps
-        if (sub->step_count >= sub->total_steps)
-        {
-            // Stop immediately - target reached
-            axis_hw[axis].TMR_Stop();
-            axis_hw[axis].OCMP_Disable();
-            sub->active = false;
-            sub->current_velocity = 0.0f;
-            sub->current_accel = 0.0f;
-            sub->current_segment = SEGMENT_IDLE;
-            continue;
-        }
-
-        // Calculate subordinate OCR period by scaling dominant period
-        // step_ratio = dominant_steps / subordinate_steps
-        // subordinate_period = dominant_period × step_ratio
-        float step_ratio = (float)axis_state[dominant_axis].total_steps / (float)sub->total_steps;
-        uint32_t subordinate_ocr_period = (uint32_t)((float)dominant_ocr_period * step_ratio);
-
-        // Apply same safety limits as dominant axis
-        if (subordinate_ocr_period > 65485)
-            subordinate_ocr_period = 65485;
-        if (subordinate_ocr_period <= OCMP_PULSE_WIDTH)
-            subordinate_ocr_period = OCMP_PULSE_WIDTH + 10;
-
-        // Update subordinate axis OCR hardware
-        axis_hw[axis].TMR_PeriodSet(subordinate_ocr_period);
-        axis_hw[axis].OCMP_CompareValueSet(subordinate_ocr_period - OCMP_PULSE_WIDTH);
-        axis_hw[axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
-
-        // Update velocity for informational purposes (not used for control!)
-        // velocity = TMR_CLOCK_HZ / period
-        sub->current_velocity = (float)TMR_CLOCK_HZ / (float)subordinate_ocr_period;
-    }
-
-    // No global motion_running flag needed - each axis manages its own state
-}
-#endif // PHASE 2B: End of TMR1 S-curve code
 
 // *****************************************************************************
 // Public API
@@ -1906,7 +1640,8 @@ void MultiAxis_Initialize(void)
         axis_was_dominant_last_isr[axis] = false;
 
         // Disable all drivers on startup (safe default)
-        MultiAxis_DisableDriver(axis);
+        //MultiAxis_DisableDriver(axis);    
+        MotionDriver_DisableDriver(axis); // Use motion driver abstraction
     }
 
     // Register OCR callbacks
@@ -1965,7 +1700,8 @@ void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward)
     axis_hw[axis].TMR_Stop();
 
     // Enable driver before motion (DRV8825 active-low enable)
-    MultiAxis_EnableDriver(axis);
+    // MultiAxis_EnableDriver(axis);
+    MotionDriver_EnableDriver(axis); // Use motion driver abstraction
 
     // Calculate S-curve profile
     calculate_scurve_profile(axis, abs_steps);
@@ -1983,11 +1719,13 @@ void MultiAxis_MoveSingleAxis(axis_id_t axis, int32_t steps, bool forward)
     // Set direction pin using dynamic lookup
     if (forward)
     {
-        MultiAxis_SetDirection(axis);
+        //MultiAxis_SetDirection(axis);
+        MotionDriver_SetDirection(axis); // Use motion driver abstraction
     }
     else
     {
-        MultiAxis_ClearDirection(axis);
+        //MultiAxis_ClearDirection(axis);
+        MotionDriver_ClearDirection(axis); // Use motion driver abstraction
     }
 
     // Start OCR - set initial period for first segment
@@ -2062,7 +1800,8 @@ void MultiAxis_StopAll(void)
         segment_state[axis].step_count = 0;
 
         // Disable driver for safety (DRV8825 high-Z state)
-        MultiAxis_DisableDriver(axis);
+        //MultiAxis_DisableDriver(axis);
+        MotionDriver_DisableDriver(axis); // Use motion driver abstraction
     }
 
     // No global motion_running flag - each axis manages its own state
@@ -2085,7 +1824,7 @@ bool MultiAxis_StartSegmentExecution(void)
 {
     /* CRITICAL FIX (Oct 25, 2025 - Evening): Prevent re-entry while segment executing!
      * 
-     * PROBLEM: TMR9 ISR calls this function every 10ms. If dominant axis is still
+     * PROBLEM: Main loop calls this function every iteration. If dominant axis is still
      * executing previous segment, we must NOT try to start next segment yet!
      * 
      * Symptom: "[SEG_START] X already active, skipping" repeats → main loop hangs
@@ -2139,7 +1878,7 @@ bool MultiAxis_StartSegmentExecution(void)
     if (max_steps_startup > 0)
     {
         segment_completed_by_axis = (1 << dominant_candidate_startup);
-#if DEBUG_MOTION_BUFFER == DEBUG_LEVEL_SEGMENT
+#ifdef DEBUG_MOTION_BUFFER
         // Trace dominant axis selection and per-axis step counts
         const char *axis_names[] = {"X", "Y", "Z", "A"};
         UGS_Printf("[SEG_START] Dominant=%s bitmask=0x%02X n_step=%lu X=%lu Y=%lu Z=%lu A=%lu period=%lu\r\n",
@@ -2165,7 +1904,6 @@ bool MultiAxis_StartSegmentExecution(void)
         return false; // No motion in segment!
     }
 
-
     // Start axes that are IDLE and have motion in this segment
     bool any_axis_started = false;
 
@@ -2177,28 +1915,6 @@ bool MultiAxis_StartSegmentExecution(void)
         // it must transition from OCR (dominant) to bit-bang (subordinate)!
         // Disable OCR hardware before continuing (leave timer running).
         bool is_dominant = (segment_completed_by_axis & (1 << axis)) != 0;
-
-        // CRITICAL interpolation, never gets back here to reinitialize segments?
-        // axis movement error that happens irregularly after
-        // interpolation, erratic behaviour, see copilot-instructions Dave section
-        #if DEBUG_MOTION_BUFFER == DEBUG_SEGMENT_FLUSH
-            const char *axis_names[] = {"X", "Y", "Z", "A"};
-            UGS_Printf("[SEG_INIT] Axis=%s steps=%lu active=%d dominant=%d\r\n",
-                    axis_names[axis],
-                    (unsigned long)first_seg->steps[axis],
-                    state->active,
-                    is_dominant);
-        #endif
-        if (first_seg->steps[axis] == 0)
-            {
-                // Axis has no motion in this segment
-                state->current_segment = SEGMENT_IDLE;
-                state->step_count = 0;
-                state->bresenham_counter = 0;
-                state->block_steps_commanded = 0;
-                state->block_steps_executed = 0;
-                state->active = false;
-            }
 
         if (state->active && !is_dominant && first_seg->steps[axis] > 0)
         {
@@ -2250,54 +1966,15 @@ bool MultiAxis_StartSegmentExecution(void)
             if (first_seg->direction_bits & (1 << axis))
             {
                 en_clear_funcs[axis](); // Inverted: bit=1 → Clear for negative
-                /*
-                // Negative direction (direction_bits=1)
-                switch (axis)
-                {
-                case AXIS_X:
-                    DirX_Clear(); // Inverted: bit=1 → Clear for negative
-                    break;
-                case AXIS_Y:
-                    DirY_Clear(); // Inverted: bit=1 → Clear for negative
-                    break;
-                case AXIS_Z:
-                    DirZ_Clear(); // Inverted: bit=1 → Clear for negative
-                    break;
-                case AXIS_A:
-                    DirA_Clear(); // Inverted: bit=1 → Clear for negative
-                    break;
-                default:
-                    break;
-                }
-                */
             }
             else
             {
-                en_set_funcs[axis]();
-                /*            // Positive direction (direction_bits=0)
-                switch (axis)
-                {
-                case AXIS_X:
-                    DirX_Set(); // Inverted: bit=0 → Set for positive
-                    break;
-                case AXIS_Y:
-                    DirY_Set(); // Inverted: bit=0 → Set for positive
-                    break;
-                case AXIS_Z:
-                    DirZ_Set(); // Inverted: bit=0 → Set for positive
-                    break;
-                case AXIS_A:
-                    DirA_Set(); // Inverted: bit=0 → Set for positive
-                    break;
-                default:
-                    break;
-                }
-                    */
-                    
+                en_set_funcs[axis]();                 
             }
 
             // Enable driver
-            MultiAxis_EnableDriver(axis);
+            //MultiAxis_EnableDriver(axis);
+            MotionDriver_EnableDriver(axis); // Use motion driver abstraction
 
 #ifdef DEBUG_MOTION_BUFFER
             {
@@ -2752,4 +2429,289 @@ bool MultiAxis_GetAxisState(axis_id_t axis, uint32_t *step_count, bool *active)
     return true;
 }
 
-// (Removed duplicate definitions; now extern from motion_driver.h)
+
+
+// *****************************************************************************
+// TMR1 @ 1kHz - Multi-Axis S-CURVE STATE MACHINE (Phase 1 - DISABLED)
+// *****************************************************************************/
+
+#if 0 // PHASE 2B: TMR1 S-curve disabled, using GRBL segment-based execution
+      // Preserved for reference during Phase 2 development
+      // TODO: Remove entirely once Phase 2C validated
+
+static void TMR1_MultiAxisControl(uint32_t status, uintptr_t context)
+{
+    // DEBUG: Heartbeat to show TMR1 is running
+    static uint16_t heartbeat = 0;
+    if (++heartbeat > 1000)
+    {
+        LED1_Toggle(); // Blink every second to show TMR1 alive
+        heartbeat = 0;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // STEP 1: Update DOMINANT AXIS (Master) - Full S-Curve Profile
+    // ═══════════════════════════════════════════════════════════════════════
+    // The dominant axis (longest distance) controls timing for ALL axes.
+    // It calculates velocity from S-curve equations and generates OCR period.
+    // Subordinate axes will scale this OCR period to maintain synchronization.
+
+    axis_id_t dominant_axis = coord_move.dominant_axis;
+    volatile scurve_state_t *s = &axis_state[dominant_axis];
+    uint32_t dominant_ocr_period = 65000; // Default slow period
+
+    if (s->active && s->current_segment != SEGMENT_IDLE)
+    {
+        // Get per-axis motion limits (cached for efficiency in interrupt context)
+        float max_velocity = MotionMath_GetMaxVelocityStepsPerSec(dominant_axis);
+        float max_accel = MotionMath_GetAccelStepsPerSec2(dominant_axis);
+        float max_jerk = MotionMath_GetJerkStepsPerSec3(dominant_axis);
+
+        s->elapsed_time += UPDATE_PERIOD_SEC;
+        s->total_elapsed += UPDATE_PERIOD_SEC;
+
+        float new_velocity = 0.0f;
+        float new_accel = 0.0f;
+
+        switch (s->current_segment)
+        {
+        case SEGMENT_JERK_ACCEL:
+            new_accel = max_jerk * s->elapsed_time;
+            new_velocity = 0.5f * max_jerk * s->elapsed_time * s->elapsed_time;
+
+            if (s->elapsed_time >= s->t1_jerk_accel)
+            {
+                s->current_segment = SEGMENT_CONST_ACCEL;
+                s->elapsed_time = 0.0f;
+                s->current_velocity = s->v_end_segment1;
+            }
+            break;
+
+        case SEGMENT_CONST_ACCEL:
+            new_accel = max_accel;
+            new_velocity = s->v_end_segment1 + (max_accel * s->elapsed_time);
+
+            if (s->elapsed_time >= s->t2_const_accel)
+            {
+                s->current_segment = SEGMENT_JERK_DECEL_ACCEL;
+                s->elapsed_time = 0.0f;
+                s->current_velocity = s->v_end_segment2;
+            }
+            break;
+
+        case SEGMENT_JERK_DECEL_ACCEL:
+            new_accel = max_accel - (max_jerk * s->elapsed_time);
+            new_velocity = s->v_end_segment2 +
+                           (max_accel * s->elapsed_time) -
+                           (0.5f * max_jerk * s->elapsed_time * s->elapsed_time);
+
+            if (s->elapsed_time >= s->t3_jerk_decel_accel)
+            {
+                s->current_segment = SEGMENT_CRUISE;
+                s->elapsed_time = 0.0f;
+                s->current_velocity = s->cruise_velocity;
+            }
+            break;
+
+        case SEGMENT_CRUISE:
+            new_accel = 0.0f;
+            new_velocity = s->cruise_velocity;
+
+            // Transition based on TIME only (S-curve is time-based, not step-based)
+            if (s->elapsed_time >= s->t4_cruise)
+            {
+                s->current_segment = SEGMENT_JERK_ACCEL_DECEL;
+                s->elapsed_time = 0.0f;
+            }
+            break;
+
+        case SEGMENT_JERK_ACCEL_DECEL:
+            new_accel = -(max_jerk * s->elapsed_time);
+            new_velocity = s->cruise_velocity -
+                           (0.5f * max_jerk * s->elapsed_time * s->elapsed_time);
+
+            if (s->elapsed_time >= s->t5_jerk_accel_decel)
+            {
+                s->current_segment = SEGMENT_CONST_DECEL;
+                s->elapsed_time = 0.0f;
+                s->current_velocity = s->v_end_segment5;
+            }
+            break;
+
+        case SEGMENT_CONST_DECEL:
+            new_accel = -max_accel;
+            new_velocity = s->v_end_segment5 - (max_accel * s->elapsed_time);
+
+            if (s->elapsed_time >= s->t6_const_decel)
+            {
+                s->current_segment = SEGMENT_JERK_DECEL_DECEL;
+                s->elapsed_time = 0.0f;
+                s->current_velocity = s->v_end_segment6;
+            }
+            break;
+
+        case SEGMENT_JERK_DECEL_DECEL:
+            new_accel = -(max_accel - max_jerk * s->elapsed_time);
+            new_velocity = s->v_end_segment6 -
+                           (max_accel * s->elapsed_time) +
+                           (0.5f * max_jerk * s->elapsed_time * s->elapsed_time);
+
+            // Transition based on TIME or velocity reaching zero
+            // Step count check removed - S-curve is time-based!
+            if (s->elapsed_time >= s->t7_jerk_decel_decel || new_velocity <= 0.1f)
+            {
+                s->current_segment = SEGMENT_COMPLETE;
+                new_velocity = 0.0f;
+            }
+            break;
+
+        case SEGMENT_COMPLETE:
+            // CRITICAL: Stop timer then disable OCR
+            axis_hw[dominant_axis].TMR_Stop();
+            axis_hw[dominant_axis].OCMP_Disable();
+
+#ifdef DEBUG_MOTION_BUFFER
+            // Debug: Report final motion state
+            UGS_Debug("[COMPLETE] axis=%d steps=%lu/%lu (%.1f%%) time=%.3fs\r\n",
+                      dominant_axis, s->step_count, s->total_steps,
+                      (float)s->step_count * 100.0f / (float)s->total_steps,
+                      s->total_elapsed);
+#endif
+
+            // Clear state
+            s->active = false;
+            s->current_velocity = 0.0f;
+            s->current_accel = 0.0f;
+            s->current_segment = SEGMENT_IDLE;
+            break; // Exit switch - per-axis control, no global flag needed
+
+        default:
+            break;
+        }
+
+        s->current_velocity = new_velocity;
+        s->current_accel = new_accel;
+
+        if (s->current_velocity < 0.0f)
+            s->current_velocity = 0.0f;
+        if (s->current_velocity > max_velocity)
+            s->current_velocity = max_velocity;
+
+        // CRITICAL SAFETY: Check if dominant axis reached target steps
+        if (s->step_count >= s->total_steps)
+        {
+            // Stop immediately - target reached
+            axis_hw[dominant_axis].TMR_Stop();
+            axis_hw[dominant_axis].OCMP_Disable();
+            s->active = false;
+            s->current_velocity = 0.0f;
+            s->current_accel = 0.0f;
+            s->current_segment = SEGMENT_IDLE;
+        }
+        else if (s->active && s->current_velocity > 1.0f)
+        {
+            // Calculate OCR period from dominant axis velocity
+            // This period will be scaled for subordinate axes
+            dominant_ocr_period = (uint32_t)((float)TMR_CLOCK_HZ / s->current_velocity);
+
+            if (dominant_ocr_period > 65485)
+                dominant_ocr_period = 65485;
+            if (dominant_ocr_period <= OCMP_PULSE_WIDTH)
+                dominant_ocr_period = OCMP_PULSE_WIDTH + 10;
+
+            // Update dominant axis OCR hardware
+            axis_hw[dominant_axis].TMR_PeriodSet(dominant_ocr_period);
+            axis_hw[dominant_axis].OCMP_CompareValueSet(dominant_ocr_period - OCMP_PULSE_WIDTH);
+            axis_hw[dominant_axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // STEP 2: Update SUBORDINATE AXES (Slaves) - OCR Period Scaling
+    // ═══════════════════════════════════════════════════════════════════════
+    // Subordinate axes DO NOT calculate velocity from S-curve equations.
+    // Instead, they scale the dominant axis OCR period by their step ratio.
+    // This guarantees synchronized completion with exact step counts!
+    //
+    // Formula: subordinate_OCR_period = dominant_OCR_period × step_ratio
+    // Where:   step_ratio = dominant_steps / subordinate_steps
+    //
+    // Example: Dominant Y=800 steps, Subordinate X=400 steps
+    //          step_ratio = 800/400 = 2.0
+    //          If dominant_period = 3906, then subordinate_period = 7812
+    //          Result: X runs at half frequency, generates exactly 400 steps ✅
+
+    for (axis_id_t axis = AXIS_X; axis < NUM_AXES; axis++)
+    {
+        // Skip dominant axis (already handled above)
+        if (axis == dominant_axis)
+            continue;
+
+        volatile scurve_state_t *sub = &axis_state[axis];
+
+        // Skip inactive axes
+        if (!sub->active || sub->current_segment == SEGMENT_IDLE)
+            continue;
+
+        // Check if axis velocity scale is zero (axis not moving in this coordinated move)
+        if (coord_move.axis_velocity_scale[axis] == 0.0f)
+            continue;
+
+        // Check if dominant axis completed motion (subordinate must also stop!)
+        // NOTE: Check this BEFORE copying segment state, because dominant may have
+        // already transitioned from SEGMENT_COMPLETE to SEGMENT_IDLE!
+        if (!axis_state[dominant_axis].active)
+        {
+            // Stop subordinate axis - dominant has completed
+            axis_hw[axis].TMR_Stop();
+            axis_hw[axis].OCMP_Disable();
+            sub->active = false;
+            sub->current_velocity = 0.0f;
+            sub->current_accel = 0.0f;
+            sub->current_segment = SEGMENT_IDLE;
+            continue;
+        }
+
+        // Update segment timing from dominant axis (time synchronization)
+        sub->current_segment = axis_state[dominant_axis].current_segment;
+        sub->elapsed_time = axis_state[dominant_axis].elapsed_time;
+        sub->total_elapsed = axis_state[dominant_axis].total_elapsed;
+
+        // CRITICAL SAFETY: Check if subordinate axis reached target steps
+        if (sub->step_count >= sub->total_steps)
+        {
+            // Stop immediately - target reached
+            axis_hw[axis].TMR_Stop();
+            axis_hw[axis].OCMP_Disable();
+            sub->active = false;
+            sub->current_velocity = 0.0f;
+            sub->current_accel = 0.0f;
+            sub->current_segment = SEGMENT_IDLE;
+            continue;
+        }
+
+        // Calculate subordinate OCR period by scaling dominant period
+        // step_ratio = dominant_steps / subordinate_steps
+        // subordinate_period = dominant_period × step_ratio
+        float step_ratio = (float)axis_state[dominant_axis].total_steps / (float)sub->total_steps;
+        uint32_t subordinate_ocr_period = (uint32_t)((float)dominant_ocr_period * step_ratio);
+
+        // Apply same safety limits as dominant axis
+        if (subordinate_ocr_period > 65485)
+            subordinate_ocr_period = 65485;
+        if (subordinate_ocr_period <= OCMP_PULSE_WIDTH)
+            subordinate_ocr_period = OCMP_PULSE_WIDTH + 10;
+
+        // Update subordinate axis OCR hardware
+        axis_hw[axis].TMR_PeriodSet(subordinate_ocr_period);
+        axis_hw[axis].OCMP_CompareValueSet(subordinate_ocr_period - OCMP_PULSE_WIDTH);
+        axis_hw[axis].OCMP_CompareSecondaryValueSet(OCMP_PULSE_WIDTH);
+
+        // Update velocity for informational purposes (not used for control!)
+        // velocity = TMR_CLOCK_HZ / period
+        sub->current_velocity = (float)TMR_CLOCK_HZ / (float)subordinate_ocr_period;
+    }
+
+    // No global motion_running flag needed - each axis manages its own state
+}
+#endif // PHASE 2B: End of TMR1 S-curve code
