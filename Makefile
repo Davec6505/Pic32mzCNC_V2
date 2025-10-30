@@ -16,6 +16,13 @@ DEVICE     := 32MZ2048EFH100
 #        make all                       (defaults to Release: -g -O1)
 BUILD_CONFIG ?= Release
 
+# Build with dependency tracking enabled
+# This enables automatic tracking of header file dependencies
+# Usage: make all                    (disabled by default)
+#        make all DEP_TRACKING=0    (disable dependency tracking)
+#        make all DEP_TRACKING=1    (enable dependency tracking)
+DEP_TRACKING ?= 0
+
 # Optimization level control (optional override for Release builds)
 # Usage: make all OPT_LEVEL=2    (use -O2 instead of default -O1)
 #        make all OPT_LEVEL=3    (use -O3 for maximum optimization)
@@ -75,7 +82,7 @@ build:
 ifeq ($(USE_SHARED_LIB),1)
 	@echo "######  (Using pre-built shared library)  ########"
 endif
-	cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE) USE_SHARED_LIB=$(USE_SHARED_LIB) BUILD_CONFIG=$(BUILD_CONFIG) OPT_LEVEL=$(OPT_LEVEL) DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER) DISABLE_JUNCTION_LOOKAHEAD=$(DISABLE_JUNCTION_LOOKAHEAD)
+	cd srcs && $(BUILD) COMPILER_LOCATION="$(COMPILER_LOCATION)" DFP_LOCATION="$(DFP_LOCATION)" DFP="$(DFP)" DEVICE=$(DEVICE) MODULE=$(MODULE) HEAP_SIZE=$(HEAP_SIZE) STACK_SIZE=$(STACK_SIZE) USE_SHARED_LIB=$(USE_SHARED_LIB) BUILD_CONFIG=$(BUILD_CONFIG) OPT_LEVEL=$(OPT_LEVEL) DEBUG_MOTION_BUFFER=$(DEBUG_MOTION_BUFFER) DISABLE_JUNCTION_LOOKAHEAD=$(DISABLE_JUNCTION_LOOKAHEAD) DEP_TRACKING=$(DEP_TRACKING)
 	@echo "###### BIN TO HEX ########"
 	cd bins/$(BUILD_CONFIG) && "$(COMPILER_LOCATION)/xc32-bin2hex" $(MODULE)
 	@echo "######  BUILD COMPLETE (bins/$(BUILD_CONFIG)/$(MODULE).hex)  ########"

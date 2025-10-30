@@ -172,13 +172,18 @@ ASMS := $(ASM:$(SRC_DIR)/%.S=$(OBJ_DIR)/%.o)
 # The assembly files are expected to be compiled with the same flags as the C source files.
 OBJS += $(ASMS)
 
-# Compiler and flags
+# Compiler and flags 
+# Questionable use with xc32-gcc, but retained for possible future use with other compilers
 COMPILER  := c99
 ifeq ($(COMPILER),c99)
 CC := "$(COMPILER_LOCATION)/xc32-gcc"
 MCU := -mprocessor=$(DEVICE)
 STD := c99
-
+else
+CC := "$(COMPILER_LOCATION)/xc32-gcc"
+MCU := -mprocessor=$(DEVICE)
+STD := c90
+endif
 # Optimization level (passed from root Makefile, defaults to 1)
 OPT_LEVEL ?= 1
 
@@ -215,12 +220,11 @@ ifeq ($(DISABLE_JUNCTION_LOOKAHEAD),1)
     $(info *** DEBUG_DISABLE_JUNCTION_LOOKAHEAD (exact-stop) enabled ***)
 endif
 
-FLAGS := -Werror -Wall -MP -MMD $(CONFIG_DEFINES)
-
+ifeq ($(DEP_TRACKING),1)
+   $(info *** DEP_TRACKING enabled ***)
+   FLAGS := -Werror -Wall -MP -MMD $(CONFIG_DEFINES)
 else
-CC := "$(COMPILER_LOCATION)/xc32"
-MCU := -mprocessor=$(DEVICE)
-STD := c90
+   FLAGS := -Werror -Wall  $(CONFIG_DEFINES)
 endif
 
 
@@ -263,14 +267,22 @@ endif
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@echo "Compiling $< to $@"
 	@$(call MKDIR,$(dir $@))
+ifeq ($(DEP_TRACKING),1)
 	$(DIRECT_OBJ) -MF $(@:.o=.d) $< -o $@
+else
+	$(DIRECT_OBJ) $< -o $@
+endif
 	@echo "Object file created: $@"
 
 # Compile library source files (from BASE_LIB_DIR folder - not config-specific)
 $(OBJ_DIR)/libs/%.o: $(BASE_LIB_DIR)/%.c
 	@echo "Compiling library source $< to $@"
 	@$(call MKDIR,$(dir $@))
+ifeq ($(DEP_TRACKING),1)
 	$(DIRECT_OBJ) -MF $(@:.o=.d) $< -o $@
+else
+	$(DIRECT_OBJ) $< -o $@
+endif
 	@echo "Library object file created: $@"
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.S
@@ -352,7 +364,7 @@ clean:
 	@echo "Cleaning up object files, binaries, and libraries ($(detected_OS)) with DRY_RUN=$(DRY_RUN)"
 	@$(call RM,$(BIN_DIR),*)
 	@$(call RM,$(LIB_DIR),*.a)
-	@$(call RM,$(OBJ_DIR),*.o)
+	@$(call RM,$(OBJ_DIR),*)
 	@$(call RM,$(OUT_DIR),*)
 	@echo "Clean complete."
 

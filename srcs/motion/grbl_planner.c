@@ -350,7 +350,7 @@ uint8_t GRBLPlanner_GetBufferCount(void)
  */
 grbl_plan_block_t *GRBLPlanner_GetCurrentBlock(void)
 {
-#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_VERBOSE
+#if DEBUG_MOTION_BUFFER == DEBUG_LEVEL_VERBOSE
     static bool last_empty_reported = false;
 #endif
 
@@ -366,7 +366,7 @@ grbl_plan_block_t *GRBLPlanner_GetCurrentBlock(void)
         return NULL;
     }
     
-#if DEBUG_MOTION_BUFFER >= DEBUG_LEVEL_VERBOSE
+#if DEBUG_MOTION_BUFFER == DEBUG_LEVEL_VERBOSE
     last_empty_reported = false;
 #endif
     
