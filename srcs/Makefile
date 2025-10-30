@@ -37,7 +37,8 @@ endif
 # RM command with dry run and logging support to remove files matching a pattern in a directory
 ifeq ($(OS),Windows_NT)
 	RM = powershell -NoProfile -ExecutionPolicy Bypass -Command \
-	"\$$dryRun = '$(DRY_RUN)' -eq '1'; \
+	"\$$ConfirmPreference = 'None'; \
+	\$$dryRun = '$(DRY_RUN)' -eq '1'; \
 	\$$logPath = \$$env:LOG_PATH; \
 	\$$items = Get-ChildItem -Path '$(subst /,\,$(1))' -Recurse -Filter '$(2)' -ErrorAction SilentlyContinue; \
 	foreach (\$$item in \$$items) { \
